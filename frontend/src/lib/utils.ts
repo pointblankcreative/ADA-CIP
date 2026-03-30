@@ -93,6 +93,8 @@ export function platformLabel(id: string): string {
     tiktok: "TikTok",
     snapchat: "Snapchat",
     perion: "Perion/DOOH",
+    reddit: "Reddit",
+    pinterest: "Pinterest",
   };
   return labels[id] ?? id;
 }
@@ -106,6 +108,8 @@ export function platformIcon(id: string): string {
     tiktok: "T",
     snapchat: "Sc",
     perion: "P",
+    reddit: "R",
+    pinterest: "Pi",
   };
   return icons[id] ?? id.charAt(0).toUpperCase();
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
@@ -8,6 +8,14 @@ import { api, type ProjectCreatePayload } from "@/lib/api";
 import { Card } from "@/components/card";
 
 export default function NewProjectPage() {
+  return (
+    <Suspense fallback={<div className="text-slate-400 text-sm">Loading...</div>}>
+      <NewProjectForm />
+    </Suspense>
+  );
+}
+
+function NewProjectForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const prefillCode = searchParams.get("code") ?? "";

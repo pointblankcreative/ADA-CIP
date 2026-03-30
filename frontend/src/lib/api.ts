@@ -140,6 +140,11 @@ export interface ProjectCreatePayload {
   slack_channel_id?: string;
 }
 
+export interface ProjectCreateResponse {
+  project: Record<string, unknown>;
+  media_plan_sync?: { status: string; message?: string };
+}
+
 export interface PlatformFreshness {
   platform_id: string;
   latest_data_date: string | null;
@@ -193,7 +198,7 @@ export const api = {
     projects: {
       list: () => apiFetch<AdminProject[]>("/api/admin/projects"),
       create: (data: ProjectCreatePayload) =>
-        apiFetch<Record<string, unknown>>("/api/admin/projects", {
+        apiFetch<ProjectCreateResponse>("/api/admin/projects", {
           method: "POST",
           body: JSON.stringify(data),
         }),

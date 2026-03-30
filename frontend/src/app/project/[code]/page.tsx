@@ -66,11 +66,11 @@ export default function ProjectDetailPage() {
                 <div className="h-5 w-48 animate-pulse rounded bg-slate-700" />
               ) : (
                 <h1 className="truncate text-lg font-semibold text-white">
-                  {project?.project_name ?? "Unknown Project"}
+                  {project?.project_name || `Project ${code}`}
                 </h1>
               )}
               {project && !unprovisioned && (
-                <PacingBadge percentage={project.pacing_percentage} size="sm" />
+                <PacingBadge percentage={project.pacing_percentage} totalSpend={project.total_spend} size="sm" />
               )}
             </div>
             {project && !unprovisioned && (

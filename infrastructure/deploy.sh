@@ -111,6 +111,7 @@ if [ "$DEPLOY_BACKEND" = true ]; then
     --image="${BACKEND_IMAGE}" \
     --region="${REGION}" \
     --platform=managed \
+    --port=8000 \
     --service-account="${SA_EMAIL}" \
     --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},BIGQUERY_DATASET=cip,SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json,APP_ENV=production" \
     --update-secrets="/secrets/cip-sheets-reader.json=cip-sheets-reader-key:latest,SLACK_BOT_TOKEN=cip-slack-bot-token:latest" \
@@ -151,9 +152,9 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
   echo "  Building frontend image (API_URL=${BACKEND_URL})..."
   gcloud builds submit \
     --project="${PROJECT_ID}" \
-    --tag "${FRONTEND_IMAGE}" \
+    --config=frontend/cloudbuild.yaml \
+    --substitutions=_NEXT_PUBLIC_API_URL=${BACKEND_URL},_IMAGE_TAG=${FRONTEND_IMAGE} \
     --timeout=600 \
-    --build-arg="NEXT_PUBLIC_API_URL=${BACKEND_URL}" \
     ./frontend
 
   echo "  Deploying to Cloud Run..."
@@ -162,6 +163,7 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
     --image="${FRONTEND_IMAGE}" \
     --region="${REGION}" \
     --platform=managed \
+    --port=3000 \
     --set-env-vars="NODE_ENV=production" \
     --memory=512Mi \
     --cpu=1 \
@@ -181,7 +183,7 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
   gcloud run services update "${BACKEND_SERVICE}" \
     --project="${PROJECT_ID}" \
     --region="${REGION}" \
-    --update-env-vars="CORS_ORIGINS=${FRONTEND_URL},FRONTEND_URL=${FRONTEND_URL}"
+    --update-env-vars='CORS_ORIGINS=["'"${FRONTEND_URL}"'"],FRONTEND_URL='"${FRONTEND_URL}"''
 
   echo ""
 fi
@@ -223,32 +225,68 @@ if [ "$DEPLOY_SCHEDULER" = true ]; then
     --role="roles/run.invoker" \
     --quiet 2>/dev/null || true
 
-  # Create or update the scheduler job
+  # Delete old single daily job if it exists
   if gcloud scheduler jobs describe cip-daily-run \
     --project="${PROJECT_ID}" \
     --location="${REGION}" &>/dev/null; then
-    echo "  Updating existing scheduler job..."
-    gcloud scheduler jobs update http cip-daily-run \
+    echo "  Deleting old single daily job..."
+    gcloud scheduler jobs delete cip-daily-run \
       --project="${PROJECT_ID}" \
       --location="${REGION}" \
-      --schedule="0 6 * * *" \
+      --quiet
+  fi
+
+  # Morning run: 5:30 AM ET (picks up Funnel.io 2 AM PT sync)
+  if gcloud scheduler jobs describe cip-morning-run \
+    --project="${PROJECT_ID}" \
+    --location="${REGION}" &>/dev/null; then
+    echo "  Updating morning scheduler job..."
+    gcloud scheduler jobs update http cip-morning-run \
+      --project="${PROJECT_ID}" \
+      --location="${REGION}" \
+      --schedule="30 5 * * *" \
       --time-zone="America/Toronto" \
       --uri="${BACKEND_URL}/api/admin/daily-run" \
       --http-method=POST \
       --oidc-service-account-email="${SA_EMAIL}"
   else
-    echo "  Creating scheduler job..."
-    gcloud scheduler jobs create http cip-daily-run \
+    echo "  Creating morning scheduler job..."
+    gcloud scheduler jobs create http cip-morning-run \
       --project="${PROJECT_ID}" \
       --location="${REGION}" \
-      --schedule="0 6 * * *" \
+      --schedule="30 5 * * *" \
       --time-zone="America/Toronto" \
       --uri="${BACKEND_URL}/api/admin/daily-run" \
       --http-method=POST \
       --oidc-service-account-email="${SA_EMAIL}"
   fi
 
-  echo "  Scheduler: cip-daily-run configured for 6:00 AM ET daily"
+  # Afternoon run: 5:30 PM ET (picks up Funnel.io 2 PM PT sync)
+  if gcloud scheduler jobs describe cip-afternoon-run \
+    --project="${PROJECT_ID}" \
+    --location="${REGION}" &>/dev/null; then
+    echo "  Updating afternoon scheduler job..."
+    gcloud scheduler jobs update http cip-afternoon-run \
+      --project="${PROJECT_ID}" \
+      --location="${REGION}" \
+      --schedule="30 17 * * *" \
+      --time-zone="America/Toronto" \
+      --uri="${BACKEND_URL}/api/admin/daily-run" \
+      --http-method=POST \
+      --oidc-service-account-email="${SA_EMAIL}"
+  else
+    echo "  Creating afternoon scheduler job..."
+    gcloud scheduler jobs create http cip-afternoon-run \
+      --project="${PROJECT_ID}" \
+      --location="${REGION}" \
+      --schedule="30 17 * * *" \
+      --time-zone="America/Toronto" \
+      --uri="${BACKEND_URL}/api/admin/daily-run" \
+      --http-method=POST \
+      --oidc-service-account-email="${SA_EMAIL}"
+  fi
+
+  echo "  Scheduler: cip-morning-run (5:30 AM ET) + cip-afternoon-run (5:30 PM ET)"
   echo ""
 fi
 

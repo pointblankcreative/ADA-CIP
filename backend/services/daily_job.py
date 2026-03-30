@@ -101,6 +101,50 @@ def _write_stale_alerts(stale_platforms: list[dict]) -> int:
     return len(records)
 
 
+def _auto_complete_projects() -> dict:
+    """Mark projects as completed if end_date has passed or no spend in 30 days."""
+    from backend.config import settings
+    dataset = f"{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    client = bq.get_client()
+    results = {"expired": 0, "stale": 0}
+
+    # 1. End-date expired
+    expired_sql = f"""
+        UPDATE `{dataset}.dim_projects`
+        SET status = 'completed'
+        WHERE end_date < CURRENT_DATE() AND status = 'active'
+    """
+    try:
+        job = client.query(expired_sql)
+        job.result()
+        results["expired"] = job.num_dml_affected_rows or 0
+        logger.info("  Auto-complete (expired): %d projects", results["expired"])
+    except Exception:
+        logger.warning("Auto-complete (expired) query failed", exc_info=True)
+
+    # 2. No spend in 30 days
+    stale_sql = f"""
+        UPDATE `{dataset}.dim_projects` p
+        SET status = 'completed'
+        WHERE p.status = 'active'
+        AND p.project_code NOT IN (
+            SELECT DISTINCT project_code FROM `{dataset}.fact_digital_daily`
+            WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+            AND spend > 0
+            AND project_code IS NOT NULL
+        )
+    """
+    try:
+        job = client.query(stale_sql)
+        job.result()
+        results["stale"] = job.num_dml_affected_rows or 0
+        logger.info("  Auto-complete (stale 30d): %d projects", results["stale"])
+    except Exception:
+        logger.warning("Auto-complete (stale) query failed", exc_info=True)
+
+    return results
+
+
 def run_daily_pipeline() -> dict:
     """Execute the full daily pipeline.
 
@@ -113,6 +157,21 @@ def run_daily_pipeline() -> dict:
         "stages": {},
         "status": "success",
     }
+
+    # ── Stage 0: Auto-complete expired/stale projects ────────────────
+    logger.info("=== Daily Pipeline: Stage 0 — Auto-Complete Projects ===")
+    try:
+        t0 = time.time()
+        ac_result = _auto_complete_projects()
+        results["stages"]["auto_complete"] = {
+            "status": "success",
+            "expired": ac_result.get("expired", 0),
+            "stale": ac_result.get("stale", 0),
+            "elapsed_seconds": round(time.time() - t0, 1),
+        }
+    except Exception as e:
+        logger.error("Auto-complete failed: %s", e, exc_info=True)
+        results["stages"]["auto_complete"] = {"status": "error", "error": str(e)}
 
     # ── Stage 1: Transformation ─────────────────────────────────────
     logger.info("=== Daily Pipeline: Stage 1 — Transformation ===")

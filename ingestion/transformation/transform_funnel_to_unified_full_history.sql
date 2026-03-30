@@ -25,7 +25,8 @@
 -- Key Mappings:
 --   - Impressions, clicks, spend, video_views, conversions
 --   - Platform-specific suffixes: __Facebook_Ads, __Google_Ads, __StackAdapt,
---                                 __TikTok, __Snapchat, __LinkedIn
+--                                 __TikTok, __Snapchat, __LinkedIn,
+--                                 __Reddit, __Pinterest
 --   - Each platform provides different column availability
 --
 -- MERGE Key: date + platform_id + campaign_id + COALESCE(ad_set_id, '')
@@ -255,6 +256,72 @@ WITH platform_data AS (
     AND Campaign_ID__LinkedIn IS NOT NULL
     AND Campaign__LinkedIn IS NOT NULL
     AND Creative_ID__LinkedIn IS NOT NULL
+
+  UNION ALL
+
+  -- =========================================================================
+  -- REDDIT
+  -- =========================================================================
+  SELECT
+    CAST(Date AS DATE) AS date,
+    'reddit' AS platform_id,
+    Campaign_ID__Reddit AS campaign_id,
+    Campaign_Name__Reddit AS campaign_name,
+    Ad_Group_ID__Reddit AS ad_set_id,
+    Ad_Group_Name__Reddit AS ad_set_name,
+    Ad_ID__Reddit AS ad_id,
+    Ad_Name__Reddit AS ad_name,
+    Account_ID__Reddit AS account_id,
+    Account_Name__Reddit AS account_name,
+    CAST(Cost__Reddit AS NUMERIC) AS spend,
+    CAST(Impressions__Reddit AS INT64) AS impressions,
+    CAST(Clicks__Reddit AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS reach,
+    CAST(NULL AS FLOAT64) AS frequency,
+    CAST(Video_Starts__Reddit AS INT64) AS video_views,
+    CAST(Video_Watches_100__Reddit AS INT64) AS video_completions,
+    CAST(Key_Conversion_Total_Count__Reddit AS NUMERIC) AS conversions,
+    CAST(NULL AS INT64) AS engagements
+  FROM
+    `point-blank-ada.core_funnel_export.funnel_data`
+  WHERE
+    Date IS NOT NULL
+    AND Campaign_ID__Reddit IS NOT NULL
+    AND Campaign_Name__Reddit IS NOT NULL
+    AND Ad_ID__Reddit IS NOT NULL
+
+  UNION ALL
+
+  -- =========================================================================
+  -- PINTEREST
+  -- =========================================================================
+  SELECT
+    CAST(Date AS DATE) AS date,
+    'pinterest' AS platform_id,
+    Campaign_ID__Pinterest AS campaign_id,
+    Campaign_Name__Pinterest AS campaign_name,
+    Ad_Group_ID__Pinterest AS ad_set_id,
+    Ad_Group_Name__Pinterest AS ad_set_name,
+    Pin_ID__Pinterest AS ad_id,
+    CAST(NULL AS STRING) AS ad_name,
+    Advertiser_ID__Pinterest AS account_id,
+    Advertiser_Name__Pinterest AS account_name,
+    CAST(Spend__Pinterest AS NUMERIC) AS spend,
+    CAST(Paid_impressions__Pinterest AS INT64) AS impressions,
+    CAST(Paid_Outbound_Clicks__Pinterest AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS reach,
+    CAST(NULL AS FLOAT64) AS frequency,
+    CAST(Paid_video_views__Pinterest AS INT64) AS video_views,
+    CAST(Paid_video_watched_at_100__Pinterest AS INT64) AS video_completions,
+    CAST(Conversions__Pinterest AS NUMERIC) AS conversions,
+    CAST(Paid_engagements__Pinterest AS INT64) AS engagements
+  FROM
+    `point-blank-ada.core_funnel_export.funnel_data`
+  WHERE
+    Date IS NOT NULL
+    AND Campaign_ID__Pinterest IS NOT NULL
+    AND Campaign_Name__Pinterest IS NOT NULL
+    AND Pin_ID__Pinterest IS NOT NULL
 ),
 
 enriched_data AS (

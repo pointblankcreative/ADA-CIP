@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -31,6 +31,8 @@ PLATFORM_NAMES = {
     "tiktok": "TikTok",
     "snapchat": "Snapchat",
     "perion": "Perion DOOH",
+    "reddit": "Reddit",
+    "pinterest": "Pinterest",
 }
 
 
@@ -52,8 +54,13 @@ async def get_performance(
     project_code: str,
     start_date: str | None = Query(None, description="YYYY-MM-DD"),
     end_date: str | None = Query(None, description="YYYY-MM-DD"),
+    days: int | None = Query(None, description="Shorthand: last N days"),
     platform: str | None = Query(None, description="Filter to single platform_id"),
 ):
+    if days and not start_date:
+        end_date = end_date or date.today().isoformat()
+        start_date = (date.fromisoformat(end_date) - timedelta(days=days)).isoformat()
+
     date_clause, date_params = _date_filter(start_date, end_date)
     platform_clause = "AND f.platform_id = @platform" if platform else ""
     base_params = [bq.string_param("project_code", project_code)] + date_params

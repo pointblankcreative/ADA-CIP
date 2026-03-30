@@ -38,6 +38,8 @@ const PLATFORM_COLORS: Record<string, string> = {
   tiktok: "#f43f5e",
   snapchat: "#eab308",
   perion: "#f97316",
+  reddit: "#ff4500",
+  pinterest: "#e60023",
 };
 
 export function PerformanceTab({ code }: { code: string }) {

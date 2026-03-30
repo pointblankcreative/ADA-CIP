@@ -9,6 +9,8 @@ import {
   TrendingUp,
   AlertTriangle,
   RefreshCw,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { api, type Project } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
@@ -26,6 +28,7 @@ export default function OverviewPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCompleted, setShowCompleted] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -47,8 +50,11 @@ export default function OverviewPage() {
   const activeProjects = projects.filter(
     (p) => p.status === "active" && p.days_remaining >= 0
   );
-  const totalBudget = projects.reduce((s, p) => s + (p.net_budget ?? 0), 0);
-  const totalSpend = projects.reduce((s, p) => s + (p.total_spend ?? 0), 0);
+  const completedProjects = projects.filter(
+    (p) => p.status !== "active" || p.days_remaining < 0
+  );
+  const totalBudget = activeProjects.reduce((s, p) => s + (p.net_budget ?? 0), 0);
+  const totalSpend = activeProjects.reduce((s, p) => s + (p.total_spend ?? 0), 0);
 
   return (
     <div className="p-6 lg:p-8">
@@ -111,10 +117,10 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {/* Project cards */}
+      {/* Active project cards */}
       <div className="mt-8">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-          Projects
+          Active Campaigns
         </h2>
         <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
           {loading
@@ -125,11 +131,35 @@ export default function OverviewPage() {
                   <div className="mt-4 h-2 w-full rounded bg-slate-700" />
                 </Card>
               ))
-            : projects.map((p) => (
-                <ProjectCard key={p.project_code} project={p} />
-              ))}
+            : activeProjects.length === 0
+              ? <p className="text-sm text-slate-500 col-span-full">No active campaigns.</p>
+              : activeProjects.map((p) => (
+                  <ProjectCard key={p.project_code} project={p} />
+                ))}
         </div>
       </div>
+
+      {/* Completed campaigns */}
+      {!loading && completedProjects.length > 0 && (
+        <div className="mt-8">
+          <button
+            onClick={() => setShowCompleted(!showCompleted)}
+            className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            Completed Campaigns ({completedProjects.length})
+            {showCompleted
+              ? <ChevronUp className="h-4 w-4" />
+              : <ChevronDown className="h-4 w-4" />}
+          </button>
+          {showCompleted && (
+            <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+              {completedProjects.map((p) => (
+                <ProjectCard key={p.project_code} project={p} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -150,6 +180,7 @@ function ProjectCard({ project: p }: { project: Project }) {
               </span>
               <PacingBadge
                 percentage={p.pacing_percentage}
+                totalSpend={p.total_spend}
                 size="sm"
               />
             </div>

@@ -444,9 +444,9 @@ All four tasks are done when:
 
 ---
 
-## HOTFIX: Duplicate Rows + MERGE Key Bug (do this BEFORE any other work)
+## HOTFIX: Duplicate Rows + MERGE Key Bug — RESOLVED (2026-03-30)
 
-The `fact_digital_daily` table has ~2x the rows it should due to a MERGE key bug. Every spend number in the dashboard is inflated. This is the highest priority fix.
+This has been fixed. Transform SQL now filters to ad-level source rows only, maps creative IDs, and uses COALESCE in MERGE key. Table was truncated and backfilled: 315K → 102K rows.
 
 ### Root cause — Funnel.io multi-source architecture
 
@@ -569,6 +569,311 @@ Also cross-check spend totals against platform UIs for at least 2 projects.
 LinkedIn spend in CIP may still not match the LinkedIn UI exactly. Funnel.io may pass through local currency (CAD) values. After the backfill, compare CIP totals against platform UIs. If they still don't match:
 - Check: `SELECT column_name FROM core_funnel_export.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'funnel_data' AND LOWER(column_name) LIKE '%currency%'`
 - If Funnel.io provides currency, add a `currency` column to `fact_digital_daily` and store the original currency alongside the spend value
+
+---
+
+## SPRINT TASK LIST — Work through these in order. Do not stop between tasks unless something breaks.
+
+### Task 15: Add Reddit + Pinterest to Transform SQL
+
+Add two new platform sections to both `transform_funnel_to_unified.sql` and `transform_funnel_to_unified_full_history.sql`. Follow the exact pattern of the existing platform sections. Use `AND Spend__<Platform> IS NOT NULL` to filter out reach/frequency-only source rows (same pattern used for all other platforms after the hotfix).
+
+#### Reddit
+```sql
+UNION ALL
+
+-- =========================================================================
+-- REDDIT
+-- =========================================================================
+SELECT
+  CAST(Date AS DATE) AS date,
+  'reddit' AS platform_id,
+  Campaign_ID__Reddit AS campaign_id,
+  Campaign_Name__Reddit AS campaign_name,
+  Ad_Group_ID__Reddit AS ad_set_id,
+  Ad_Group_Name__Reddit AS ad_set_name,
+  Ad_ID__Reddit AS ad_id,
+  Ad_Name__Reddit AS ad_name,
+  Account_ID__Reddit AS account_id,
+  Account_Name__Reddit AS account_name,
+  CAST(Cost__Reddit AS NUMERIC) AS spend,
+  CAST(Impressions__Reddit AS INT64) AS impressions,
+  CAST(Clicks__Reddit AS INT64) AS clicks,
+  CAST(NULL AS INT64) AS reach,
+  CAST(NULL AS FLOAT64) AS frequency,
+  CAST(Video_Starts__Reddit AS INT64) AS video_views,
+  CAST(Video_Watches_100__Reddit AS INT64) AS video_completions,
+  CAST(Key_Conversion_Total_Count__Reddit AS NUMERIC) AS conversions,
+  CAST(NULL AS INT64) AS engagements
+FROM
+  `point-blank-ada.core_funnel_export.funnel_data`
+WHERE
+  Date IS NOT NULL
+  AND Campaign_ID__Reddit IS NOT NULL
+  AND Campaign_Name__Reddit IS NOT NULL
+  AND Ad_ID__Reddit IS NOT NULL
+```
+
+#### Pinterest
+Pinterest uses `Pin_ID__Pinterest` as the ad-level identifier (not `Ad_ID`). It has no `Clicks__Pinterest` — use `Paid_Outbound_Clicks__Pinterest` instead. No dedicated `Ad_Name` column exists.
+
+```sql
+UNION ALL
+
+-- =========================================================================
+-- PINTEREST
+-- =========================================================================
+SELECT
+  CAST(Date AS DATE) AS date,
+  'pinterest' AS platform_id,
+  Campaign_ID__Pinterest AS campaign_id,
+  Campaign_Name__Pinterest AS campaign_name,
+  Ad_Group_ID__Pinterest AS ad_set_id,
+  Ad_Group_Name__Pinterest AS ad_set_name,
+  Pin_ID__Pinterest AS ad_id,
+  CAST(NULL AS STRING) AS ad_name,
+  Advertiser_ID__Pinterest AS account_id,
+  Advertiser_Name__Pinterest AS account_name,
+  CAST(Spend__Pinterest AS NUMERIC) AS spend,
+  CAST(Paid_impressions__Pinterest AS INT64) AS impressions,
+  CAST(Paid_Outbound_Clicks__Pinterest AS INT64) AS clicks,
+  CAST(NULL AS INT64) AS reach,
+  CAST(NULL AS FLOAT64) AS frequency,
+  CAST(Paid_video_views__Pinterest AS INT64) AS video_views,
+  CAST(Paid_video_watched_at_100__Pinterest AS INT64) AS video_completions,
+  CAST(Conversions__Pinterest AS NUMERIC) AS conversions,
+  CAST(Paid_engagements__Pinterest AS INT64) AS engagements
+FROM
+  `point-blank-ada.core_funnel_export.funnel_data`
+WHERE
+  Date IS NOT NULL
+  AND Campaign_ID__Pinterest IS NOT NULL
+  AND Campaign_Name__Pinterest IS NOT NULL
+  AND Pin_ID__Pinterest IS NOT NULL
+```
+
+After adding both platform sections to both SQL files, truncate and re-run full history backfill:
+```bash
+python -m ingestion.transformation.run --full-history
+```
+
+Verify:
+```sql
+SELECT platform_id, COUNT(*) as rows, SUM(spend) as total_spend
+FROM `point-blank-ada.cip.fact_digital_daily`
+WHERE platform_id IN ('reddit', 'pinterest')
+GROUP BY platform_id
+```
+
+Expected: reddit ~633 rows with spend, pinterest ~165 rows with spend.
+
+---
+
+### Task 16: Update Cloud Scheduler to Twice Daily
+
+The Funnel.io → BigQuery sync now runs at 2 AM and 2 PM PT. Update the CIP pipeline scheduler to run at 2:30 AM and 2:30 PM PT to pick up data shortly after each sync.
+
+2:30 AM PT = 5:30 AM ET. 2:30 PM PT = 5:30 PM ET.
+
+Update or replace the existing Cloud Scheduler job:
+```bash
+# Delete the old single daily job
+gcloud scheduler jobs delete cip-daily-run \
+  --project=point-blank-ada \
+  --location=northamerica-northeast1 \
+  --quiet
+
+# Create morning run
+gcloud scheduler jobs create http cip-morning-run \
+  --project=point-blank-ada \
+  --location=northamerica-northeast1 \
+  --schedule="30 5 * * *" \
+  --time-zone="America/Toronto" \
+  --uri="https://cip-backend-807520113440.northamerica-northeast1.run.app/api/admin/daily-run" \
+  --http-method=POST \
+  --oidc-service-account-email=cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com
+
+# Create afternoon run
+gcloud scheduler jobs create http cip-afternoon-run \
+  --project=point-blank-ada \
+  --location=northamerica-northeast1 \
+  --schedule="30 17 * * *" \
+  --time-zone="America/Toronto" \
+  --uri="https://cip-backend-807520113440.northamerica-northeast1.run.app/api/admin/daily-run" \
+  --http-method=POST \
+  --oidc-service-account-email=cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com
+```
+
+Also update `infrastructure/deploy.sh` to reflect the new schedule (replace the single scheduler section with two jobs).
+
+---
+
+### Task 17: Fix Deployment Configuration
+
+Several issues were hit during the first manual deploy. Fix these so future deploys (manual or CI/CD) work cleanly:
+
+1. **Backend Dockerfile** — Already correct (`PORT=8000`, uvicorn on 8000). But `deploy.sh` does not pass `--port=8000` to `gcloud run deploy`. Add `--port=8000` to the backend deploy command.
+
+2. **Frontend Dockerfile** — Already correct (`PORT=3000`, node server.js). But `deploy.sh` does not pass `--port=3000` to the frontend deploy command. Add `--port=3000`.
+
+3. **CORS format** — `deploy.sh` line 184 sets `CORS_ORIGINS=${FRONTEND_URL}` as a plain string, but `backend/config.py` has `cors_origins: list[str]` which Pydantic parses as JSON. Change to: `CORS_ORIGINS=["${FRONTEND_URL}"]`
+
+4. **Frontend build-arg** — `deploy.sh` uses `--build-arg=NEXT_PUBLIC_API_URL=...` which `gcloud builds submit` doesn't support. Replace the frontend build command to use the `cloudbuild.yaml`:
+```bash
+gcloud builds submit \
+  --project="${PROJECT_ID}" \
+  --config=frontend/cloudbuild.yaml \
+  --substitutions=_NEXT_PUBLIC_API_URL=${BACKEND_URL},_IMAGE_TAG=${FRONTEND_IMAGE} \
+  ./frontend
+```
+
+5. **GitHub Actions workflow** — Same CORS issue exists in `.github/workflows/deploy.yml` line 151. Change `CORS_ORIGINS=${FRONTEND_URL}` to `CORS_ORIGINS=["${FRONTEND_URL}"]`. Also add `--port=8000` to the backend deploy step and `--port=3000` to the frontend deploy step.
+
+---
+
+### Task 18: Redeploy to Production
+
+After Tasks 15-17, redeploy both backend and frontend to get the hotfix code, UI improvements, new platforms, and config fixes live.
+
+**Backend:** Rebuild and deploy (the image needs to include the updated transform SQL):
+```bash
+gcloud builds submit --project=point-blank-ada --tag=gcr.io/point-blank-ada/cip-backend --timeout=600
+gcloud run deploy cip-backend \
+  --project=point-blank-ada \
+  --image=gcr.io/point-blank-ada/cip-backend \
+  --region=northamerica-northeast1 \
+  --platform=managed \
+  --port=8000 \
+  --service-account=cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com \
+  --set-env-vars='GOOGLE_CLOUD_PROJECT=point-blank-ada,GCP_PROJECT_ID=point-blank-ada,GCP_REGION=northamerica-northeast1,BIGQUERY_DATASET=cip,SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json,APP_ENV=production' \
+  --update-secrets='/secrets/cip-sheets-reader.json=cip-sheets-reader-key:latest,SLACK_BOT_TOKEN=cip-slack-bot-token:latest' \
+  --memory=1Gi --cpu=1 --timeout=300 --min-instances=0 --max-instances=5 \
+  --allow-unauthenticated
+```
+
+**Frontend:** Rebuild with the backend URL and deploy:
+```bash
+gcloud builds submit \
+  --project=point-blank-ada \
+  --config=frontend/cloudbuild.yaml \
+  --substitutions=_NEXT_PUBLIC_API_URL=https://cip-backend-807520113440.northamerica-northeast1.run.app,_IMAGE_TAG=gcr.io/point-blank-ada/cip-frontend \
+  ./frontend
+gcloud run deploy cip-frontend \
+  --project=point-blank-ada \
+  --image=gcr.io/point-blank-ada/cip-frontend \
+  --region=northamerica-northeast1 \
+  --platform=managed \
+  --port=3000 \
+  --set-env-vars=NODE_ENV=production \
+  --memory=512Mi --cpu=1 --timeout=60 --min-instances=0 --max-instances=3 \
+  --allow-unauthenticated
+```
+
+**Update CORS:**
+```bash
+gcloud run services update cip-backend \
+  --project=point-blank-ada \
+  --region=northamerica-northeast1 \
+  --port=8000 \
+  --update-env-vars='CORS_ORIGINS=["https://cip-frontend-807520113440.northamerica-northeast1.run.app"],FRONTEND_URL=https://cip-frontend-807520113440.northamerica-northeast1.run.app'
+```
+
+**Verify:**
+- `curl https://cip-backend-807520113440.northamerica-northeast1.run.app/health` returns 200
+- `curl https://cip-backend-807520113440.northamerica-northeast1.run.app/api/projects/` returns projects
+- Frontend loads at `https://cip-frontend-807520113440.northamerica-northeast1.run.app`
+- Reddit and Pinterest data visible in the dashboard
+
+---
+
+### Completion Criteria (Tasks 15-18)
+- Reddit and Pinterest rows appear in `fact_digital_daily` with correct spend
+- Cloud Scheduler has two jobs: 5:30 AM ET and 5:30 PM ET
+- `deploy.sh` and GitHub Actions workflow have correct port, CORS, and build-arg config
+- Both backend and frontend are redeployed with all fixes live
+
+---
+
+### Task 19: Bug Fixes — Overview, Project Detail, Performance, Campaign Filtering
+
+Four bugs to fix. Work through all four before redeploying.
+
+#### Bug 1: "No Data" badges on all campaign cards in overview
+
+**Files:** `frontend/src/components/pacing-badge.tsx`, `frontend/src/app/page.tsx`
+
+The PacingBadge shows "No Data" when `pacing_percentage` is null. This happens when the pacing engine hasn't run yet, OR when a project has data but no budget_tracking rows. Fix:
+- When `pacing_percentage` is null but the project HAS spend data (`total_spend > 0`), show "Pacing Pending" (or similar) in a neutral colour instead of "No Data"
+- When `pacing_percentage` is null AND `total_spend == 0`, show "No Data"
+- When `pacing_percentage` is a number, show the actual pacing badge as designed
+
+#### Bug 2: "Unknown Project" name in project detail view
+
+**File:** `frontend/src/app/project/[code]/page.tsx`
+
+The project name displays "Unknown Project" as fallback when `project_name` is null. For auto-discovered projects that haven't been provisioned via /admin, the name in `dim_projects` may not exist. Fix:
+- Change the fallback from `"Unknown Project"` to `Project ${code}` so users at least see the project code
+- If the project was auto-discovered (exists in fact_digital_daily but not in dim_projects), use the ad_set_name or campaign group name from the data as the display name
+
+#### Bug 3: 7d/14d/30d/all date range controls in Performance tab don't work
+
+**Files:** `backend/routers/performance.py`, `frontend/src/app/project/[code]/performance-tab.tsx`
+
+The frontend sends `?days=7` (or 14, 30, 365) to the performance endpoint, but the backend only reads `start_date` and `end_date` query parameters. The `days` parameter is never converted into a date range, so all data is returned regardless of button selection. Fix in the backend:
+
+```python
+@router.get("/{project_code}")
+async def get_performance(
+    project_code: str,
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    days: int | None = Query(None),
+    platform: str | None = Query(None),
+):
+    if days and not start_date:
+        from datetime import date as d, timedelta
+        end_date = end_date or d.today().isoformat()
+        start_date = (d.fromisoformat(end_date) - timedelta(days=days)).isoformat()
+    # ... rest of existing function using start_date/end_date
+```
+
+#### Bug 4: Completed/ended campaigns still showing in Campaign Overview
+
+**File:** `frontend/src/app/page.tsx`
+
+The overview page calculates `activeProjects` (filtered by `status === "active"` and `days_remaining >= 0`) for the KPI summary, but the project card grid renders ALL projects. The grid should only show active projects. Fix:
+- Change the project card map to use `activeProjects` instead of `projects`
+- Add a "Show completed" toggle or a separate "Completed Campaigns" section below the active grid so users can still access historical projects if needed
+
+**IMPORTANT context on BCGEU (25013):** This project has been inactive since December 2025 (Christmas). It should NOT appear in the active campaign grid. However, its `end_date` in `dim_projects` is currently `2026-03-31` and `status` is `active` — both are wrong. The end_date in the system may not always reflect reality (clients stop running ads before the booked end date).
+
+**Backend fix (in `daily_job.py`, run before pacing):**
+1. Auto-complete: `UPDATE dim_projects SET status = 'completed' WHERE end_date < CURRENT_DATE() AND status = 'active'` — catches any project whose booked end_date has passed
+2. Stale detection: Also mark as `completed` any project that has had NO spend data in BigQuery for the last 30 days AND whose `status` is still `active`. This catches cases like BCGEU where the campaign stopped running well before the booked end_date. Use a query like:
+   ```sql
+   UPDATE dim_projects p
+   SET status = 'completed'
+   WHERE p.status = 'active'
+   AND p.project_code NOT IN (
+     SELECT DISTINCT project_code FROM fact_digital_daily
+     WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+     AND spend > 0
+   )
+   ```
+3. For the immediate fix: manually UPDATE both BCGEU projects to `status = 'completed'`:
+   - 25013 (BCGEU Bargaining Escalation) — last spend 2025-10-27, set `end_date = '2025-10-31'`
+   - 25001 (BCGEU General Membership) — last spend 2025-10-20, set `end_date = '2025-10-31'`
+
+---
+
+### Completion Criteria (Task 19)
+- Campaign overview only shows active, in-flight campaigns by default
+- A "Show completed" toggle or separate section exists for viewing historical campaigns
+- Project detail page shows the project name (or project code as fallback), never "Unknown Project"
+- Date range buttons in Performance tab filter the data correctly
+- Pacing badges show meaningful status, not "No Data" when spend data exists
+- Daily pipeline auto-marks projects as `completed` when end_date has passed OR no spend in 30 days
+- Both BCGEU projects (25013 and 25001) are immediately set to `completed` with corrected end_dates
 
 ---
 

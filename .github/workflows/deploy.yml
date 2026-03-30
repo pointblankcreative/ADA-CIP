@@ -65,6 +65,7 @@ jobs:
             --image="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.backend_service }}" \
             --region="${{ env.REGION }}" \
             --platform=managed \
+            --port=8000 \
             --service-account="${{ env.SA_EMAIL }}" \
             --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},BIGQUERY_DATASET=cip,SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json,APP_ENV=${{ needs.determine-environment.outputs.environment }}" \
             --update-secrets="/secrets/cip-sheets-reader.json=cip-sheets-reader-key:latest,SLACK_BOT_TOKEN=cip-slack-bot-token:latest" \
@@ -115,12 +116,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Build and push frontend image
-        working-directory: frontend
         run: |
+          BACKEND_URL=${{ needs.deploy-backend.outputs.backend_url }}
+          FRONTEND_IMAGE="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.frontend_service }}"
           gcloud builds submit \
             --project="${{ env.PROJECT_ID }}" \
-            --tag="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.frontend_service }}" \
-            --timeout=600
+            --config=frontend/cloudbuild.yaml \
+            --substitutions=_NEXT_PUBLIC_API_URL=${BACKEND_URL},_IMAGE_TAG=${FRONTEND_IMAGE} \
+            --timeout=600 \
+            ./frontend
 
       - name: Deploy frontend to Cloud Run
         run: |
@@ -129,6 +133,7 @@ jobs:
             --image="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.frontend_service }}" \
             --region="${{ env.REGION }}" \
             --platform=managed \
+            --port=3000 \
             --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ needs.deploy-backend.outputs.backend_url }}" \
             --memory=512Mi \
             --cpu=1 \
@@ -148,7 +153,7 @@ jobs:
           gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
-            --update-env-vars="CORS_ORIGINS=${FRONTEND_URL},FRONTEND_URL=${FRONTEND_URL}"
+            --update-env-vars='CORS_ORIGINS=["'"${FRONTEND_URL}"'"],FRONTEND_URL='"${FRONTEND_URL}"''
 
       - name: Health check
         run: |
