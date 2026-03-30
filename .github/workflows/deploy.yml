@@ -1,0 +1,161 @@
+name: Deploy CIP
+
+on:
+  push:
+    branches:
+      - main
+      - production
+
+env:
+  PROJECT_ID: point-blank-ada
+  REGION: northamerica-northeast1
+  BACKEND_SERVICE: cip-backend
+  FRONTEND_SERVICE: cip-frontend
+  SA_EMAIL: cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com
+
+jobs:
+  determine-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      backend_service: ${{ steps.env.outputs.backend_service }}
+      frontend_service: ${{ steps.env.outputs.frontend_service }}
+    steps:
+      - id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/production" ]]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "backend_service=cip-backend" >> "$GITHUB_OUTPUT"
+            echo "frontend_service=cip-frontend" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=staging" >> "$GITHUB_OUTPUT"
+            echo "backend_service=cip-backend-staging" >> "$GITHUB_OUTPUT"
+            echo "frontend_service=cip-frontend-staging" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-backend:
+    needs: determine-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine-environment.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push backend image
+        run: |
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --tag="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.backend_service }}" \
+            --timeout=600
+
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy ${{ needs.determine-environment.outputs.backend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --image="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.backend_service }}" \
+            --region="${{ env.REGION }}" \
+            --platform=managed \
+            --service-account="${{ env.SA_EMAIL }}" \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},BIGQUERY_DATASET=cip,SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json,APP_ENV=${{ needs.determine-environment.outputs.environment }}" \
+            --update-secrets="/secrets/cip-sheets-reader.json=cip-sheets-reader-key:latest,SLACK_BOT_TOKEN=cip-slack-bot-token:latest" \
+            --memory=1Gi \
+            --cpu=1 \
+            --timeout=300 \
+            --min-instances=0 \
+            --max-instances=5 \
+            --allow-unauthenticated
+
+      - name: Get backend URL
+        id: backend_url
+        run: |
+          URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.backend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --format='value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Health check
+        run: |
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.backend_url.outputs.url }}/health")
+          echo "Health check status: $STATUS"
+          if [[ "$STATUS" != "200" ]]; then
+            echo "::warning::Backend health check returned $STATUS"
+          fi
+
+    outputs:
+      backend_url: ${{ steps.backend_url.outputs.url }}
+
+  deploy-frontend:
+    needs: [determine-environment, deploy-backend]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine-environment.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push frontend image
+        working-directory: frontend
+        run: |
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --tag="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.frontend_service }}" \
+            --timeout=600
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy ${{ needs.determine-environment.outputs.frontend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --image="gcr.io/${{ env.PROJECT_ID }}/${{ needs.determine-environment.outputs.frontend_service }}" \
+            --region="${{ env.REGION }}" \
+            --platform=managed \
+            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ needs.deploy-backend.outputs.backend_url }}" \
+            --memory=512Mi \
+            --cpu=1 \
+            --timeout=60 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --allow-unauthenticated
+
+      - name: Get frontend URL and update CORS
+        run: |
+          FRONTEND_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --format='value(status.url)')
+          echo "Frontend: $FRONTEND_URL"
+
+          gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --update-env-vars="CORS_ORIGINS=${FRONTEND_URL},FRONTEND_URL=${FRONTEND_URL}"
+
+      - name: Health check
+        run: |
+          FRONTEND_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --format='value(status.url)')
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL")
+          echo "Frontend health check: $STATUS"

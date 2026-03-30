@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+node_modules
+.next
+frontend/node_modules
+frontend/.next
+infrastructure/secrets/
+*.pyc
+.env
+.env.local
+*.log
+.DS_Store
+agent-transcripts/

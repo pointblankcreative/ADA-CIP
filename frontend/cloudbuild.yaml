@@ -1,0 +1,16 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_API_URL=${_NEXT_PUBLIC_API_URL}'
+      - '-t'
+      - '${_IMAGE_TAG}'
+      - '.'
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_IMAGE_TAG}']
+images:
+  - '${_IMAGE_TAG}'
+substitutions:
+  _NEXT_PUBLIC_API_URL: 'http://localhost:8000'
+  _IMAGE_TAG: 'gcr.io/point-blank-ada/cip-frontend'
