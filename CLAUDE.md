@@ -849,20 +849,8 @@ The overview page calculates `activeProjects` (filtered by `status === "active"`
 
 **Backend fix (in `daily_job.py`, run before pacing):**
 1. Auto-complete: `UPDATE dim_projects SET status = 'completed' WHERE end_date < CURRENT_DATE() AND status = 'active'` — catches any project whose booked end_date has passed
-2. Stale detection: Also mark as `completed` any project that has had NO spend data in BigQuery for the last 30 days AND whose `status` is still `active`. This catches cases like BCGEU where the campaign stopped running well before the booked end_date. Use a query like:
-   ```sql
-   UPDATE dim_projects p
-   SET status = 'completed'
-   WHERE p.status = 'active'
-   AND p.project_code NOT IN (
-     SELECT DISTINCT project_code FROM fact_digital_daily
-     WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-     AND spend > 0
-   )
-   ```
-3. For the immediate fix: manually UPDATE both BCGEU projects to `status = 'completed'`:
-   - 25013 (BCGEU Bargaining Escalation) — last spend 2025-10-27, set `end_date = '2025-10-31'`
-   - 25001 (BCGEU General Membership) — last spend 2025-10-20, set `end_date = '2025-10-31'`
+2. **DO NOT use stale/no-spend detection.** The previous 30-day stale detection logic was too aggressive — it incorrectly marked active campaigns as completed when they had pauses in spending. Only use end_date to auto-complete. If a campaign stops spending before its end_date, the team will manually mark it completed via the admin UI.
+3. **If stale detection already exists in the code, REMOVE IT.** Only the end_date check should remain.
 
 ---
 
@@ -872,14 +860,43 @@ The overview page calculates `activeProjects` (filtered by `status === "active"`
 - Project detail page shows the project name (or project code as fallback), never "Unknown Project"
 - Date range buttons in Performance tab filter the data correctly
 - Pacing badges show meaningful status, not "No Data" when spend data exists
-- Daily pipeline auto-marks projects as `completed` when end_date has passed OR no spend in 30 days
-- Both BCGEU projects (25013 and 25001) are immediately set to `completed` with corrected end_dates
+- Daily pipeline auto-marks projects as `completed` ONLY when end_date has passed (no stale/no-spend detection — too aggressive)
+- Project statuses and end_dates are correct in dim_projects
 
 ---
 
-## PHASE 2 — UI Enhancements + CI/CD (not started)
+### Task 20: Media Plan Sync Fixes
 
-Phase 2 focuses on two tracks: additional frontend/UI work, and setting up proper CI/CD so code flows through staging → prod via GitHub.
+The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo (25055) media plan. Three issues:
+
+1. **Template/example tabs**: The sheet has a "Blocking Chart Example" tab that the parser picks up first (it matches `"blocking" in title and "chart" in title`). Fix: skip tabs with "example" or "template" in the name, or prefer tabs without those words.
+
+2. **Multi-flight plans**: The sheet has "Media Plan Flight ONE" and "Media Plan Flight TWO" — two separate flight tabs. The parser only processes one `media_plan_ws` (whichever it finds last). Fix: collect ALL tabs matching "media plan" and merge their lines.
+
+3. **Offset metadata rows**: The blocking chart has 2 empty rows before the metadata starts (row 3 = Client, row 4 = Project, row 5 = Run Dates). The parser likely expects metadata starting at row 1. Fix: scan for the metadata labels rather than assuming fixed row positions.
+
+4. **Missing platforms in PLATFORM_MAP**: Pinterest and Reddit are not in the platform normalisation map. Add:
+   ```python
+   "pinterest": "pinterest",
+   "reddit": "reddit",
+   ```
+
+5. **CORS dual-URL fix**: The deploy workflow (`deploy.yml`) has already been updated locally to include both Cloud Run URL formats in CORS. Commit this change.
+
+6. **Stale detection removal**: If `_auto_complete_projects()` in `daily_job.py` contains the 30-day no-spend detection query, REMOVE it entirely. Only keep the `end_date < CURRENT_DATE()` check.
+
+### Completion Criteria (Task 20)
+- Media plan sync works for sheets with template/example tabs (skips them)
+- Multi-flight media plans have all flight lines synced
+- Pinterest and Reddit are in the PLATFORM_MAP
+- deploy.yml includes both Cloud Run URL formats in CORS
+- Auto-complete only uses end_date, no stale detection
+
+---
+
+## PHASE 2 — UI Enhancements (not started)
+
+Phase 2 focuses on additional frontend/UI work. CI/CD is now live (completed in Phase 1).
 
 ### UI improvements (from initial user testing 2026-03-29)
 - **Unprovisioned project prompt**: When a user clicks on an auto-discovered project (one that appeared from data but hasn't been formally provisioned via /admin/projects/new), the project detail page should show a prominent call-to-action prompting the user to set it up — e.g. "This campaign was detected automatically. Set up project details to enable pacing alerts and media plan tracking." with a button linking to the project creation form pre-filled with the project code.

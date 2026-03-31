@@ -102,13 +102,12 @@ def _write_stale_alerts(stale_platforms: list[dict]) -> int:
 
 
 def _auto_complete_projects() -> dict:
-    """Mark projects as completed if end_date has passed or no spend in 30 days."""
+    """Mark projects as completed when their booked end_date has passed."""
     from backend.config import settings
     dataset = f"{settings.gcp_project_id}.{settings.bigquery_dataset}"
     client = bq.get_client()
-    results = {"expired": 0, "stale": 0}
+    results = {"expired": 0}
 
-    # 1. End-date expired
     expired_sql = f"""
         UPDATE `{dataset}.dim_projects`
         SET status = 'completed'
@@ -121,26 +120,6 @@ def _auto_complete_projects() -> dict:
         logger.info("  Auto-complete (expired): %d projects", results["expired"])
     except Exception:
         logger.warning("Auto-complete (expired) query failed", exc_info=True)
-
-    # 2. No spend in 30 days
-    stale_sql = f"""
-        UPDATE `{dataset}.dim_projects` p
-        SET status = 'completed'
-        WHERE p.status = 'active'
-        AND p.project_code NOT IN (
-            SELECT DISTINCT project_code FROM `{dataset}.fact_digital_daily`
-            WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-            AND spend > 0
-            AND project_code IS NOT NULL
-        )
-    """
-    try:
-        job = client.query(stale_sql)
-        job.result()
-        results["stale"] = job.num_dml_affected_rows or 0
-        logger.info("  Auto-complete (stale 30d): %d projects", results["stale"])
-    except Exception:
-        logger.warning("Auto-complete (stale) query failed", exc_info=True)
 
     return results
 
@@ -166,7 +145,6 @@ def run_daily_pipeline() -> dict:
         results["stages"]["auto_complete"] = {
             "status": "success",
             "expired": ac_result.get("expired", 0),
-            "stale": ac_result.get("stale", 0),
             "elapsed_seconds": round(time.time() - t0, 1),
         }
     except Exception as e:

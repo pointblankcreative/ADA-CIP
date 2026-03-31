@@ -38,6 +38,8 @@ PLATFORM_MAP = {
     "perion": "perion",
     "hivestack": "perion",
     "dooh": "perion",
+    "pinterest": "pinterest",
+    "reddit": "reddit",
 }
 
 
@@ -126,7 +128,7 @@ def _mtl_client() -> bigquery.Client:
 
 # ── Generic label finder ────────────────────────────────────────────
 
-def _find_label(data: list[list[str]], label: str, max_row: int = 15) -> tuple[int, int] | None:
+def _find_label(data: list[list[str]], label: str, max_row: int = 20) -> tuple[int, int] | None:
     """Find (row_idx, col_idx) of a cell containing the label text."""
     label_lower = label.lower().strip()
     for r in range(min(max_row, len(data))):
@@ -195,8 +197,9 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
     }
 
     # ── Find header row (contains "Platform") ───────────────────────
+    # Start from row 5 to handle sheets with offset/extra rows at the top
     header_row_idx = None
-    for r in range(8, min(15, len(all_data))):
+    for r in range(5, min(20, len(all_data))):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "platform" in row_text:
             header_row_idx = r
@@ -322,7 +325,7 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
 
     # Find header row by looking for "Site/Network" or "Goal"
     header_row_idx = None
-    for r in range(8, min(15, len(all_data))):
+    for r in range(5, min(20, len(all_data))):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "site/network" in row_text or ("goal" in row_text and "start" in row_text):
             header_row_idx = r
@@ -452,27 +455,35 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     gc = _get_gspread_client()
     ss = gc.open_by_key(sheet_id)
 
-    # Find tabs by name
+    # Find tabs by name, skipping example/template tabs
+    skip_words = {"example", "template", "sample"}
     blocking_ws = None
-    media_plan_ws = None
+    media_plan_tabs: list[gspread.Worksheet] = []
     for ws in ss.worksheets():
         title_lower = ws.title.lower()
+        if any(w in title_lower for w in skip_words):
+            logger.info("  Skipping tab: %s (example/template)", ws.title)
+            continue
         if "blocking" in title_lower and "chart" in title_lower:
             blocking_ws = ws
         elif "media plan" in title_lower or title_lower == "media plan":
-            media_plan_ws = ws
+            media_plan_tabs.append(ws)
 
     if not blocking_ws:
         sheets = ss.worksheets()
         if len(sheets) >= 2:
             blocking_ws = sheets[1]
-            media_plan_ws = sheets[0]
+            if not media_plan_tabs:
+                media_plan_tabs = [sheets[0]]
         else:
             raise ValueError("Could not find Blocking Chart tab")
 
-    # ── Parse both tabs ─────────────────────────────────────────────
+    # ── Parse both tabs (merge all media plan flight tabs) ───────────
     bc = _parse_blocking_chart(blocking_ws)
-    mp_lines = _parse_media_plan_tab(media_plan_ws) if media_plan_ws else []
+    mp_lines: list[dict] = []
+    for mp_ws in media_plan_tabs:
+        logger.info("  Parsing media plan tab: %s", mp_ws.title)
+        mp_lines.extend(_parse_media_plan_tab(mp_ws))
 
     meta = bc["metadata"]
     plan_id = f"plan-{project_code}-{uuid.uuid4().hex[:8]}"

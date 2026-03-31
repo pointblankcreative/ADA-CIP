@@ -144,16 +144,20 @@ jobs:
 
       - name: Get frontend URL and update CORS
         run: |
-          FRONTEND_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
+          # Cloud Run has two URL formats — get both so CORS works regardless of which one is accessed
+          SHORT_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
             --format='value(status.url)')
-          echo "Frontend: $FRONTEND_URL"
+          PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format='value(projectNumber)')
+          LONG_URL="https://${{ needs.determine-environment.outputs.frontend_service }}-${PROJECT_NUMBER}.${{ env.REGION }}.run.app"
+          echo "Short URL: $SHORT_URL"
+          echo "Long URL: $LONG_URL"
 
           gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
-            --update-env-vars='CORS_ORIGINS=["'"${FRONTEND_URL}"'"],FRONTEND_URL='"${FRONTEND_URL}"''
+            --set-env-vars="^##^CORS_ORIGINS=[\"${SHORT_URL}\",\"${LONG_URL}\"]##FRONTEND_URL=${LONG_URL}##GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}##GCP_PROJECT_ID=${{ env.PROJECT_ID }}##GCP_REGION=${{ env.REGION }}##BIGQUERY_DATASET=cip##SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json##APP_ENV=${{ needs.determine-environment.outputs.environment }}"
 
       - name: Health check
         run: |
