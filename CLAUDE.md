@@ -908,6 +908,21 @@ The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo 
 
 ---
 
+## Phase 2 Bugs (from 2026-04-02 staging QA)
+
+7. **Performance tab default too narrow**: `performance-tab.tsx` line 97 defaults to `useState(7)` (last 7 days). When the transformation pipeline hasn't run recently, this window can miss all data. Fix: change default to 30 days, or better yet, default to "All Time" (pass no `days` param) and let the user narrow down.
+
+8. **`objective_format` column doesn't exist**: `backend/routers/performance.py` line 59 queries `SELECT platform_id, objective_format FROM media_plan_lines` but the actual column in BigQuery is just `objective` (see schema.sql line 125). Fix: change `objective_format` → `objective` in `_load_media_plan_objectives()`. The error is caught by try/except so it doesn't crash, but objective classification silently returns empty.
+
+9. **`benchmarks` table was missing**: ✅ FIXED — table created in BigQuery on 2026-04-02. The table is empty though — needs to be populated with benchmark data for the benchmarking feature to work.
+
+### Completion Criteria (Phase 2 Bugs)
+- Performance tab defaults to 30 days or "All Time" instead of 7 days
+- `_load_media_plan_objectives()` queries the correct `objective` column
+- Benchmarks endpoint returns 200 (empty is OK for now, no 500)
+
+---
+
 ## PHASE 2 — Brightwater: Insights Parity + Benchmarking
 
 **Goal:** Users should be able to answer 90% of questions about campaign performance by looking at CIP, without opening the ad platforms themselves. This means upgrading the performance page to show objective-appropriate KPIs, adding GA4 web analytics integration, and building a benchmarking system.

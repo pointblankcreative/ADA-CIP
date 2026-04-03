@@ -1,114 +1,134 @@
 -- ==============================================================================
--- SEED: Industry Benchmarks for Canadian Political/Labour/Issues Advertising
+-- SEED: Industry & Cross-Client Benchmarks
 --
--- Placeholder values — to be refined with Frazer's research data.
--- These cover cross-platform defaults. Platform-specific benchmarks can be
--- added later by inserting additional rows with platform_id set.
+-- Data sources:
+--   Industry: 2025-2026 published benchmarks (WordStream, WebFX, AdAmigo,
+--             Lebesgue) adjusted for Canadian market and political/advocacy vertical
+--   Cross-client: Computed from point-blank-ada.cip.fact_digital_daily on 2026-04-02
+--
+-- Run this script to reset benchmarks to known-good values.
+-- It is idempotent — safe to re-run.
 -- ==============================================================================
 
+-- Clear existing industry + cross-client benchmarks
 DELETE FROM `point-blank-ada.cip.benchmarks`
-WHERE benchmark_type = 'industry' AND source = 'industry_research';
+WHERE benchmark_type IN ('industry', 'cross_client');
 
 INSERT INTO `point-blank-ada.cip.benchmarks`
   (benchmark_id, benchmark_type, scope, objective_type, platform_id, creative_format,
    metric_name, metric_unit, p25, p50, p75, sample_size, source, notes, valid_from, valid_to)
 VALUES
-  -- ── Awareness: cross-platform ──────────────────────────────────
-  ('ind-aw-ctr', 'industry', 'canadian_political', 'awareness', NULL, NULL,
-   'ctr', 'percentage', 0.003, 0.005, 0.008, 150, 'industry_research',
-   'Canadian political/labour awareness campaigns 2024-2026', '2024-01-01', NULL),
 
-  ('ind-aw-cpm', 'industry', 'canadian_political', 'awareness', NULL, NULL,
-   'cpm', 'currency_cad', 8.0, 12.0, 18.0, 150, 'industry_research',
-   'Canadian political/labour awareness campaigns 2024-2026', '2024-01-01', NULL),
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- TIER 1: INDUSTRY BENCHMARKS — Cross-platform defaults
+  -- These are used by the frontend KPI cards (platform_id = NULL)
+  -- ═══════════════════════════════════════════════════════════════════════════
 
-  ('ind-aw-vcr', 'industry', 'canadian_political', 'awareness', NULL, NULL,
-   'vcr', 'percentage', 0.40, 0.55, 0.70, 80, 'industry_research',
-   'Video completion rate for awareness video campaigns', '2024-01-01', NULL),
+  -- Awareness
+  ('ind_xplat_awr_ctr', 'industry', 'canadian_political', 'awareness', NULL, NULL,
+   'ctr', 'percentage', 0.003, 0.005, 0.008, NULL, 'industry_research',
+   'Cross-platform default; based on Meta as primary platform', '2025-01-01', NULL),
+  ('ind_xplat_awr_cpm', 'industry', 'canadian_political', 'awareness', NULL, NULL,
+   'cpm', 'currency_cad', 6.0, 9.0, 14.0, NULL, 'industry_research',
+   'Cross-platform default; Canada CPM ~$14 general, awareness trends lower', '2025-01-01', NULL),
+  ('ind_xplat_awr_cpc', 'industry', 'canadian_political', 'awareness', NULL, NULL,
+   'cpc', 'currency_cad', 1.00, 2.00, 4.00, NULL, 'industry_research',
+   'Awareness CPC higher due to lower CTR', '2025-01-01', NULL),
+  ('ind_xplat_awr_vcr', 'industry', 'canadian_political', 'awareness', NULL, NULL,
+   'vcr', 'percentage', 0.40, 0.55, 0.70, NULL, 'industry_research',
+   'Video completion rate; dedicated video view campaigns', '2025-01-01', NULL),
+  ('ind_xplat_awr_frequency', 'industry', 'canadian_political', 'awareness', NULL, NULL,
+   'frequency', 'ratio', 1.5, 2.5, 4.0, NULL, 'industry_research',
+   'Awareness campaigns aim for higher frequency', '2025-01-01', NULL),
 
-  ('ind-aw-freq', 'industry', 'canadian_political', 'awareness', NULL, NULL,
-   'frequency', 'ratio', 2.5, 4.0, 6.0, 100, 'industry_research',
-   'Average frequency over campaign flight', '2024-01-01', NULL),
+  -- Conversion
+  ('ind_xplat_conv_ctr', 'industry', 'canadian_political', 'conversion', NULL, NULL,
+   'ctr', 'percentage', 0.008, 0.012, 0.020, NULL, 'industry_research',
+   'Conversion campaigns: higher CTR from intent-based targeting', '2025-01-01', NULL),
+  ('ind_xplat_conv_cpm', 'industry', 'canadian_political', 'conversion', NULL, NULL,
+   'cpm', 'currency_cad', 12.0, 18.0, 28.0, NULL, 'industry_research',
+   'Conversion CPM premium vs awareness; Canada-adjusted', '2025-01-01', NULL),
+  ('ind_xplat_conv_cpc', 'industry', 'canadian_political', 'conversion', NULL, NULL,
+   'cpc', 'currency_cad', 0.80, 1.50, 2.50, NULL, 'industry_research',
+   'Traffic/conversion campaigns typically lower CPC', '2025-01-01', NULL),
+  ('ind_xplat_conv_cpa', 'industry', 'canadian_political', 'conversion', NULL, NULL,
+   'cpa', 'currency_cad', 8.0, 20.0, 40.0, NULL, 'industry_research',
+   'Political/advocacy CPA; petition/signup conversions', '2025-01-01', NULL),
+  ('ind_xplat_conv_convrate', 'industry', 'canadian_political', 'conversion', NULL, NULL,
+   'conversion_rate', 'percentage', 0.02, 0.05, 0.10, NULL, 'industry_research',
+   'Landing page conversion rate', '2025-01-01', NULL),
+  ('ind_xplat_conv_frequency', 'industry', 'canadian_political', 'conversion', NULL, NULL,
+   'frequency', 'ratio', 1.0, 1.8, 3.0, NULL, 'industry_research',
+   'Conversion campaigns typically lower frequency', '2025-01-01', NULL),
 
-  -- ── Conversion: cross-platform ─────────────────────────────────
-  ('ind-cv-ctr', 'industry', 'canadian_political', 'conversion', NULL, NULL,
-   'ctr', 'percentage', 0.008, 0.012, 0.020, 120, 'industry_research',
-   'Canadian political/labour conversion campaigns 2024-2026', '2024-01-01', NULL),
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- TIER 1: INDUSTRY BENCHMARKS — Meta-specific
+  -- ═══════════════════════════════════════════════════════════════════════════
 
-  ('ind-cv-cpm', 'industry', 'canadian_political', 'conversion', NULL, NULL,
-   'cpm', 'currency_cad', 10.0, 15.0, 25.0, 120, 'industry_research',
-   'Canadian political/labour conversion campaigns 2024-2026', '2024-01-01', NULL),
+  -- Meta Awareness
+  ('ind_meta_awr_ctr', 'industry', 'canadian_political', 'awareness', 'meta', NULL,
+   'ctr', 'percentage', 0.003, 0.005, 0.008, NULL, 'industry_research',
+   '2025-2026 industry reports adjusted for Canadian political/advocacy', '2025-01-01', NULL),
+  ('ind_meta_awr_cpm', 'industry', 'canadian_political', 'awareness', 'meta', NULL,
+   'cpm', 'currency_cad', 6.0, 9.0, 14.0, NULL, 'industry_research',
+   'Canada CPM ~$14 general; awareness campaigns trend lower', '2025-01-01', NULL),
+  ('ind_meta_awr_cpc', 'industry', 'canadian_political', 'awareness', 'meta', NULL,
+   'cpc', 'currency_cad', 1.00, 2.00, 4.00, NULL, 'industry_research',
+   'Awareness CPC higher due to lower CTR', '2025-01-01', NULL),
+  ('ind_meta_awr_vcr', 'industry', 'canadian_political', 'awareness', 'meta', NULL,
+   'vcr', 'percentage', 0.40, 0.55, 0.70, NULL, 'industry_research',
+   'Video view campaign completions; varies widely by video length', '2025-01-01', NULL),
 
-  ('ind-cv-cpc', 'industry', 'canadian_political', 'conversion', NULL, NULL,
-   'cpc', 'currency_cad', 1.50, 2.50, 4.00, 120, 'industry_research',
-   'Canadian political/labour conversion campaigns 2024-2026', '2024-01-01', NULL),
+  -- Meta Conversion
+  ('ind_meta_conv_ctr', 'industry', 'canadian_political', 'conversion', 'meta', NULL,
+   'ctr', 'percentage', 0.008, 0.012, 0.020, NULL, 'industry_research',
+   'Conversion campaigns: higher CTR due to intent-based targeting', '2025-01-01', NULL),
+  ('ind_meta_conv_cpm', 'industry', 'canadian_political', 'conversion', 'meta', NULL,
+   'cpm', 'currency_cad', 12.0, 18.0, 28.0, NULL, 'industry_research',
+   'Conversion CPM premium vs awareness; Canada-adjusted', '2025-01-01', NULL),
+  ('ind_meta_conv_cpc', 'industry', 'canadian_political', 'conversion', 'meta', NULL,
+   'cpc', 'currency_cad', 0.80, 1.50, 2.50, NULL, 'industry_research',
+   'Traffic/conversion campaigns typically lower CPC', '2025-01-01', NULL),
+  ('ind_meta_conv_cpa', 'industry', 'canadian_political', 'conversion', 'meta', NULL,
+   'cpa', 'currency_cad', 8.0, 20.0, 40.0, NULL, 'industry_research',
+   'Political/advocacy CPA lower than ecommerce; petition/signup conversions', '2025-01-01', NULL),
+  ('ind_meta_conv_convrate', 'industry', 'canadian_political', 'conversion', 'meta', NULL,
+   'conversion_rate', 'percentage', 0.02, 0.05, 0.10, NULL, 'industry_research',
+   'Landing page conversion rate; political signup forms tend higher', '2025-01-01', NULL),
 
-  ('ind-cv-cpa', 'industry', 'canadian_political', 'conversion', NULL, NULL,
-   'cpa', 'currency_cad', 15.0, 30.0, 60.0, 90, 'industry_research',
-   'Canadian political/labour conversion campaigns 2024-2026', '2024-01-01', NULL),
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- TIER 3: CROSS-CLIENT BENCHMARKS — Meta, all PB clients
+  -- Source: point-blank-ada.cip.fact_digital_daily, computed 2026-04-02
+  -- 45 campaigns total (12 awareness, 16 conversion), >$50 spend each
+  -- ═══════════════════════════════════════════════════════════════════════════
 
-  ('ind-cv-convrate', 'industry', 'canadian_political', 'conversion', NULL, NULL,
-   'conversion_rate', 'percentage', 0.015, 0.030, 0.050, 90, 'industry_research',
-   'Conversion rate (conversions / clicks)', '2024-01-01', NULL),
+  -- Awareness (n=12 campaigns)
+  ('xc_meta_awr_ctr', 'cross_client', 'all_clients', 'awareness', 'meta', NULL,
+   'ctr', 'percentage', 0.0014, 0.0043, 0.0065, 12, 'cross_client',
+   'PB historical Meta awareness campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_awr_cpm', 'cross_client', 'all_clients', 'awareness', 'meta', NULL,
+   'cpm', 'currency_cad', 7.38, 8.75, 11.68, 12, 'cross_client',
+   'PB historical Meta awareness campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_awr_cpc', 'cross_client', 'all_clients', 'awareness', 'meta', NULL,
+   'cpc', 'currency_cad', 1.33, 3.14, 3.28, 12, 'cross_client',
+   'PB historical Meta awareness campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_awr_vcr', 'cross_client', 'all_clients', 'awareness', 'meta', NULL,
+   'vcr', 'percentage', 0.053, 0.084, 0.240, 12, 'cross_client',
+   'PB historical; lower than industry — may include non-video campaigns', '2026-04-02', NULL),
 
-  -- ── Labour-specific scope ──────────────────────────────────────
-  ('ind-lab-aw-ctr', 'industry', 'canadian_labour', 'awareness', NULL, NULL,
-   'ctr', 'percentage', 0.003, 0.006, 0.009, 60, 'industry_research',
-   'Canadian labour union awareness campaigns', '2024-01-01', NULL),
-
-  ('ind-lab-aw-cpm', 'industry', 'canadian_labour', 'awareness', NULL, NULL,
-   'cpm', 'currency_cad', 7.0, 11.0, 16.0, 60, 'industry_research',
-   'Canadian labour union awareness campaigns', '2024-01-01', NULL),
-
-  ('ind-lab-cv-cpa', 'industry', 'canadian_labour', 'conversion', NULL, NULL,
-   'cpa', 'currency_cad', 12.0, 25.0, 50.0, 40, 'industry_research',
-   'Canadian labour union conversion campaigns (petition, signup)', '2024-01-01', NULL),
-
-  ('ind-lab-cv-ctr', 'industry', 'canadian_labour', 'conversion', NULL, NULL,
-   'ctr', 'percentage', 0.010, 0.015, 0.025, 40, 'industry_research',
-   'Canadian labour union conversion campaigns', '2024-01-01', NULL),
-
-  -- ── Issues-specific scope ──────────────────────────────────────
-  ('ind-iss-aw-ctr', 'industry', 'canadian_issues', 'awareness', NULL, NULL,
-   'ctr', 'percentage', 0.002, 0.004, 0.007, 50, 'industry_research',
-   'Canadian issues/advocacy awareness campaigns', '2024-01-01', NULL),
-
-  ('ind-iss-aw-cpm', 'industry', 'canadian_issues', 'awareness', NULL, NULL,
-   'cpm', 'currency_cad', 9.0, 14.0, 22.0, 50, 'industry_research',
-   'Canadian issues/advocacy awareness campaigns', '2024-01-01', NULL),
-
-  ('ind-iss-cv-cpa', 'industry', 'canadian_issues', 'conversion', NULL, NULL,
-   'cpa', 'currency_cad', 20.0, 40.0, 75.0, 30, 'industry_research',
-   'Canadian issues/advocacy conversion campaigns', '2024-01-01', NULL),
-
-  -- ── Platform-specific: Meta awareness ──────────────────────────
-  ('ind-meta-aw-ctr', 'industry', 'canadian_political', 'awareness', 'meta', NULL,
-   'ctr', 'percentage', 0.004, 0.007, 0.012, 80, 'industry_research',
-   'Meta awareness campaigns — typically higher CTR than average', '2024-01-01', NULL),
-
-  ('ind-meta-aw-cpm', 'industry', 'canadian_political', 'awareness', 'meta', NULL,
-   'cpm', 'currency_cad', 6.0, 10.0, 15.0, 80, 'industry_research',
-   'Meta awareness campaigns', '2024-01-01', NULL),
-
-  -- ── Platform-specific: Meta conversion ─────────────────────────
-  ('ind-meta-cv-cpa', 'industry', 'canadian_political', 'conversion', 'meta', NULL,
-   'cpa', 'currency_cad', 10.0, 22.0, 45.0, 60, 'industry_research',
-   'Meta conversion campaigns', '2024-01-01', NULL),
-
-  -- ── Platform-specific: Google Ads conversion ───────────────────
-  ('ind-gads-cv-cpc', 'industry', 'canadian_political', 'conversion', 'google_ads', NULL,
-   'cpc', 'currency_cad', 1.00, 2.00, 3.50, 50, 'industry_research',
-   'Google Ads search/display conversion campaigns', '2024-01-01', NULL),
-
-  ('ind-gads-cv-cpa', 'industry', 'canadian_political', 'conversion', 'google_ads', NULL,
-   'cpa', 'currency_cad', 18.0, 35.0, 65.0, 50, 'industry_research',
-   'Google Ads conversion campaigns', '2024-01-01', NULL),
-
-  -- ── Platform-specific: LinkedIn ────────────────────────────────
-  ('ind-li-aw-cpm', 'industry', 'canadian_political', 'awareness', 'linkedin', NULL,
-   'cpm', 'currency_cad', 15.0, 25.0, 40.0, 30, 'industry_research',
-   'LinkedIn awareness campaigns — premium inventory', '2024-01-01', NULL),
-
-  ('ind-li-cv-cpc', 'industry', 'canadian_political', 'conversion', 'linkedin', NULL,
-   'cpc', 'currency_cad', 3.00, 5.50, 9.00, 25, 'industry_research',
-   'LinkedIn conversion campaigns', '2024-01-01', NULL);
+  -- Conversion (n=16 campaigns)
+  ('xc_meta_conv_ctr', 'cross_client', 'all_clients', 'conversion', 'meta', NULL,
+   'ctr', 'percentage', 0.0070, 0.0131, 0.0156, 16, 'cross_client',
+   'PB historical Meta conversion campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_conv_cpm', 'cross_client', 'all_clients', 'conversion', 'meta', NULL,
+   'cpm', 'currency_cad', 13.84, 18.32, 27.93, 16, 'cross_client',
+   'PB historical Meta conversion campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_conv_cpc', 'cross_client', 'all_clients', 'conversion', 'meta', NULL,
+   'cpc', 'currency_cad', 1.20, 1.88, 2.31, 16, 'cross_client',
+   'PB historical Meta conversion campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_conv_cpa', 'cross_client', 'all_clients', 'conversion', 'meta', NULL,
+   'cpa', 'currency_cad', 3.40, 9.29, 13.34, 16, 'cross_client',
+   'PB historical Meta conversion campaigns, computed 2026-04-02', '2026-04-02', NULL),
+  ('xc_meta_conv_convrate', 'cross_client', 'all_clients', 'conversion', 'meta', NULL,
+   'conversion_rate', 'percentage', 0.146, 0.224, 0.276, 16, 'cross_client',
+   'PB historical; higher than industry due to petition/signup conversions', '2026-04-02', NULL);
