@@ -157,10 +157,12 @@ jobs:
           echo "Frontend (new format): $NEW_URL"
 
           # Set CORS to allow both URL formats
+          # Use ^##^ delimiter so commas inside the JSON array aren't
+          # mistaken for env-var separators by gcloud.
           gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
-            --update-env-vars='CORS_ORIGINS=["'"${OLD_URL}"'","'"${NEW_URL}"'"],FRONTEND_URL='"${NEW_URL}"''
+            --update-env-vars="^##^CORS_ORIGINS=[\"${OLD_URL}\",\"${NEW_URL}\"]##FRONTEND_URL=${NEW_URL}"
 
       - name: Health check
         run: |

@@ -879,6 +879,8 @@ The overview page calculates `activeProjects` (filtered by `status === "active"`
 
 ## Phase 1.5 — Bug Fixes (from 2026-03-29 testing)
 
+> **Priority:** Items 1-3 below (multi-tab/multi-flight media plan parsing) are the highest priority. The OSSTF campaign (26009) also uses a multi-tab media plan ("Blocking Chart" + "Media Plan Flight ONE" / "Flight TWO" pattern), so these fixes are blocking real onboarding — not just the Endo edge case.
+
 The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo (25055) media plan. Three issues:
 
 1. **Template/example tabs**: The sheet has a "Blocking Chart Example" tab that the parser picks up first (it matches `"blocking" in title and "chart" in title`). Fix: skip tabs with "example" or "template" in the name, or prefer tabs without those words.
@@ -893,7 +895,7 @@ The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo 
    "reddit": "reddit",
    ```
 
-5. **CORS dual-URL fix**: The deploy workflow (`deploy.yml`) has already been updated locally to include both Cloud Run URL formats in CORS. Commit this change.
+5. **CORS dual-URL fix**: ✅ DONE — `deploy.yml` updated to include both Cloud Run URL formats in CORS using gcloud's `^##^` custom delimiter syntax to avoid shell escaping issues with JSON arrays.
 
 6. **Stale detection removal**: If `_auto_complete_projects()` in `daily_job.py` contains the 30-day no-spend detection query, REMOVE it entirely. Only keep the `end_date < CURRENT_DATE()` check.
 
