@@ -9,8 +9,14 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 @router.get("/", response_model=list[ProjectSummary])
 async def list_projects(
     status: str | None = Query(None, description="Filter by project status"),
+    include_recently_ended: bool = Query(True, description="Include projects completed within the last 14 days"),
 ):
     status_clause = "AND p.status = @status" if status else ""
+    if not status and include_recently_ended:
+        status_clause = (
+            "AND (p.status = 'active' "
+            "OR (p.status = 'completed' AND p.end_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY)))"
+        )
     sql = f"""
         SELECT
             p.project_code,
@@ -22,6 +28,11 @@ async def list_projects(
             p.net_budget,
             COALESCE(s.total_spend, 0) AS total_spend,
             DATE_DIFF(p.end_date, CURRENT_DATE(), DAY) AS days_remaining,
+            CASE
+                WHEN p.status = 'completed'
+                 AND p.end_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY)
+                THEN TRUE ELSE FALSE
+            END AS recently_ended,
             p.updated_at
         FROM {bq.table('dim_projects')} p
         LEFT JOIN {bq.table('dim_clients')} c USING (client_id)
@@ -48,6 +59,7 @@ async def list_projects(
             net_budget=float(r["net_budget"]) if r.get("net_budget") else None,
             total_spend=float(r.get("total_spend", 0)),
             days_remaining=r.get("days_remaining"),
+            recently_ended=bool(r.get("recently_ended", False)),
             updated_at=r.get("updated_at"),
         )
         for r in rows

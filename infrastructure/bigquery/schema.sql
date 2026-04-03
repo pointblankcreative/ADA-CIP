@@ -406,6 +406,52 @@ OPTIONS(
 
 
 -- ==============================================================================
+-- BENCHMARKS
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.benchmarks` (
+  benchmark_id STRING NOT NULL,
+  benchmark_type STRING NOT NULL,
+  scope STRING NOT NULL,
+  objective_type STRING NOT NULL,
+  platform_id STRING,
+  creative_format STRING,
+  metric_name STRING NOT NULL,
+  metric_unit STRING NOT NULL,
+  p25 FLOAT64,
+  p50 FLOAT64,
+  p75 FLOAT64,
+  sample_size INT64,
+  source STRING,
+  notes STRING,
+  valid_from DATE,
+  valid_to DATE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+OPTIONS(
+  description='Benchmark data for campaign performance comparison. Supports industry, client, and cross-client tiers.'
+);
+
+
+-- ==============================================================================
+-- PROJECT GA4 URL MAPPINGS
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.project_ga4_urls` (
+  id STRING NOT NULL,
+  project_code STRING NOT NULL,
+  ga4_property_id STRING NOT NULL,
+  url_pattern STRING NOT NULL,
+  label STRING,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+  created_by STRING
+)
+OPTIONS(
+  description='Maps projects to GA4 property/URL patterns for web analytics integration.'
+);
+
+
+-- ==============================================================================
 -- SEED DATA: Platform Dimension
 -- ==============================================================================
 

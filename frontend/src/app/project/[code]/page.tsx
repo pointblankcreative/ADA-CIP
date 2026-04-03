@@ -16,11 +16,13 @@ import { cn, formatCurrency } from "@/lib/utils";
 import { PacingTab } from "./pacing-tab";
 import { PerformanceTab } from "./performance-tab";
 import { AlertsTab } from "./alerts-tab";
+import { SettingsTab } from "./settings-tab";
 
 const TABS = [
   { id: "pacing", label: "Pacing", icon: Gauge },
   { id: "performance", label: "Performance", icon: BarChart3 },
   { id: "alerts", label: "Alerts", icon: AlertTriangle },
+  { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -133,6 +135,7 @@ export default function ProjectDetailPage() {
         {activeTab === "pacing" && <PacingTab code={code} />}
         {activeTab === "performance" && <PerformanceTab code={code} />}
         {activeTab === "alerts" && <AlertsTab code={code} />}
+        {activeTab === "settings" && <SettingsTab code={code} />}
       </div>
     </div>
   );

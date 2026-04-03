@@ -879,28 +879,413 @@ The overview page calculates `activeProjects` (filtered by `status === "active"`
 
 ## PHASE 2 — UI Enhancements + CI/CD (not started)
 
+<<<<<<< Updated upstream
 Phase 2 focuses on two tracks: additional frontend/UI work, and setting up proper CI/CD so code flows through staging → prod via GitHub.
+=======
+The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo (25055) media plan. Three issues:
 
-### UI improvements (from initial user testing 2026-03-29)
+1. **Template/example tabs**: The sheet has a "Blocking Chart Example" tab that the parser picks up first (it matches `"blocking" in title and "chart" in title`). Fix: skip tabs with "example" or "template" in the name, or prefer tabs without those words.
+
+2. **Multi-flight plans**: The sheet has "Media Plan Flight ONE" and "Media Plan Flight TWO" — two separate flight tabs. The parser only processes one `media_plan_ws` (whichever it finds last). Fix: collect ALL tabs matching "media plan" and merge their lines.
+
+3. **Offset metadata rows**: The blocking chart has 2 empty rows before the metadata starts (row 3 = Client, row 4 = Project, row 5 = Run Dates). The parser likely expects metadata starting at row 1. Fix: scan for the metadata labels rather than assuming fixed row positions.
+
+4. **Missing platforms in PLATFORM_MAP**: Pinterest and Reddit are not in the platform normalisation map. Add:
+   ```python
+   "pinterest": "pinterest",
+   "reddit": "reddit",
+   ```
+
+5. **CORS dual-URL fix**: The deploy workflow (`deploy.yml`) has already been updated locally to include both Cloud Run URL formats in CORS. Commit this change.
+
+6. **Stale detection removal**: If `_auto_complete_projects()` in `daily_job.py` contains the 30-day no-spend detection query, REMOVE it entirely. Only keep the `end_date < CURRENT_DATE()` check.
+
+### Completion Criteria (Task 20)
+- Media plan sync works for sheets with template/example tabs (skips them)
+- Multi-flight media plans have all flight lines synced
+- Pinterest and Reddit are in the PLATFORM_MAP
+- deploy.yml includes both Cloud Run URL formats in CORS
+- Auto-complete only uses end_date, no stale detection
+
+---
+
+## PHASE 2 — Brightwater: Insights Parity + Benchmarking
+
+**Goal:** Users should be able to answer 90% of questions about campaign performance by looking at CIP, without opening the ad platforms themselves. This means upgrading the performance page to show objective-appropriate KPIs, adding GA4 web analytics integration, and building a benchmarking system.
+>>>>>>> Stashed changes
+
+**Asana backlog:** [ADA Campaign Intelligence Platform](https://app.asana.com/1/9281551468324/project/1213881933598770) — check for latest priorities before starting work.
+
+### Carried-over UI improvements (from Phase 1 user testing 2026-03-29)
 - **Unprovisioned project prompt**: When a user clicks on an auto-discovered project (one that appeared from data but hasn't been formally provisioned via /admin/projects/new), the project detail page should show a prominent call-to-action prompting the user to set it up — e.g. "This campaign was detected automatically. Set up project details to enable pacing alerts and media plan tracking." with a button linking to the project creation form pre-filled with the project code.
 - **Project configuration feedback**: The /admin/projects/new form submits but doesn't give clear feedback about what happened. Need success/error states, and the project detail page should reflect the configuration immediately.
-- Additional UI items TBD as team starts using the tool.
 
-### Phase 2 Task: GitHub Actions CI/CD
+---
 
-Replace the manual `deploy.sh` workflow with GitHub Actions:
+## SPRINT TASK LIST — Phase 2. Work through these in order. Do not stop between tasks unless something breaks.
 
-**Environments:**
-- **staging**: auto-deploys on push to `main`. Separate Cloud Run services (`cip-backend-staging`, `cip-frontend-staging`). Can optionally point at the same BigQuery dataset or a staging dataset.
-- **production**: deploys on merge to `production` branch (or tagged release). The current Cloud Run services.
+---
 
-**Workflow file (`.github/workflows/deploy.yml`):**
-- Trigger: push to `main` → build + deploy to staging. Push to `production` → build + deploy to prod.
-- Steps: checkout → authenticate to GCP (Workload Identity Federation preferred over SA key) → build container → push to Artifact Registry → deploy to Cloud Run → health check
-- Secrets: stored in GitHub Actions secrets (GCP project ID, Workload Identity provider, etc.)
-- The existing `deploy.sh` is a good reference for the gcloud commands.
+### Task 21: Stand Up Staging Environment
 
-**IAP note:** Both staging and prod should be behind IAP. Staging can use the same OAuth consent screen.
+**Do this first.** All subsequent Phase 2 work should be developed on `main` and tested on staging before merging to `production`.
+
+The GitHub Actions workflow (`.github/workflows/deploy.yml`) already has full staging support — it routes `main` → `cip-backend-staging` / `cip-frontend-staging` and `production` → `cip-backend` / `cip-frontend`. The staging Cloud Run services just don't exist yet. The first push to `main` will create them automatically.
+
+#### What to do
+
+1. **Ensure `main` is up to date with `production`.** Before triggering the first staging deploy, make sure `main` has all the latest production code:
+   ```bash
+   git checkout main
+   git merge production
+   git push origin main
+   ```
+   This push to `main` triggers the GitHub Actions workflow, which will create the staging Cloud Run services for the first time.
+
+2. **Wait for the workflow to complete.** Monitor the Actions tab in GitHub. The workflow will:
+   - Build and deploy `cip-backend-staging` to Cloud Run
+   - Build and deploy `cip-frontend-staging` to Cloud Run
+   - Automatically configure CORS on the staging backend to allow the staging frontend origin
+
+3. **Verify staging is running.** After the workflow completes:
+   ```bash
+   # Get the staging URLs
+   gcloud run services describe cip-backend-staging --project=point-blank-ada --region=northamerica-northeast1 --format='value(status.url)'
+   gcloud run services describe cip-frontend-staging --project=point-blank-ada --region=northamerica-northeast1 --format='value(status.url)'
+
+   # Health check
+   curl <staging-backend-url>/health
+   ```
+
+4. **IAP will be configured manually by the project owner** on the staging frontend Cloud Run service (same as production — restrict to `@pointblankcreative.ca`). Do NOT skip this — without IAP, staging is publicly accessible.
+
+#### Staging environment details
+- **BigQuery dataset:** Same as production (`point-blank-ada.cip`) — staging reads the same live data
+- **Secrets:** Same as production (sheets reader key + Slack bot token)
+- **APP_ENV:** Set to `staging` by the workflow (available as env var in the backend)
+- **Slack alerts:** Staging uses the same Slack bot token. If you don't want staging pipeline runs posting to real Slack channels, add a guard in `backend/services/slack_alerts.py`:
+  ```python
+  if os.getenv("APP_ENV") == "staging":
+      logger.info(f"[STAGING] Would send alert to {channel}: {message}")
+      return
+  ```
+
+#### Workflow going forward
+- Develop on feature branches → merge to `main` → auto-deploys to staging
+- Test on staging
+- When ready, merge `main` → `production` → auto-deploys to production
+
+---
+
+### Task 22: Objective-Based KPI Views (ADAC-4)
+
+> **NOTE:** This was previously Task 21. All subsequent task numbers have shifted by one due to the staging environment task.
+
+**The core Phase 2 feature.** The performance page currently shows the same 5 KPI cards (Spend, Impressions, Clicks, CPM, CTR) and the same charts regardless of campaign type. It needs to adapt based on what the campaign is actually trying to achieve.
+
+#### Step 1: Campaign Objective Detection
+
+The system needs to know whether each campaign/line item is awareness/persuasion or conversion-focused. Two sources of truth:
+
+**Source A — Media Plan (`media_plan_lines` table):**
+The `objective_format` column from the media plan contains strings like "Awareness Display Banner Ads", "Conversion Social Ads", "Reach & Frequency". Parse this to classify each line item.
+
+**Source B — Platform Campaign Names:**
+Campaign names in `fact_digital_daily` often embed objective info (e.g., "25013 - BCGEU Bargaining Escalation - Conversion"). This is a fallback for campaigns not matched to a media plan line.
+
+**Classification logic (implement as `backend/services/objective_classifier.py`):**
+
+```python
+AWARENESS_KEYWORDS = ['awareness', 'reach', 'frequency', 'brand', 'persuasion', 'video views', 'video completion', 'audio', 'impressions', 'engagement']
+CONVERSION_KEYWORDS = ['conversion', 'conversions', 'leads', 'lead gen', 'sales', 'purchase', 'acquisition', 'app install', 'sign up', 'signup', 'traffic', 'clicks', 'website visits']
+
+def classify_objective(objective_format: str | None, campaign_name: str | None) -> str:
+    """Returns 'awareness', 'conversion', or 'mixed'"""
+    # Check media plan objective_format first (most reliable)
+    # Then fall back to campaign name keywords
+    # Default to 'mixed' if no signal
+```
+
+**Add `objective_type` to the project-level response:**
+- If ALL campaigns/lines are awareness → project objective = "awareness"
+- If ALL are conversion → project objective = "conversion"
+- If a mix → project objective = "mixed"
+- This is already partially modelled in the old ADA codebase (`campaign_mode` field on `AnalysisResult`) but not used in CIP
+
+#### Step 2: Expand Performance Endpoint Metrics
+
+**File:** `backend/routers/performance.py`
+
+The current performance endpoint only queries spend, impressions, clicks, and conversions from `fact_digital_daily`. It needs to also return:
+
+**For all campaigns:**
+- spend, impressions, clicks (already present)
+- CPM, CPC, CTR (already calculated)
+
+**For awareness/persuasion campaigns — add to the totals and daily queries:**
+- `SUM(reach) AS reach` — NOTE: reach is not additive across dates/campaigns. For cross-day totals, use the MAX of available reach values or show "latest reach" rather than summing. Daily values are fine.
+- `AVG(frequency) AS frequency` — weighted average, or show latest frequency snapshot
+- `SUM(video_views) AS video_views`
+- `SUM(video_completions) AS video_completions`
+- `SAFE_DIVIDE(SUM(video_completions), SUM(video_views)) AS video_completion_rate` (VCR)
+- `SUM(engagements) AS engagements`
+
+**For conversion campaigns — add to the totals and daily queries:**
+- conversions (already present)
+- `SAFE_DIVIDE(SUM(spend), SUM(conversions)) AS cpa` (cost per acquisition)
+- `SAFE_DIVIDE(SUM(conversions), SUM(clicks)) AS conversion_rate`
+- clicks, CTR, CPC (already present — these are the click performance metrics)
+
+**Update Pydantic response models** in `backend/models/` to include the new fields. Make them Optional so existing responses don't break.
+
+#### Step 3: Redesign Performance Tab Frontend
+
+**File:** `frontend/src/app/project/[code]/performance-tab.tsx`
+
+Replace the current fixed 5-card layout with an objective-aware design:
+
+**Header section (always shown):**
+- Date range selector (7d/14d/30d/All) — keep as-is
+- Project objective badge: "Awareness", "Conversion", or "Mixed" — colour-coded
+
+**KPI Cards — show different cards based on objective type:**
+
+**If awareness/persuasion:**
+| Card | Value | Trend |
+|------|-------|-------|
+| Total Spend | Lifetime spend | 7d vs prior 7d |
+| Reach | Latest reach snapshot | — |
+| Frequency | Latest frequency | — |
+| Video Completion Rate | VCR % | 7d trend |
+| Engagement Rate | Engagements / Impressions | 7d trend |
+
+**If conversion:**
+| Card | Value | Trend |
+|------|-------|-------|
+| Total Spend | Lifetime spend | 7d vs prior 7d |
+| Conversions | Total conversions | 7d trend |
+| CPA | Cost per acquisition | 7d trend (lower is better — invert trend colour) |
+| CTR | Click-through rate | 7d trend |
+| Conversion Rate | Conversions / Clicks | 7d trend |
+
+**If mixed:** Show both sections stacked — "Awareness Metrics" header then awareness cards, "Conversion Metrics" header then conversion cards.
+
+**Charts section — adapt based on objective:**
+
+**Always show:**
+- Daily Spend trend (already exists)
+- Platform Breakdown (already exists)
+- Campaign table (already exists — add objective column)
+
+**Awareness campaigns — add:**
+- Reach & Frequency chart (dual-axis line chart, date on x-axis)
+- Video Completion Rate trend (line chart, if video data exists)
+
+**Conversion campaigns — add:**
+- CPA Trend (line chart — show as currency, lower is better)
+- Conversion Volume (bar chart overlaid with conversion rate line)
+
+**Campaign table enhancements:**
+- Add "Objective" column showing the classified objective per campaign
+- For awareness campaigns: replace CTR/CPC columns with Reach/Frequency/VCR
+- For conversion campaigns: add CPA and Conversion Rate columns
+
+#### Step 4: Handle Missing Metrics Gracefully
+
+Not all platforms report all metrics. For example:
+- Reach and frequency may only be available from Meta, TikTok, and Snapchat
+- Video metrics are only relevant for campaigns running video/audio creative
+- Engagements may not be available from all platforms
+
+**Rules:**
+- If a metric is NULL/zero for all campaigns in a project, hide that KPI card entirely
+- If a metric is available from some platforms but not others, show it with a note: "Based on Meta, TikTok data" (list platforms that contributed)
+- Never show a metric card with a $0 or 0% value that implies poor performance when the data simply isn't available
+
+---
+
+### Task 23: "Recently Ended" Homepage Section (ADAC-7)
+
+**File:** `frontend/src/app/page.tsx`
+
+Campaigns that have ended within the last 14 days should appear in a "Recently Ended" section rather than immediately disappearing from the homepage.
+
+#### Backend
+- Update `GET /api/projects/` to accept a `include_recently_ended=true` query param (or always return them with a `recently_ended: true` flag)
+- A project is "recently ended" if: `status = 'completed'` AND `end_date >= CURRENT_DATE() - INTERVAL 14 DAY`
+
+#### Frontend
+- After the active campaign cards, add a collapsible "Recently Ended" section
+- Show these projects with a muted/greyed visual treatment (reduced opacity, no pacing badge)
+- Each card should show: project name, client, end date, final spend total
+- Clicking still navigates to the full project detail page (read-only, historical view)
+- Section is collapsed by default if there are no recently ended campaigns
+
+---
+
+### Task 24: Google Drive Sharing Instructions for Media Plan (ADAC-8)
+
+**Files:** `frontend/src/app/admin/projects/new/page.tsx`, `frontend/src/app/admin/projects/[code]/page.tsx` (or wherever the media plan URL input lives)
+
+When a user adds or edits the Google Drive link for a media plan, the UI should display clear instructions telling them to share the spreadsheet with the CIP service account.
+
+#### UI Changes
+- Below the "Media Plan Sheet URL" input field, add a persistent helper/instruction box:
+  ```
+  📋 Share your media plan with ADA
+  To allow CIP to read this spreadsheet, share it as Viewer with:
+  cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com
+  ```
+- Include a "Copy email" button that copies the service account email to clipboard
+- After the user submits, if the media plan sync fails with a permission error, show a clear error message: "CIP couldn't access this spreadsheet. Make sure it's shared with the email above."
+
+---
+
+### Task 25: GA4 URL Selection for Campaigns (ADAC-11)
+
+**This enables conditional GA4 web analytics data on the performance page.** When a campaign has GA4 URLs configured, the performance page shows additional web analytics metrics (GA4-reported conversions, landing page performance, time on site).
+
+#### Step 1: Data Model
+
+**New BigQuery table: `cip.project_ga4_urls`**
+```sql
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.project_ga4_urls` (
+  id STRING NOT NULL,
+  project_code STRING NOT NULL,
+  ga4_property_id STRING NOT NULL,
+  url_pattern STRING NOT NULL,           -- e.g., "example.com/campaign-landing-page"
+  label STRING,                          -- optional human-readable label
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+  created_by STRING
+);
+```
+
+One campaign may have many URLs, and the same URL may be shared across multiple campaigns.
+
+**GA4 data source:** The GA4 data should already be flowing into BigQuery via the existing GA4 BigQuery export (if configured) or via Funnel.io. Check what GA4 data is available in BigQuery before building the query layer. Look for tables in the `point-blank-ada` project matching `analytics_*` (standard GA4 export) or GA4-suffixed columns in `funnel_data`.
+
+#### Step 2: Backend
+
+**New endpoints in a new router `backend/routers/ga4.py`:**
+- `GET /api/ga4/properties` — List available GA4 properties (query BigQuery `INFORMATION_SCHEMA` or a config table)
+- `GET /api/ga4/{project_code}/urls` — List GA4 URLs configured for a project
+- `POST /api/ga4/{project_code}/urls` — Add a GA4 URL to a project
+- `DELETE /api/ga4/{project_code}/urls/{id}` — Remove a GA4 URL
+
+**Enhance performance endpoint:**
+- When `project_ga4_urls` has entries for a project, run an additional query against the GA4 data source for those URLs
+- Return GA4 metrics alongside the ad platform metrics: sessions, conversions (GA4-attributed), bounce rate, avg session duration, pages per session
+- Clearly label these as "GA4" in the response so the frontend can distinguish platform-reported conversions from GA4-reported conversions
+
+#### Step 3: Frontend — Campaign Configuration
+
+**File:** `frontend/src/app/admin/projects/[code]/page.tsx` (or new section in project settings)
+
+- Add a "GA4 URLs" section to the project configuration page
+- Show currently configured URLs in a list with delete buttons
+- "Add URL" form: dropdown to select GA4 property + text input for URL pattern
+- Help text explaining that these URLs enable web analytics data in the performance view
+
+#### Step 4: Frontend — Performance Tab Integration
+
+**File:** `frontend/src/app/project/[code]/performance-tab.tsx`
+
+When a project has GA4 URLs configured, show an additional "Web Analytics" section:
+- KPI cards: Sessions, GA4 Conversions, Bounce Rate, Avg Session Duration
+- Chart: Sessions + GA4 Conversions over time (dual-axis)
+- For conversion campaigns, show both platform-reported and GA4-reported conversions side by side so users can compare attribution
+
+**Important:** Only show this section when GA4 URLs are configured. If no GA4 data exists for a project, don't show an empty section.
+
+---
+
+### Task 26: Industry Benchmarks — Data Model & Static Benchmarks (ADAC-12)
+
+**Build the benchmarking data model and load the first tier of benchmarks: Canadian labour, issues, and political advertising industry benchmarks.**
+
+#### Step 1: Benchmark Tables
+
+**New BigQuery table: `cip.benchmarks`**
+```sql
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.benchmarks` (
+  benchmark_id STRING NOT NULL,
+  benchmark_type STRING NOT NULL,         -- 'industry', 'client', 'cross_client'
+  scope STRING NOT NULL,                  -- 'canadian_political', 'canadian_labour', 'canadian_issues', or client_id, or 'all_clients'
+  objective_type STRING NOT NULL,         -- 'awareness', 'conversion'
+  platform_id STRING,                     -- NULL = cross-platform, or specific platform
+  creative_format STRING,                 -- NULL = all formats, or 'video_short', 'video_mid', 'video_long', 'display', 'audio', 'native'
+  metric_name STRING NOT NULL,            -- 'ctr', 'cpm', 'cpc', 'cpa', 'vcr', 'conversion_rate', 'frequency', etc.
+  metric_unit STRING NOT NULL,            -- 'percentage', 'currency_cad', 'ratio', 'count'
+  p25 FLOAT64,                           -- 25th percentile (below average)
+  p50 FLOAT64,                           -- 50th percentile (median / benchmark)
+  p75 FLOAT64,                           -- 75th percentile (above average)
+  sample_size INT64,                     -- number of campaigns/data points this benchmark is based on
+  source STRING,                          -- 'industry_research', 'client_historical', 'cross_client'
+  notes STRING,                           -- any caveats or methodology notes
+  valid_from DATE,                        -- when this benchmark was calculated
+  valid_to DATE,                          -- expiry (NULL = current)
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+);
+```
+
+This single table supports all three benchmark tiers (industry, client-level, cross-client) via the `benchmark_type` and `scope` fields.
+
+#### Step 2: Load Industry Benchmarks
+
+Create a seed script `infrastructure/bigquery/seed_industry_benchmarks.sql` that INSERTs industry benchmark data. The data will come from Frazer's research (to be provided separately). Structure the seed data by:
+- Objective type: awareness vs conversion
+- Platform: cross-platform defaults + platform-specific where available
+- Metrics: CTR, CPM, CPC, CPA, VCR, conversion rate, frequency
+
+**Placeholder values** — use these reasonable ranges for Canadian political/labour/issues advertising until Frazer provides the researched values. These are starting points to build and test against:
+
+| Metric | Objective | p25 | p50 (benchmark) | p75 |
+|--------|-----------|-----|-----------------|-----|
+| CTR | Awareness | 0.3% | 0.5% | 0.8% |
+| CTR | Conversion | 0.8% | 1.2% | 2.0% |
+| CPM | Awareness | $8 | $12 | $18 |
+| CPM | Conversion | $10 | $15 | $25 |
+| CPC | Conversion | $1.50 | $2.50 | $4.00 |
+| CPA | Conversion | $15 | $30 | $60 |
+| VCR | Awareness | 40% | 55% | 70% |
+| Conv Rate | Conversion | 1.5% | 3% | 5% |
+
+#### Step 3: Backend — Benchmark API
+
+**New router `backend/routers/benchmarks.py`:**
+- `GET /api/benchmarks/{project_code}` — Return applicable benchmarks for a project based on its objective type
+- For each metric currently displayed on the performance page, include the benchmark p25/p50/p75 values in the response
+- Return benchmarks as a dictionary keyed by metric_name so the frontend can easily look them up
+
+#### Step 4: Frontend — Benchmark Indicators
+
+On the performance tab KPI cards, add benchmark context:
+- Below each metric value, show a small benchmark indicator: "Benchmark: X" with the p50 value
+- Colour-code: green if the metric is better than p75 (above average), neutral if between p25-p75, red if below p25
+- For metrics where lower is better (CPM, CPC, CPA), invert the colour logic
+- Optional: add a small spark bar showing where the current value falls in the p25-p75 range
+
+---
+
+### Completion Criteria (Tasks 21-26)
+
+- Performance page shows different KPI cards and charts based on campaign objective (awareness vs conversion vs mixed)
+- Campaign objectives are correctly inferred from media plan data and campaign names
+- Missing metrics are hidden gracefully, not shown as zeros
+- Recently ended campaigns appear in a dedicated homepage section for 14 days
+- Media plan input shows clear sharing instructions for the CIP service account
+- GA4 URL configuration exists in project settings
+- When GA4 URLs are configured, web analytics metrics appear on the performance page
+- Industry benchmark data is loaded and displayed as context on KPI cards
+- All new features work with the existing date range selector (7d/14d/30d/All)
+
+---
+
+### Tasks NOT for this sprint (blocked or require manual input)
+
+- **ADAC-13 (Client-level benchmarks)** and **ADAC-14 (Cross-client benchmarks)**: Blocked by ADAC-15 (creative metadata investigation). The benchmarks table schema from Task 25 already supports these — once creative format normalization is solved, these tiers can be populated automatically from historical `fact_digital_daily` data.
+- **ADAC-15 (Creative duration/format metadata investigation)**: This is a research/audit task. Run exploratory queries against BigQuery to determine what creative metadata is available per platform. Frazer will coordinate this separately.
+- **ADAC-5 (Client logo auto-display)** and **ADAC-6 (Blurred creative underlay)**: Phase 3 (Christchurch) — not in scope for this sprint.
 
 ---
 

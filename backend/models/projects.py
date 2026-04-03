@@ -15,6 +15,7 @@ class ProjectSummary(BaseModel):
     total_spend: float | None = None
     pacing_percentage: float | None = None
     days_remaining: int | None = None
+    recently_ended: bool = False
     updated_at: datetime | None = None
 
 

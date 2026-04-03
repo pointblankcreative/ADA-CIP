@@ -48,10 +48,13 @@ export default function OverviewPage() {
   }, []);
 
   const activeProjects = projects.filter(
-    (p) => p.status === "active" && p.days_remaining >= 0
+    (p) => p.status === "active" && !p.recently_ended
+  );
+  const recentlyEndedProjects = projects.filter(
+    (p) => p.recently_ended === true
   );
   const completedProjects = projects.filter(
-    (p) => p.status !== "active" || p.days_remaining < 0
+    (p) => p.status !== "active" && !p.recently_ended
   );
   const totalBudget = activeProjects.reduce((s, p) => s + (p.net_budget ?? 0), 0);
   const totalSpend = activeProjects.reduce((s, p) => s + (p.total_spend ?? 0), 0);
@@ -139,6 +142,20 @@ export default function OverviewPage() {
         </div>
       </div>
 
+      {/* Recently ended campaigns */}
+      {!loading && recentlyEndedProjects.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
+            Recently Ended
+          </h2>
+          <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+            {recentlyEndedProjects.map((p) => (
+              <RecentlyEndedCard key={p.project_code} project={p} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Completed campaigns */}
       {!loading && completedProjects.length > 0 && (
         <div className="mt-8">
@@ -161,6 +178,44 @@ export default function OverviewPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function RecentlyEndedCard({ project: p }: { project: Project }) {
+  return (
+    <Link href={`/project/${p.project_code}`}>
+      <Card className="group cursor-pointer opacity-60 transition-all hover:opacity-80 hover:border-slate-600">
+        <div className="flex items-start justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-slate-400">
+                {p.project_code}
+              </span>
+              <span className="rounded-full border border-slate-700 bg-slate-800/50 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                Ended
+              </span>
+            </div>
+            <h3 className="mt-2 truncate text-base font-semibold text-slate-300">
+              {p.project_name}
+            </h3>
+            {p.client_name && (
+              <p className="mt-0.5 text-xs text-slate-600">{p.client_name}</p>
+            )}
+          </div>
+          <ArrowRight className="mt-1 h-4 w-4 flex-shrink-0 text-slate-700 transition-colors group-hover:text-slate-500" />
+        </div>
+        <div className="mt-3 flex items-center gap-4 text-xs text-slate-600">
+          <span className="flex items-center gap-1">
+            <Calendar className="h-3 w-3" />
+            Ended {p.end_date}
+          </span>
+          <span className="flex items-center gap-1">
+            <DollarSign className="h-3 w-3" />
+            {formatCurrency(p.total_spend)} final spend
+          </span>
+        </div>
+      </Card>
+    </Link>
   );
 }
 

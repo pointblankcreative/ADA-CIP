@@ -27,6 +27,7 @@ export interface Project {
   total_spend: number;
   pacing_percentage: number | null;
   days_remaining: number;
+  recently_ended?: boolean;
   updated_at: string;
 }
 
@@ -65,36 +66,73 @@ export interface DailyPerformance {
   cpm: number;
   cpc: number;
   ctr: number;
+  reach?: number | null;
+  frequency?: number | null;
+  video_views?: number | null;
+  video_completions?: number | null;
+  vcr?: number | null;
+  engagements?: number | null;
+  cpa?: number | null;
+  conversion_rate?: number | null;
 }
 
 export interface PlatformBreakdown {
   platform_id: string;
+  platform_name?: string;
   spend: number;
   impressions: number;
   clicks: number;
   conversions: number;
+  reach?: number | null;
+  frequency?: number | null;
+  video_views?: number | null;
+  video_completions?: number | null;
+  engagements?: number | null;
 }
 
 export interface CampaignRow {
   campaign_name: string;
   campaign_id: string;
   platform_id: string;
+  objective?: string | null;
   spend: number;
   impressions: number;
   clicks: number;
   conversions: number;
   ctr: number;
   cpc: number;
+  cpm?: number;
+  reach?: number | null;
+  frequency?: number | null;
+  video_views?: number | null;
+  video_completions?: number | null;
+  vcr?: number | null;
+  engagements?: number | null;
+  cpa?: number | null;
+  conversion_rate?: number | null;
 }
+
+export type ObjectiveType = "awareness" | "conversion" | "mixed";
 
 export interface PerformanceResponse {
   project_code: string;
+  objective_type: ObjectiveType;
   start_date: string;
   end_date: string;
   total_spend: number;
   total_impressions: number;
   total_clicks: number;
   total_conversions: number;
+  total_reach?: number | null;
+  total_frequency?: number | null;
+  total_video_views?: number | null;
+  total_video_completions?: number | null;
+  total_vcr?: number | null;
+  total_engagements?: number | null;
+  total_cpa?: number | null;
+  total_conversion_rate?: number | null;
+  available_metrics: string[];
+  metric_platforms: Record<string, string[]>;
   daily: DailyPerformance[];
   by_platform?: PlatformBreakdown[];
   campaigns?: CampaignRow[];
@@ -164,6 +202,64 @@ export interface IngestionRun {
   error_message: string | null;
 }
 
+/* ── GA4 types ── */
+
+export interface GA4Property {
+  property_id: string;
+  property_name: string | null;
+}
+
+export interface GA4Url {
+  id: string;
+  project_code: string;
+  ga4_property_id: string;
+  url_pattern: string;
+  label: string | null;
+  created_at?: string | null;
+}
+
+export interface GA4DailyAnalytics {
+  date: string;
+  sessions: number;
+  conversions: number;
+  bounce_rate?: number | null;
+  avg_session_duration?: number | null;
+  pages_per_session?: number | null;
+}
+
+export interface GA4PerformanceResponse {
+  has_ga4: boolean;
+  urls: GA4Url[];
+  daily: GA4DailyAnalytics[];
+  total_sessions: number;
+  total_conversions: number;
+  avg_bounce_rate?: number | null;
+  avg_session_duration?: number | null;
+}
+
+/* ── Benchmark types ── */
+
+export interface BenchmarkValue {
+  benchmark_id: string;
+  scope: string;
+  platform_id: string | null;
+  metric_name: string;
+  metric_unit: string;
+  p25: number | null;
+  p50: number | null;
+  p75: number | null;
+  sample_size: number | null;
+  source: string | null;
+  notes: string | null;
+}
+
+export interface BenchmarkResponse {
+  project_code: string;
+  objective_type: string;
+  benchmarks: Record<string, BenchmarkValue>;
+  platform_benchmarks: Record<string, Record<string, BenchmarkValue>>;
+}
+
 /* ── API functions ── */
 
 export const api = {
@@ -193,6 +289,24 @@ export const api = {
     acknowledge: (id: string) =>
       apiFetch(`/api/alerts/${id}/acknowledge`, { method: "POST" }),
     dispatch: () => apiFetch<Record<string, unknown>>("/api/alerts/dispatch", { method: "POST" }),
+  },
+  benchmarks: {
+    get: (code: string) => apiFetch<BenchmarkResponse>(`/api/benchmarks/${code}`),
+  },
+  ga4: {
+    properties: () => apiFetch<GA4Property[]>("/api/ga4/properties"),
+    urls: (code: string) => apiFetch<GA4Url[]>(`/api/ga4/${code}/urls`),
+    addUrl: (code: string, data: { ga4_property_id: string; url_pattern: string; label?: string }) =>
+      apiFetch<GA4Url>(`/api/ga4/${code}/urls`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteUrl: (code: string, urlId: string) =>
+      apiFetch(`/api/ga4/${code}/urls/${urlId}`, { method: "DELETE" }),
+    analytics: (code: string, days?: number) => {
+      const qs = days ? `?start_date=${new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)}` : "";
+      return apiFetch<GA4PerformanceResponse>(`/api/ga4/${code}/analytics${qs}`);
+    },
   },
   admin: {
     projects: {

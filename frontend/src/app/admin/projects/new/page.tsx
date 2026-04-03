@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Loader2, CheckCircle2, Copy, Check } from "lucide-react";
 import Link from "next/link";
 import { api, type ProjectCreatePayload } from "@/lib/api";
 import { Card } from "@/components/card";
+
+const SERVICE_ACCOUNT_EMAIL = "cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com";
 
 export default function NewProjectPage() {
   return (
@@ -25,6 +27,7 @@ function NewProjectForm() {
   const [success, setSuccess] = useState<{
     code: string;
     mediaPlanSynced: boolean;
+    mediaPlanError?: string;
   } | null>(null);
   const [form, setForm] = useState<ProjectCreatePayload>({
     project_code: prefillCode,
@@ -61,7 +64,8 @@ function NewProjectForm() {
       };
       const result = await api.admin.projects.create(payload);
       const mediaSynced = result?.media_plan_sync?.status === "success";
-      setSuccess({ code: form.project_code, mediaPlanSynced: mediaSynced });
+      const mediaError = result?.media_plan_sync?.status === "error" ? result.media_plan_sync.message : undefined;
+      setSuccess({ code: form.project_code, mediaPlanSynced: mediaSynced, mediaPlanError: mediaError });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create project");
     } finally {
@@ -199,6 +203,7 @@ function NewProjectForm() {
               <p className="mt-1 text-xs text-slate-500">
                 If provided, the media plan will be synced automatically.
               </p>
+              <MediaPlanSharingInstructions />
             </div>
 
             {/* Slack Channel */}
@@ -234,7 +239,9 @@ function NewProjectForm() {
             <p className="mt-1 text-xs text-emerald-400/70">
               {success.mediaPlanSynced
                 ? "Media plan synced. Pacing and alerts are now active."
-                : "No media plan linked — you can add one later from the project management page."}
+                : success.mediaPlanError
+                  ? `Project created, but media plan sync failed: ${success.mediaPlanError}. Make sure the spreadsheet is shared with ${SERVICE_ACCOUNT_EMAIL}`
+                  : "No media plan linked — you can add one later from the project management page."}
             </p>
             <div className="mt-3 flex gap-3">
               <Link
@@ -264,6 +271,51 @@ function NewProjectForm() {
           </button>
         )}
       </form>
+    </div>
+  );
+}
+
+function MediaPlanSharingInstructions() {
+  const [copied, setCopied] = useState(false);
+
+  const copyEmail = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(SERVICE_ACCOUNT_EMAIL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* fallback: do nothing */
+    }
+  }, []);
+
+  return (
+    <div className="mt-3 rounded-md border border-blue-500/20 bg-blue-500/5 px-4 py-3">
+      <p className="text-xs font-medium text-blue-400">
+        Share your media plan with ADA
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        To allow CIP to read this spreadsheet, share it as <strong className="text-slate-300">Viewer</strong> with:
+      </p>
+      <div className="mt-2 flex items-center gap-2">
+        <code className="flex-1 rounded bg-slate-900 px-2.5 py-1.5 text-xs text-blue-300 font-mono select-all">
+          {SERVICE_ACCOUNT_EMAIL}
+        </code>
+        <button
+          type="button"
+          onClick={copyEmail}
+          className="flex-shrink-0 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
+        >
+          {copied ? (
+            <span className="flex items-center gap-1 text-emerald-400">
+              <Check className="h-3 w-3" /> Copied
+            </span>
+          ) : (
+            <span className="flex items-center gap-1">
+              <Copy className="h-3 w-3" /> Copy
+            </span>
+          )}
+        </button>
+      </div>
     </div>
   );
 }
