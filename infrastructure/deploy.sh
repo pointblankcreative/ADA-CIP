@@ -172,18 +172,24 @@ if [ "$DEPLOY_FRONTEND" = true ]; then
     --max-instances=3 \
     --allow-unauthenticated
 
-  FRONTEND_URL=$(gcloud run services describe "${FRONTEND_SERVICE}" \
+  # Get old-format URL from gcloud
+  OLD_URL=$(gcloud run services describe "${FRONTEND_SERVICE}" \
     --project="${PROJECT_ID}" \
     --region="${REGION}" \
     --format='value(status.url)')
-  echo "  Frontend deployed: ${FRONTEND_URL}"
+  echo "  Frontend deployed (old format): ${OLD_URL}"
 
-  # Update backend CORS to include frontend URL
-  echo "  Updating backend CORS..."
+  # Construct new-format URL: https://{service}-{project_number}.{region}.run.app
+  PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
+  NEW_URL="https://${FRONTEND_SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
+  echo "  Frontend deployed (new format): ${NEW_URL}"
+
+  # Update backend CORS to include both frontend URL formats
+  echo "  Updating backend CORS (both URL formats)..."
   gcloud run services update "${BACKEND_SERVICE}" \
     --project="${PROJECT_ID}" \
     --region="${REGION}" \
-    --update-env-vars='CORS_ORIGINS=["'"${FRONTEND_URL}"'"],FRONTEND_URL='"${FRONTEND_URL}"''
+    --update-env-vars='CORS_ORIGINS=["'"${OLD_URL}"'","'"${NEW_URL}"'"],FRONTEND_URL='"${NEW_URL}"''
 
   echo ""
 fi

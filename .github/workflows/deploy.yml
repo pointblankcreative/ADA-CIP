@@ -144,16 +144,23 @@ jobs:
 
       - name: Get frontend URL and update CORS
         run: |
-          FRONTEND_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
+          # Get the URL from gcloud (old format)
+          OLD_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
             --format='value(status.url)')
-          echo "Frontend: $FRONTEND_URL"
+          echo "Frontend (old format): $OLD_URL"
 
+          # Construct new-format URL: https://{service}-{project_number}.{region}.run.app
+          PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format='value(projectNumber)')
+          NEW_URL="https://${{ needs.determine-environment.outputs.frontend_service }}-${PROJECT_NUMBER}.${{ env.REGION }}.run.app"
+          echo "Frontend (new format): $NEW_URL"
+
+          # Set CORS to allow both URL formats
           gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
-            --update-env-vars='CORS_ORIGINS=["'"${FRONTEND_URL}"'"],FRONTEND_URL='"${FRONTEND_URL}"''
+            --update-env-vars='CORS_ORIGINS=["'"${OLD_URL}"'","'"${NEW_URL}"'"],FRONTEND_URL='"${NEW_URL}"''
 
       - name: Health check
         run: |

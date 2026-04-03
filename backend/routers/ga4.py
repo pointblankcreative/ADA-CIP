@@ -1,5 +1,6 @@
 """GA4 URL management and web analytics endpoints."""
 
+import logging
 import uuid
 from datetime import date
 
@@ -8,7 +9,34 @@ from pydantic import BaseModel
 
 from backend.services import bigquery_client as bq
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/ga4", tags=["ga4"])
+
+_TABLE_ENSURED = False
+
+
+def _ensure_table():
+    """Create project_ga4_urls table if it doesn't exist."""
+    global _TABLE_ENSURED
+    if _TABLE_ENSURED:
+        return
+    try:
+        ddl = f"""
+            CREATE TABLE IF NOT EXISTS {bq.table('project_ga4_urls')} (
+                id STRING NOT NULL,
+                project_code STRING NOT NULL,
+                ga4_property_id STRING NOT NULL,
+                url_pattern STRING NOT NULL,
+                label STRING,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+                created_by STRING
+            )
+        """
+        bq.run_query(ddl)
+        _TABLE_ENSURED = True
+    except Exception:
+        logger.warning("Could not ensure project_ga4_urls table", exc_info=True)
 
 
 class GA4UrlCreate(BaseModel):
@@ -72,33 +100,43 @@ async def list_ga4_properties():
 
 @router.get("/{project_code}/urls", response_model=list[GA4UrlResponse])
 async def list_ga4_urls(project_code: str):
-    sql = f"""
-        SELECT id, project_code, ga4_property_id, url_pattern, label,
-               CAST(created_at AS STRING) AS created_at
-        FROM {bq.table('project_ga4_urls')}
-        WHERE project_code = @project_code
-        ORDER BY created_at
-    """
-    rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
-    return [GA4UrlResponse(**r) for r in rows]
+    _ensure_table()
+    try:
+        sql = f"""
+            SELECT id, project_code, ga4_property_id, url_pattern, label,
+                   CAST(created_at AS STRING) AS created_at
+            FROM {bq.table('project_ga4_urls')}
+            WHERE project_code = @project_code
+            ORDER BY created_at
+        """
+        rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
+        return [GA4UrlResponse(**r) for r in rows]
+    except Exception:
+        logger.warning("Failed to list GA4 URLs for %s", project_code, exc_info=True)
+        return []
 
 
 @router.post("/{project_code}/urls", response_model=GA4UrlResponse)
 async def add_ga4_url(project_code: str, body: GA4UrlCreate):
+    _ensure_table()
     url_id = str(uuid.uuid4())
-    sql = f"""
-        INSERT INTO {bq.table('project_ga4_urls')}
-            (id, project_code, ga4_property_id, url_pattern, label)
-        VALUES (@id, @project_code, @ga4_property_id, @url_pattern, @label)
-    """
-    params = [
-        bq.string_param("id", url_id),
-        bq.string_param("project_code", project_code),
-        bq.string_param("ga4_property_id", body.ga4_property_id),
-        bq.string_param("url_pattern", body.url_pattern),
-        bq.string_param("label", body.label or ""),
-    ]
-    bq.run_query(sql, params)
+    try:
+        sql = f"""
+            INSERT INTO {bq.table('project_ga4_urls')}
+                (id, project_code, ga4_property_id, url_pattern, label)
+            VALUES (@id, @project_code, @ga4_property_id, @url_pattern, @label)
+        """
+        params = [
+            bq.string_param("id", url_id),
+            bq.string_param("project_code", project_code),
+            bq.string_param("ga4_property_id", body.ga4_property_id),
+            bq.string_param("url_pattern", body.url_pattern),
+            bq.string_param("label", body.label or ""),
+        ]
+        bq.run_query(sql, params)
+    except Exception as e:
+        logger.error("Failed to add GA4 URL for %s: %s", project_code, e, exc_info=True)
+        raise HTTPException(500, f"Failed to save GA4 URL: {e}")
     return GA4UrlResponse(
         id=url_id,
         project_code=project_code,
@@ -110,14 +148,19 @@ async def add_ga4_url(project_code: str, body: GA4UrlCreate):
 
 @router.delete("/{project_code}/urls/{url_id}")
 async def delete_ga4_url(project_code: str, url_id: str):
-    sql = f"""
-        DELETE FROM {bq.table('project_ga4_urls')}
-        WHERE id = @id AND project_code = @project_code
-    """
-    bq.run_query(sql, [
-        bq.string_param("id", url_id),
-        bq.string_param("project_code", project_code),
-    ])
+    _ensure_table()
+    try:
+        sql = f"""
+            DELETE FROM {bq.table('project_ga4_urls')}
+            WHERE id = @id AND project_code = @project_code
+        """
+        bq.run_query(sql, [
+            bq.string_param("id", url_id),
+            bq.string_param("project_code", project_code),
+        ])
+    except Exception as e:
+        logger.error("Failed to delete GA4 URL %s: %s", url_id, e, exc_info=True)
+        raise HTTPException(500, f"Failed to delete GA4 URL: {e}")
     return {"status": "deleted"}
 
 
@@ -128,10 +171,15 @@ async def get_ga4_analytics(
     end_date: str | None = None,
 ):
     """Return GA4 web analytics data for a project's configured URLs."""
-    url_rows = bq.run_query(
-        f"SELECT ga4_property_id, url_pattern, id, label FROM {bq.table('project_ga4_urls')} WHERE project_code = @pc",
-        [bq.string_param("pc", project_code)],
-    )
+    _ensure_table()
+    try:
+        url_rows = bq.run_query(
+            f"SELECT ga4_property_id, url_pattern, id, label FROM {bq.table('project_ga4_urls')} WHERE project_code = @pc",
+            [bq.string_param("pc", project_code)],
+        )
+    except Exception:
+        return GA4PerformanceResponse(has_ga4=False)
+
     if not url_rows:
         return GA4PerformanceResponse(has_ga4=False)
 

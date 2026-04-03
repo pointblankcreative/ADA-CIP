@@ -10,11 +10,13 @@ export function SettingsTab({ code }: { code: string }) {
   const [properties, setProperties] = useState<GA4Property[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ga4_property_id: "", url_pattern: "", label: "" });
 
   const loadData = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [u, p] = await Promise.all([
         api.ga4.urls(code),
@@ -22,8 +24,8 @@ export function SettingsTab({ code }: { code: string }) {
       ]);
       setUrls(u);
       setProperties(p);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load GA4 configuration");
     } finally {
       setLoading(false);
     }
@@ -35,6 +37,7 @@ export function SettingsTab({ code }: { code: string }) {
     e.preventDefault();
     if (!form.ga4_property_id || !form.url_pattern) return;
     setAdding(true);
+    setError(null);
     try {
       const url = await api.ga4.addUrl(code, {
         ga4_property_id: form.ga4_property_id,
@@ -44,19 +47,20 @@ export function SettingsTab({ code }: { code: string }) {
       setUrls((prev) => [...prev, url]);
       setForm({ ga4_property_id: form.ga4_property_id, url_pattern: "", label: "" });
       setShowForm(false);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save GA4 URL. Please try again.");
     } finally {
       setAdding(false);
     }
   }
 
   async function handleDelete(urlId: string) {
+    setError(null);
     try {
       await api.ga4.deleteUrl(code, urlId);
       setUrls((prev) => prev.filter((u) => u.id !== urlId));
-    } catch {
-      /* ignore */
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete GA4 URL");
     }
   }
 
@@ -71,6 +75,12 @@ export function SettingsTab({ code }: { code: string }) {
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
       <Card>
         <div className="flex items-center justify-between">
           <div>
@@ -81,7 +91,7 @@ export function SettingsTab({ code }: { code: string }) {
           </div>
           {!showForm && (
             <button
-              onClick={() => setShowForm(true)}
+              onClick={() => { setShowForm(true); setError(null); }}
               className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition-colors"
             >
               <Plus className="h-3.5 w-3.5" /> Add URL

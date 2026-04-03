@@ -877,11 +877,8 @@ The overview page calculates `activeProjects` (filtered by `status === "active"`
 
 ---
 
-## PHASE 2 — UI Enhancements + CI/CD (not started)
+## Phase 1.5 — Bug Fixes (from 2026-03-29 testing)
 
-<<<<<<< Updated upstream
-Phase 2 focuses on two tracks: additional frontend/UI work, and setting up proper CI/CD so code flows through staging → prod via GitHub.
-=======
 The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo (25055) media plan. Three issues:
 
 1. **Template/example tabs**: The sheet has a "Blocking Chart Example" tab that the parser picks up first (it matches `"blocking" in title and "chart" in title`). Fix: skip tabs with "example" or "template" in the name, or prefer tabs without those words.
@@ -900,7 +897,7 @@ The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo 
 
 6. **Stale detection removal**: If `_auto_complete_projects()` in `daily_job.py` contains the 30-day no-spend detection query, REMOVE it entirely. Only keep the `end_date < CURRENT_DATE()` check.
 
-### Completion Criteria (Task 20)
+### Completion Criteria (Phase 1.5)
 - Media plan sync works for sheets with template/example tabs (skips them)
 - Multi-flight media plans have all flight lines synced
 - Pinterest and Reddit are in the PLATFORM_MAP
@@ -912,7 +909,6 @@ The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo 
 ## PHASE 2 — Brightwater: Insights Parity + Benchmarking
 
 **Goal:** Users should be able to answer 90% of questions about campaign performance by looking at CIP, without opening the ad platforms themselves. This means upgrading the performance page to show objective-appropriate KPIs, adding GA4 web analytics integration, and building a benchmarking system.
->>>>>>> Stashed changes
 
 **Asana backlog:** [ADA Campaign Intelligence Platform](https://app.asana.com/1/9281551468324/project/1213881933598770) — check for latest priorities before starting work.
 
@@ -1267,17 +1263,118 @@ On the performance tab KPI cards, add benchmark context:
 
 ---
 
-### Completion Criteria (Tasks 21-26)
+### Task 27: Bug Fix — Media Plan Sync Success Message (from staging QA 2026-04-02)
+
+**Priority: High — misleading user feedback.**
+
+**Bug:** When creating a new project via `/admin/projects/new` with a media plan Google Sheets URL, the success banner says "No media plan linked — you can add one later from the project management page" even when a URL was provided. The project IS created successfully (25042 confirmed) but the media plan sync result is reported incorrectly.
+
+**Root cause (likely):** The media plan sync fails silently (e.g., the sheet hasn't been shared with the service account yet, or the sync throws an error) and the frontend interprets any non-success as "no plan linked."
+
+**Reproduction:**
+1. Go to Admin → Create New Project
+2. Fill in all fields including a valid Google Sheets URL in the Media Plan Sheet URL field
+3. Click Create
+4. Observe: success banner says "No media plan linked" despite URL being provided
+
+**Fix:**
+- **Backend (`backend/routers/admin.py` or wherever project creation handles media plan sync):** Return a more specific status in the response: `"media_plan_sync": { "status": "error", "message": "Permission denied — sheet not shared with service account" }` vs `"status": "success"` vs `"status": "skipped"` (no URL provided)
+- **Frontend (`frontend/src/app/admin/projects/new/page.tsx`):** Use the `media_plan_sync` status from the response to show the correct message:
+  - If `status === "success"`: "Media plan synced successfully — X line items imported"
+  - If `status === "error"`: "Media plan sync failed: {message}. Make sure the sheet is shared with cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com"
+  - If `status === "skipped"`: "No media plan linked — you can add one later from the project management page"
+- The sharing instructions box (Task 24) is already on the form, which is good — just make the error message reference it
+
+---
+
+### Task 28: Bug Fix — GA4 URL Not Saving (from staging QA 2026-04-02)
+
+**Priority: High — feature completely non-functional.**
+
+**Bug:** On the project settings page, adding a GA4 URL (GA4 Property + URL Pattern) shows a brief spinner on the "Add URL" button but then nothing happens — the URL is not saved and does not appear in the list.
+
+**Reproduction:**
+1. Navigate to any project → Settings tab (or wherever GA4 URL config lives)
+2. Enter a GA4 Property ID (e.g., 530965077) and URL Pattern (e.g., "underfunded.ca")
+3. Click "Add URL"
+4. Observe: button shows spinner briefly, then returns to default state. No URL appears in the list. No error message shown.
+
+**Likely root causes (investigate in order):**
+
+1. **Missing BigQuery table:** The `project_ga4_urls` table may not exist in BigQuery yet. Check:
+   ```sql
+   SELECT * FROM `point-blank-ada.cip.INFORMATION_SCHEMA.TABLES`
+   WHERE table_name = 'project_ga4_urls'
+   ```
+   If it doesn't exist, run the CREATE TABLE DDL from Task 25 Step 1.
+
+2. **Backend endpoint error:** The `POST /api/ga4/{project_code}/urls` endpoint in `backend/routers/ga4.py` may be throwing an unhandled error. Test directly:
+   ```bash
+   curl -X POST https://cip-backend-staging-807520113440.northamerica-northeast1.run.app/api/ga4/25042/urls \
+     -H "Content-Type: application/json" \
+     -d '{"ga4_property_id": "530965077", "url_pattern": "underfunded.ca"}'
+   ```
+   Check the response — if it's a 500 error, the backend logs will show the traceback.
+
+3. **Frontend error swallowed:** The frontend may be catching the error but not displaying it. In `frontend/src/app/project/[code]/settings-tab.tsx`, ensure the catch block in the add-URL handler shows an error toast/message rather than silently failing.
+
+**Fix:**
+- Create the `project_ga4_urls` table if missing (run the DDL from Task 25)
+- Fix any backend errors in the GA4 router
+- Add proper error handling in the frontend — show a red error message if the save fails
+- After a successful save, the new URL should appear in the list immediately (optimistic update or refetch)
+
+---
+
+### Task 29: Fix CORS Dual-URL Format in Deploy Workflow
+
+**Priority: Medium — affects every new deploy to staging.**
+
+**Bug:** Google Cloud Run now uses a new URL format (`https://{service}-{project_number}.{region}.run.app`) but `gcloud run services describe --format='value(status.url)'` returns the OLD format (`https://{service}-{hash}-{region_code}.a.run.app`). The deploy workflow sets `CORS_ORIGINS` using the old-format URL, but browsers access the service via the new-format URL. This means CORS blocks all API calls after every fresh deploy until someone manually updates the env var.
+
+**Fix in `.github/workflows/deploy.yml`:**
+
+In the "Get frontend URL and update CORS" step, fetch BOTH URL formats and include both in CORS_ORIGINS:
+
+```yaml
+- name: Get frontend URL and update CORS
+  run: |
+    # Get the URL from gcloud (old format)
+    OLD_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
+      --project="${{ env.PROJECT_ID }}" \
+      --region="${{ env.REGION }}" \
+      --format='value(status.url)')
+    echo "Frontend (old format): $OLD_URL"
+
+    # Construct new-format URL
+    PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format='value(projectNumber)')
+    NEW_URL="https://${{ needs.determine-environment.outputs.frontend_service }}-${PROJECT_NUMBER}.${{ env.REGION }}.run.app"
+    echo "Frontend (new format): $NEW_URL"
+
+    # Set CORS to allow both URL formats
+    gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
+      --project="${{ env.PROJECT_ID }}" \
+      --region="${{ env.REGION }}" \
+      --update-env-vars='CORS_ORIGINS=["'"${OLD_URL}"'","'"${NEW_URL}"'"],FRONTEND_URL='"${NEW_URL}"''
+```
+
+This ensures CORS works regardless of which URL format the browser uses.
+
+---
+
+### Completion Criteria (Tasks 21-29)
 
 - Performance page shows different KPI cards and charts based on campaign objective (awareness vs conversion vs mixed)
 - Campaign objectives are correctly inferred from media plan data and campaign names
 - Missing metrics are hidden gracefully, not shown as zeros
 - Recently ended campaigns appear in a dedicated homepage section for 14 days
 - Media plan input shows clear sharing instructions for the CIP service account
-- GA4 URL configuration exists in project settings
+- GA4 URL configuration exists in project settings AND URLs actually save and persist
 - When GA4 URLs are configured, web analytics metrics appear on the performance page
 - Industry benchmark data is loaded and displayed as context on KPI cards
 - All new features work with the existing date range selector (7d/14d/30d/All)
+- Project creation with media plan URL shows correct sync status (success/error/skipped) — not always "no plan linked"
+- Deploy workflow sets CORS_ORIGINS with both old and new Cloud Run URL formats
 
 ---
 

@@ -26,8 +26,9 @@ function NewProjectForm() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{
     code: string;
-    mediaPlanSynced: boolean;
-    mediaPlanError?: string;
+    mediaPlanStatus: "success" | "error" | "skipped";
+    mediaPlanMessage?: string;
+    linesCreated?: number;
   } | null>(null);
   const [form, setForm] = useState<ProjectCreatePayload>({
     project_code: prefillCode,
@@ -63,9 +64,13 @@ function NewProjectForm() {
         slack_channel_id: form.slack_channel_id || undefined,
       };
       const result = await api.admin.projects.create(payload);
-      const mediaSynced = result?.media_plan_sync?.status === "success";
-      const mediaError = result?.media_plan_sync?.status === "error" ? result.media_plan_sync.message : undefined;
-      setSuccess({ code: form.project_code, mediaPlanSynced: mediaSynced, mediaPlanError: mediaError });
+      const syncStatus = result?.media_plan_sync?.status ?? "skipped";
+      setSuccess({
+        code: form.project_code,
+        mediaPlanStatus: syncStatus,
+        mediaPlanMessage: result?.media_plan_sync?.message,
+        linesCreated: result?.media_plan_sync?.lines_created,
+      });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create project");
     } finally {
@@ -231,16 +236,24 @@ function NewProjectForm() {
         )}
 
         {success && (
-          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-5 py-4">
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-400">
+          <div className={`rounded-md px-5 py-4 ${
+            success.mediaPlanStatus === "error"
+              ? "border border-amber-500/30 bg-amber-500/10"
+              : "border border-emerald-500/30 bg-emerald-500/10"
+          }`}>
+            <div className={`flex items-center gap-2 text-sm font-medium ${
+              success.mediaPlanStatus === "error" ? "text-amber-400" : "text-emerald-400"
+            }`}>
               <CheckCircle2 className="h-4 w-4" />
               Project {success.code} created successfully
             </div>
-            <p className="mt-1 text-xs text-emerald-400/70">
-              {success.mediaPlanSynced
-                ? "Media plan synced. Pacing and alerts are now active."
-                : success.mediaPlanError
-                  ? `Project created, but media plan sync failed: ${success.mediaPlanError}. Make sure the spreadsheet is shared with ${SERVICE_ACCOUNT_EMAIL}`
+            <p className={`mt-1 text-xs ${
+              success.mediaPlanStatus === "error" ? "text-amber-400/70" : "text-emerald-400/70"
+            }`}>
+              {success.mediaPlanStatus === "success"
+                ? `Media plan synced successfully — ${success.linesCreated ?? 0} line items imported. Pacing and alerts are now active.`
+                : success.mediaPlanStatus === "error"
+                  ? `Project created, but media plan sync failed: ${success.mediaPlanMessage || "unknown error"}. Make sure the spreadsheet is shared with ${SERVICE_ACCOUNT_EMAIL}`
                   : "No media plan linked — you can add one later from the project management page."}
             </p>
             <div className="mt-3 flex gap-3">

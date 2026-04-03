@@ -207,13 +207,15 @@ async def admin_create_project(req: ProjectCreateRequest):
     ])
 
     # Optionally sync media plan
-    sync_result = None
     if sheet_id:
         try:
             sync_result = sync_media_plan(sheet_id, req.project_code)
+            sync_result.setdefault("status", "success")
         except Exception as e:
             logger.warning("Media plan sync failed for %s: %s", req.project_code, e)
-            sync_result = {"status": "error", "error": str(e)}
+            sync_result = {"status": "error", "message": str(e)}
+    else:
+        sync_result = {"status": "skipped"}
 
     return {
         "status": "created",
@@ -274,14 +276,16 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
     """, params)
 
     # Trigger media plan sync if sheet URL was updated
-    sync_result = None
     if req.media_plan_sheet_url:
         sheet_id = _extract_sheet_id(req.media_plan_sheet_url)
         try:
             sync_result = sync_media_plan(sheet_id, project_code)
+            sync_result.setdefault("status", "success")
         except Exception as e:
             logger.warning("Media plan sync failed for %s: %s", project_code, e)
-            sync_result = {"status": "error", "error": str(e)}
+            sync_result = {"status": "error", "message": str(e)}
+    else:
+        sync_result = None
 
     return {
         "status": "updated",

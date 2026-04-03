@@ -179,8 +179,14 @@ export interface ProjectCreatePayload {
 }
 
 export interface ProjectCreateResponse {
-  project: Record<string, unknown>;
-  media_plan_sync?: { status: string; message?: string };
+  status: string;
+  project_code: string;
+  client_id: string;
+  media_plan_sync: {
+    status: "success" | "error" | "skipped";
+    message?: string;
+    lines_created?: number;
+  };
 }
 
 export interface PlatformFreshness {
