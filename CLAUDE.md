@@ -3,6 +3,31 @@
 ## Project Overview
 Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Looker. Centralises campaign monitoring, budget pacing, automated reporting, and client-facing dashboards for a political advertising agency running 5-15 concurrent campaigns across Meta, Google Ads, LinkedIn, StackAdapt, TikTok, Snapchat, and Perion/Hivestack (DOOH).
 
+## Current Status (updated 2026-04-04)
+
+**Phase**: Phase 2 (Brightwater) — building out features to make CIP compelling for team adoption.
+
+**What's deployed to staging** (`main` branch → `cip-backend-staging` / `cip-frontend-staging` on Cloud Run):
+- Core data pipeline: Funnel.io → BigQuery transformation for all 8 platforms
+- GA4 sessions/conversions ingestion
+- Admin panel: project management, pipeline controls, media plan sync
+- Performance dashboard: daily metrics, budget pacing, platform breakdown
+- Industry benchmarks (political advertising baselines)
+- Reach/frequency ingestion from ad-set-level Funnel.io data (Tasks 30-32, just committed)
+- Ad set and ad/creative drill-down endpoints and UI (Tasks 30-32)
+
+**What needs doing next**:
+1. Run the `fact_adset_daily` backfill: `python -m ingestion.transformation.adset_transform --full` (table exists in BigQuery but is empty)
+2. Verify the Tasks 30-32 staging deploy works end-to-end (audience table, creative table, frequency warnings)
+3. Polish: click-to-sort on drill-down tables, top/bottom creative borders, frequency warning "and N others" link
+4. See sprint backlog below for remaining tasks
+
+**Who's using it**: Only Frazer so far. Goal is to make it good enough that the whole team adopts it immediately on rollout.
+
+**Branch model**: `main` → staging (auto-deploy via GitHub Actions, ~6 min). `production` branch → production. No one else is committing right now.
+
+**Credentials**: Backend uses GCP Application Default Credentials (no service account key file). Cloud Run picks these up automatically. For local dev, use `gcloud auth application-default login`.
+
 ## Architecture
 - **Frontend**: Next.js 14+ with React, TypeScript, Tailwind CSS, Recharts
 - **Backend API**: FastAPI (Python 3.11+), Pydantic v2, Uvicorn
