@@ -921,6 +921,139 @@ The media plan sync (`backend/services/media_plan_sync.py`) crashes on the Endo 
 - `_load_media_plan_objectives()` queries the correct `objective` column
 - Benchmarks endpoint returns 200 (empty is OK for now, no 500)
 
+10. **GA4 integration: switch from BigQuery export to Funnel data source**
+
+    The current GA4 router (`backend/routers/ga4.py` line 197) queries `analytics_{property_id}.events_*` BigQuery export tables, but these datasets don't exist — GA4 has never been linked to BigQuery export. However, GA4 data already flows through Funnel.io into `core_funnel_export.funnel_data` with these GA4-specific columns:
+
+    | Funnel Column | Type | Description |
+    |---|---|---|
+    | `Property_ID___GA4__Google_Analytics` | STRING | GA4 property ID (e.g. "530965077") |
+    | `Property_name___GA4__Google_Analytics` | STRING | Property name (e.g. "underfunded.ca") |
+    | `Session_source___GA4__Google_Analytics` | STRING | Traffic source (e.g. "meta", "google", "(direct)") |
+    | `Session_medium___GA4__Google_Analytics` | STRING | Traffic medium (e.g. "paid", "referral", "(none)") |
+    | `Session_campaign___GA4__Google_Analytics` | STRING | UTM campaign (e.g. "pointblank_25042_awarenessf2") |
+    | `Event_name___GA4__Google_Analytics` | STRING | Event type (page_view, session_start, sign_up, etc.) |
+    | `Event_count___GA4__Google_Analytics` | INT64 | Count of this event |
+    | `Sessions___GA4_event_based__Google_Analytics` | INT64 | Session count (only on session_start rows) |
+    | `Views___GA4__Google_Analytics` | INT64 | Page views (only on page_view rows) |
+    | `Key_events___GA4__Google_Analytics` | FLOAT64 | Conversion events count |
+    | `Date` | DATE | Standard Funnel date column |
+
+    There are 17 GA4 properties in Funnel across PB clients (including underfunded.ca = 530965077).
+
+    #### Step 1: Create `fact_ga4_daily` table
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_ga4_daily` (
+      date DATE NOT NULL,
+      ga4_property_id STRING NOT NULL,
+      property_name STRING,
+      session_source STRING,
+      session_medium STRING,
+      session_campaign STRING,
+      sessions INT64 DEFAULT 0,
+      page_views INT64 DEFAULT 0,
+      first_visits INT64 DEFAULT 0,
+      key_events FLOAT64 DEFAULT 0,
+      sign_ups INT64 DEFAULT 0,
+      scroll_events INT64 DEFAULT 0,
+      click_events INT64 DEFAULT 0,
+      form_starts INT64 DEFAULT 0,
+      form_submits INT64 DEFAULT 0,
+      user_engagements INT64 DEFAULT 0,
+      total_event_count INT64 DEFAULT 0,
+      ingestion_source STRING DEFAULT 'funnel_transform',
+      loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    )
+    PARTITION BY date
+    CLUSTER BY ga4_property_id, session_source
+    OPTIONS(
+      description='Daily GA4 web analytics from Funnel.io, pivoted by event type. One row per date/property/source/medium/campaign.'
+    );
+    ```
+
+    #### Step 2: Build transformation
+
+    ✅ **DONE** — `ingestion/transformation/ga4_transform.py` created. Uses same cross-region pattern as digital daily transform:
+    SELECT in US region → DELETE target range in Montreal → `load_table_from_json` in Montreal.
+    Cannot use a single MERGE across regions. Already wired into `daily_job.py` as Stage 1b.
+
+    Run manually: `python -m ingestion.transformation.ga4_transform --full` (backfill) or without `--full` (last 7 days).
+
+    The transformation SQL:
+
+    ```sql
+    MERGE INTO `point-blank-ada.cip.fact_ga4_daily` AS target
+    USING (
+      SELECT
+        Date AS date,
+        Property_ID___GA4__Google_Analytics AS ga4_property_id,
+        ANY_VALUE(Property_name___GA4__Google_Analytics) AS property_name,
+        IFNULL(Session_source___GA4__Google_Analytics, '(not set)') AS session_source,
+        IFNULL(Session_medium___GA4__Google_Analytics, '(not set)') AS session_medium,
+        IFNULL(Session_campaign___GA4__Google_Analytics, '(not set)') AS session_campaign,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'session_start', Sessions___GA4_event_based__Google_Analytics, 0)) AS sessions,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'page_view', Views___GA4__Google_Analytics, 0)) AS page_views,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'first_visit', Event_count___GA4__Google_Analytics, 0)) AS first_visits,
+        SUM(Key_events___GA4__Google_Analytics) AS key_events,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'sign_up', Event_count___GA4__Google_Analytics, 0)) AS sign_ups,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'scroll', Event_count___GA4__Google_Analytics, 0)) AS scroll_events,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'click', Event_count___GA4__Google_Analytics, 0)) AS click_events,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'form_start', Event_count___GA4__Google_Analytics, 0)) AS form_starts,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'form_submit', Event_count___GA4__Google_Analytics, 0)) AS form_submits,
+        SUM(IF(Event_name___GA4__Google_Analytics = 'user_engagement', Event_count___GA4__Google_Analytics, 0)) AS user_engagements,
+        SUM(Event_count___GA4__Google_Analytics) AS total_event_count
+      FROM `point-blank-ada.core_funnel_export.funnel_data`
+      WHERE Property_ID___GA4__Google_Analytics IS NOT NULL
+        AND Property_ID___GA4__Google_Analytics != ''
+      GROUP BY Date, Property_ID___GA4__Google_Analytics, session_source, session_medium, session_campaign
+    ) AS source
+    ON target.date = source.date
+      AND target.ga4_property_id = source.ga4_property_id
+      AND target.session_source = source.session_source
+      AND target.session_medium = source.session_medium
+      AND target.session_campaign = source.session_campaign
+    WHEN MATCHED THEN UPDATE SET
+      property_name = source.property_name,
+      sessions = source.sessions, page_views = source.page_views,
+      first_visits = source.first_visits, key_events = source.key_events,
+      sign_ups = source.sign_ups, scroll_events = source.scroll_events,
+      click_events = source.click_events, form_starts = source.form_starts,
+      form_submits = source.form_submits, user_engagements = source.user_engagements,
+      total_event_count = source.total_event_count,
+      loaded_at = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN INSERT ROW;
+    ```
+
+    #### Step 3: Rewrite GA4 analytics endpoint
+
+    ✅ **DONE** — `get_ga4_analytics()` and `list_ga4_properties()` query `fact_ga4_daily`. URL patterns filter on `session_campaign`, `session_source`, `session_medium`, and `property_name` (page URLs are not in Funnel’s GA4 grain).
+
+    The lookup flow:
+    1. Get configured property IDs from `project_ga4_urls` (same as now)
+    2. Query `fact_ga4_daily` WHERE `ga4_property_id = @property_id`
+    3. Aggregate: `SUM(sessions)`, `SUM(page_views)`, `SUM(key_events)` as conversions
+    4. Optional: filter by date range (same as now)
+    5. Group by date for daily chart data
+
+    Also update `list_ga4_properties()` to discover properties from `fact_ga4_daily` instead of scanning BigQuery datasets:
+    ```sql
+    SELECT DISTINCT ga4_property_id, property_name
+    FROM fact_ga4_daily
+    ORDER BY property_name
+    ```
+
+    #### Step 4: Add to scheduler
+
+    ✅ **DONE** — `run_ga4_transformation` is invoked from `daily_job.py` as Stage 1b (same entrypoint as the digital transform). Cloud Scheduler already POSTs `/api/admin/daily-run`; no separate scheduler job required.
+
+### Completion Criteria (Task 10 — GA4 via Funnel)
+- `fact_ga4_daily` table exists and is populated from Funnel data
+- GA4 analytics endpoint queries `fact_ga4_daily` (not `analytics_*.events_*`)
+- Property discovery uses `fact_ga4_daily` (not BigQuery dataset listing)
+- Performance tab shows GA4 sessions/conversions chart for projects with configured URLs
+- Transformation is idempotent (MERGE, not INSERT)
+
 ---
 
 ## PHASE 2 — Brightwater: Insights Parity + Benchmarking

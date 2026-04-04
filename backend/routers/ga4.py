@@ -1,10 +1,13 @@
-"""GA4 URL management and web analytics endpoints."""
+"""GA4 URL management and web analytics endpoints.
+
+Web analytics are read from `fact_ga4_daily` (Funnel.io → BigQuery), not GA4 BigQuery export.
+"""
 
 import logging
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.services import bigquery_client as bq
@@ -80,21 +83,26 @@ class GA4PerformanceResponse(BaseModel):
 
 @router.get("/properties", response_model=list[GA4PropertyResponse])
 async def list_ga4_properties():
-    """List available GA4 properties from BigQuery datasets."""
+    """List GA4 properties that appear in fact_ga4_daily (Funnel-fed warehouse data)."""
     try:
-        client = bq.get_client()
-        datasets = list(client.list_datasets())
-        properties = []
-        for ds in datasets:
-            ds_id = ds.dataset_id
-            if ds_id.startswith("analytics_"):
-                prop_id = ds_id.replace("analytics_", "")
-                properties.append(GA4PropertyResponse(
-                    property_id=prop_id,
-                    property_name=f"GA4 Property {prop_id}",
-                ))
-        return properties
+        sql = f"""
+            SELECT
+                ga4_property_id AS property_id,
+                ANY_VALUE(property_name) AS property_name
+            FROM {bq.table('fact_ga4_daily')}
+            GROUP BY ga4_property_id
+            ORDER BY property_name NULLS LAST, property_id
+        """
+        rows = bq.run_query(sql)
+        return [
+            GA4PropertyResponse(
+                property_id=r["property_id"],
+                property_name=r.get("property_name"),
+            )
+            for r in rows
+        ]
     except Exception:
+        logger.warning("list_ga4_properties failed", exc_info=True)
         return []
 
 
@@ -164,13 +172,40 @@ async def delete_ga4_url(project_code: str, url_id: str):
     return {"status": "deleted"}
 
 
+def _build_ga4_url_filter_sql(url_rows: list[dict]) -> tuple[str, list]:
+    """OR of (property_id + optional pattern on campaign/source/medium/property_name)."""
+    parts: list[str] = []
+    params: list = []
+    for i, row in enumerate(url_rows):
+        pid = row["ga4_property_id"]
+        pattern = (row.get("url_pattern") or "").strip()
+        p_pid = f"ga4_pid_{i}"
+        params.append(bq.string_param(p_pid, pid))
+        if not pattern:
+            parts.append(f"ga4_property_id = @{p_pid}")
+            continue
+        like_val = pattern if "%" in pattern else f"%{pattern}%"
+        p_like = f"ga4_like_{i}"
+        params.append(bq.string_param(p_like, like_val))
+        parts.append(f"""
+            (ga4_property_id = @{p_pid} AND (
+                LOWER(session_campaign) LIKE LOWER(@{p_like})
+                OR LOWER(session_source) LIKE LOWER(@{p_like})
+                OR LOWER(session_medium) LIKE LOWER(@{p_like})
+                OR LOWER(IFNULL(property_name, '')) LIKE LOWER(@{p_like})
+            ))
+        """.strip())
+    joined = " OR ".join(parts) if parts else "FALSE"
+    return f"({joined})", params
+
+
 @router.get("/{project_code}/analytics", response_model=GA4PerformanceResponse)
 async def get_ga4_analytics(
     project_code: str,
-    start_date: str | None = None,
-    end_date: str | None = None,
+    start_date: str | None = Query(None, description="YYYY-MM-DD inclusive"),
+    end_date: str | None = Query(None, description="YYYY-MM-DD inclusive"),
 ):
-    """Return GA4 web analytics data for a project's configured URLs."""
+    """Return GA4 web analytics from fact_ga4_daily for configured property + URL patterns."""
     _ensure_table()
     try:
         url_rows = bq.run_query(
@@ -192,57 +227,44 @@ async def get_ga4_analytics(
         for r in url_rows
     ]
 
-    ga4_prop = url_rows[0]["ga4_property_id"]
-    url_patterns = [r["url_pattern"] for r in url_rows]
-    events_table = f"`point-blank-ada.analytics_{ga4_prop}.events_*`"
+    url_filter_sql, params = _build_ga4_url_filter_sql(url_rows)
 
-    date_clause = "1=1"
-    params: list = []
+    date_parts: list[str] = []
     if start_date:
-        date_clause += " AND event_date >= @start_date"
-        params.append(bq.string_param("start_date", start_date.replace("-", "")))
+        date_parts.append("date >= @ga4_start_date")
+        params.append(bq.date_param("ga4_start_date", date.fromisoformat(start_date)))
     if end_date:
-        date_clause += " AND event_date <= @end_date"
-        params.append(bq.string_param("end_date", end_date.replace("-", "")))
+        date_parts.append("date <= @ga4_end_date")
+        params.append(bq.date_param("ga4_end_date", date.fromisoformat(end_date)))
+    date_sql = " AND ".join(date_parts) if date_parts else "TRUE"
 
-    url_filter_parts = []
-    for i, pattern in enumerate(url_patterns):
-        pname = f"url_{i}"
-        url_filter_parts.append(f"page_location LIKE @{pname}")
-        params.append(bq.string_param(pname, f"%{pattern}%"))
-    url_filter = " OR ".join(url_filter_parts) if url_filter_parts else "1=1"
+    daily_sql = f"""
+        SELECT
+            date,
+            SUM(sessions) AS sessions,
+            SUM(page_views) AS page_views,
+            SUM(key_events) AS conversions
+        FROM {bq.table('fact_ga4_daily')}
+        WHERE {url_filter_sql}
+          AND {date_sql}
+        GROUP BY date
+        ORDER BY date
+    """
 
     try:
-        daily_sql = f"""
-            SELECT
-                PARSE_DATE('%Y%m%d', event_date) AS date,
-                COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(ga_session_id AS STRING))) AS sessions,
-                COUNTIF(event_name = 'conversion') AS conversions,
-                AVG(IF(event_name = 'session_start',
-                    (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'engaged_session_event'), NULL)) AS engagement,
-                AVG(IF(event_name = 'session_start',
-                    (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'session_engaged'), NULL)) AS session_engaged
-            FROM {events_table},
-                UNNEST(event_params) ep
-            WHERE ep.key = 'ga_session_id'
-              AND ep.value.int_value IS NOT NULL
-              AND ({url_filter})
-              AND {date_clause}
-            GROUP BY event_date
-            ORDER BY event_date
-        """
-        daily_rows = bq.run_query(daily_sql, params if params else None)
+        daily_rows = bq.run_query(daily_sql, params)
     except Exception:
+        logger.warning("get_ga4_analytics query failed for %s", project_code, exc_info=True)
         return GA4PerformanceResponse(has_ga4=True, urls=urls)
 
     total_sessions = sum(int(r.get("sessions", 0) or 0) for r in daily_rows)
-    total_conversions = sum(int(r.get("conversions", 0) or 0) for r in daily_rows)
+    total_conversions = sum(int(round(float(r.get("conversions", 0) or 0))) for r in daily_rows)
 
     daily = [
         GA4WebAnalytics(
             date=r["date"],
             sessions=int(r.get("sessions", 0) or 0),
-            conversions=int(r.get("conversions", 0) or 0),
+            conversions=int(round(float(r.get("conversions", 0) or 0))),
         )
         for r in daily_rows
     ]

@@ -452,6 +452,40 @@ OPTIONS(
 
 
 -- ==============================================================================
+-- TABLE: fact_ga4_daily
+-- Daily GA4 web analytics from Funnel.io, pivoted by event type.
+-- Cross-region: source data in US, this table in northamerica-northeast1.
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_ga4_daily` (
+  date DATE NOT NULL,
+  ga4_property_id STRING NOT NULL,
+  property_name STRING,
+  session_source STRING,
+  session_medium STRING,
+  session_campaign STRING,
+  sessions INT64 DEFAULT 0,
+  page_views INT64 DEFAULT 0,
+  first_visits INT64 DEFAULT 0,
+  key_events FLOAT64 DEFAULT 0,
+  sign_ups INT64 DEFAULT 0,
+  scroll_events INT64 DEFAULT 0,
+  click_events INT64 DEFAULT 0,
+  form_starts INT64 DEFAULT 0,
+  form_submits INT64 DEFAULT 0,
+  user_engagements INT64 DEFAULT 0,
+  total_event_count INT64 DEFAULT 0,
+  ingestion_source STRING DEFAULT 'funnel_transform',
+  loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+PARTITION BY date
+CLUSTER BY ga4_property_id, session_source
+OPTIONS(
+  description='Daily GA4 web analytics from Funnel.io, pivoted by event type. One row per date/property/source/medium/campaign.'
+);
+
+
+-- ==============================================================================
 -- SEED DATA: Platform Dimension
 -- ==============================================================================
 
