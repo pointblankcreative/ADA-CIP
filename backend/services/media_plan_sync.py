@@ -38,7 +38,18 @@ PLATFORM_MAP = {
     "perion": "perion",
     "hivestack": "perion",
     "dooh": "perion",
+    "pinterest": "pinterest",
+    "reddit": "reddit",
 }
+
+# Patterns that look like section/flight headers, NOT real platforms
+_FLIGHT_RE = re.compile(
+    r"^(flight\s+\w+|phase\s+\d+|wave\s+\d+|burst\s+\d+)$", re.IGNORECASE
+)
+
+def _is_section_header(raw: str) -> bool:
+    """Return True if the value looks like a flight/section header, not a platform."""
+    return bool(_FLIGHT_RE.match(raw.strip()))
 
 
 def _normalise_platform(raw: str | None) -> str | None:
@@ -252,6 +263,10 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
         obj_fmt = _cell(all_data, row_idx, objective_col)
 
         if plat_raw:
+            # Skip flight/section headers — don't let them become current_platform
+            if _is_section_header(plat_raw):
+                logger.debug("  Skipping section header: %s", plat_raw)
+                continue
             current_platform = plat_raw
 
         if not current_platform or current_platform.lower() in ("total", "grand total", ""):
@@ -435,6 +450,33 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
     return lines
 
 
+def _synthesise_lines_from_mp(
+    mp_lines: list[dict], metadata: dict
+) -> list[dict]:
+    """Create blocking-chart-style line dicts from media plan tab lines.
+
+    Used as a fallback when the blocking chart only had section/flight headers
+    and no actual platform rows.
+    """
+    lines = []
+    for mp in mp_lines:
+        if not mp.get("platform_id"):
+            continue
+        budget = mp.get("budget")
+        if not budget or budget <= 0:
+            continue
+        lines.append({
+            "platform": mp.get("platform", ""),
+            "platform_id": mp["platform_id"],
+            "objective_format": mp.get("goal", ""),
+            "budget": budget,
+            "objective_pct": None,
+            "flight_start": mp.get("flight_start") or metadata.get("start_date"),
+            "flight_end": mp.get("flight_end") or metadata.get("end_date"),
+        })
+    return lines
+
+
 # ── Sync Orchestrator ───────────────────────────────────────────────
 
 def sync_media_plan(sheet_id: str, project_code: str) -> dict:
@@ -452,27 +494,43 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     gc = _get_gspread_client()
     ss = gc.open_by_key(sheet_id)
 
-    # Find tabs by name
+    # Find tabs by name — skip example/template tabs, collect ALL media plan tabs
     blocking_ws = None
-    media_plan_ws = None
+    media_plan_tabs: list[gspread.Worksheet] = []
+    _skip_words = {"example", "template", "sample"}
+
     for ws in ss.worksheets():
         title_lower = ws.title.lower()
+        # Skip example/template tabs
+        if any(w in title_lower for w in _skip_words):
+            logger.info("  Skipping tab: %s", ws.title)
+            continue
         if "blocking" in title_lower and "chart" in title_lower:
             blocking_ws = ws
         elif "media plan" in title_lower or title_lower == "media plan":
-            media_plan_ws = ws
+            media_plan_tabs.append(ws)
 
     if not blocking_ws:
         sheets = ss.worksheets()
         if len(sheets) >= 2:
             blocking_ws = sheets[1]
-            media_plan_ws = sheets[0]
+            if not media_plan_tabs:
+                media_plan_tabs = [sheets[0]]
         else:
             raise ValueError("Could not find Blocking Chart tab")
 
-    # ── Parse both tabs ─────────────────────────────────────────────
+    # ── Parse blocking chart + all media plan tabs ─────────────────
     bc = _parse_blocking_chart(blocking_ws)
-    mp_lines = _parse_media_plan_tab(media_plan_ws) if media_plan_ws else []
+    mp_lines: list[dict] = []
+    for mp_ws in media_plan_tabs:
+        logger.info("  Parsing media plan tab: %s", mp_ws.title)
+        mp_lines.extend(_parse_media_plan_tab(mp_ws))
+
+    # ── Fallback: if blocking chart had 0 platform lines (e.g. only
+    #    flight-level groupings), synthesise lines from media plan tabs
+    if not bc["lines"] and mp_lines:
+        logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
+        bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
 
     meta = bc["metadata"]
     plan_id = f"plan-{project_code}-{uuid.uuid4().hex[:8]}"
@@ -539,8 +597,10 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
             "is_traditional": False,
         })
 
+        line_has_weeks = False
         for w in bc["weeks"]:
             if w["line_index"] == i:
+                line_has_weeks = True
                 week_records.append({
                     "id": f"{line_id}-w-{w['week_start'].isoformat()}",
                     "line_id": line_id,
@@ -548,6 +608,21 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
                     "week_start": w["week_start"].isoformat(),
                     "is_active": w["is_active"],
                 })
+
+        # If no blocking chart weeks exist for this line (e.g. fallback
+        # from media plan tabs), generate weekly entries from flight dates
+        if not line_has_weeks and flight_start and flight_end:
+            week_cursor = flight_start - timedelta(days=flight_start.weekday())  # Monday
+            while week_cursor <= flight_end:
+                is_active = flight_start <= week_cursor + timedelta(days=6) and week_cursor <= flight_end
+                week_records.append({
+                    "id": f"{line_id}-w-{week_cursor.isoformat()}",
+                    "line_id": line_id,
+                    "project_code": project_code,
+                    "week_start": week_cursor.isoformat(),
+                    "is_active": is_active,
+                })
+                week_cursor += timedelta(days=7)
 
     # ── Write to BigQuery ───────────────────────────────────────────
     mtl = _mtl_client()
