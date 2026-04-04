@@ -86,8 +86,9 @@ function toBenchmark(
   };
 }
 
-const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
-const fmtCad = (v: number) => `$${v.toFixed(2)}`;
+const fmtPct = (v: number | null) => v != null ? `${(v * 100).toFixed(1)}%` : "—";
+const fmtCad = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "—";
+const safeFix = (v: number | null, d = 0) => v != null ? v.toFixed(d) : "0";
 
 export function PerformanceTab({ code }: { code: string }) {
   const [data, setData] = useState<PerformanceResponse | null>(null);
@@ -322,7 +323,7 @@ export function PerformanceTab({ code }: { code: string }) {
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
               <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${((v ?? 0) / 1000).toFixed(0)}k`} />
               <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
               <Area type="monotone" dataKey="spend" stroke="#3b82f6" strokeWidth={2} fill="url(#spendGrad)" />
             </AreaChart>
@@ -368,8 +369,8 @@ export function PerformanceTab({ code }: { code: string }) {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${v.toFixed(0)}%`} domain={[0, 100]} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v.toFixed(1)}%`, "VCR"]} />
+                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v)}%`} domain={[0, 100]} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${(v ?? 0).toFixed(1)}%`, "VCR"]} />
                 <Line type="monotone" dataKey="vcrPct" stroke="#a855f7" strokeWidth={2} dot={false} name="VCR" />
               </LineChart>
             </ResponsiveContainer>
@@ -386,7 +387,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(0)}`} />
+                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v)}`} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "CPA"]} />
                 <Line type="monotone" dataKey="cpa" stroke="#22c55e" strokeWidth={2} dot={false} name="CPA" />
               </LineChart>
@@ -404,7 +405,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
                 <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${v.toFixed(0)}%`} />
+                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v)}%`} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Bar yAxisId="left" dataKey="conversions" fill="#22c55e" opacity={0.5} radius={[2, 2, 0, 0]} name="Conversions" />
                 {has(data, "conversion_rate") && (
@@ -430,7 +431,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 layout="vertical"
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={(v) => `$${((v ?? 0) / 1000).toFixed(0)}k`} />
                 <YAxis type="category" dataKey="name" stroke="#475569" fontSize={11} width={80} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
                 <Bar dataKey="spend" radius={[0, 4, 4, 0]}>

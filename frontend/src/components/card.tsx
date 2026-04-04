@@ -38,6 +38,7 @@ interface KpiCardProps {
 
 function benchmarkColor(bm: BenchmarkIndicator): string {
   const { current, p25, p75, lowerIsBetter } = bm;
+  if (current == null || p25 == null || p75 == null) return "text-slate-400";
   if (lowerIsBetter) {
     if (current <= p25) return "text-emerald-400";
     if (current >= p75) return "text-red-400";
@@ -56,7 +57,7 @@ function benchmarkBarPosition(bm: BenchmarkIndicator): number {
 }
 
 export function KpiCard({ label, value, sub, accent, benchmark }: KpiCardProps) {
-  const fmt = benchmark?.format ?? ((v: number) => v.toFixed(2));
+  const fmt = benchmark?.format ?? ((v: number) => (v ?? 0).toFixed(2));
 
   return (
     <Card>
