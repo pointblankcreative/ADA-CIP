@@ -53,19 +53,19 @@ def _date_filter(start_date: str | None, end_date: str | None) -> tuple[str, lis
 
 
 def _load_media_plan_objectives(project_code: str) -> dict[str, str]:
-    """Load objective_format from media_plan_lines for a project, keyed by normalised platform."""
+    """Load objective from media_plan_lines for a project, keyed by normalised platform."""
     try:
         sql = f"""
-            SELECT platform_id, objective_format
+            SELECT platform_id, objective
             FROM {bq.table('media_plan_lines')}
             WHERE project_code = @project_code
-              AND objective_format IS NOT NULL
+              AND objective IS NOT NULL
         """
         rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
         result: dict[str, str] = {}
         for r in rows:
             pid = r.get("platform_id")
-            obj = r.get("objective_format")
+            obj = r.get("objective")
             if pid and obj:
                 result[pid] = obj
         return result

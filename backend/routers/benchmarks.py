@@ -39,12 +39,12 @@ def _detect_project_objective(project_code: str) -> str:
     """Determine a project's objective type from its campaign data."""
     try:
         mp_sql = f"""
-            SELECT platform_id, objective_format
+            SELECT platform_id, objective
             FROM {bq.table('media_plan_lines')}
-            WHERE project_code = @pc AND objective_format IS NOT NULL
+            WHERE project_code = @pc AND objective IS NOT NULL
         """
         mp_rows = bq.run_query(mp_sql, [bq.string_param("pc", project_code)])
-        mp_objectives = {r["platform_id"]: r["objective_format"] for r in mp_rows if r.get("platform_id")}
+        mp_objectives = {r["platform_id"]: r["objective"] for r in mp_rows if r.get("platform_id")}
     except Exception:
         mp_objectives = {}
 
@@ -83,7 +83,11 @@ async def get_benchmarks(project_code: str):
             CASE WHEN platform_id IS NULL THEN 0 ELSE 1 END,
             scope, metric_name
     """
-    rows = bq.run_query(sql, [bq.string_param("objective", objective)])
+    try:
+        rows = bq.run_query(sql, [bq.string_param("objective", objective)])
+    except Exception:
+        logger.warning("Failed to query benchmarks for %s (objective=%s)", project_code, objective, exc_info=True)
+        rows = []
 
     cross_platform: dict[str, BenchmarkValue] = {}
     platform_specific: dict[str, dict[str, BenchmarkValue]] = {}

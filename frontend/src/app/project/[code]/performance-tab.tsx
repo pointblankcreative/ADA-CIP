@@ -30,7 +30,7 @@ const RANGE_OPTIONS = [
   { label: "7d", days: 7 },
   { label: "14d", days: 14 },
   { label: "30d", days: 30 },
-  { label: "All", days: 365 },
+  { label: "All", days: 0 },
 ];
 
 const PLATFORM_COLORS: Record<string, string> = {
@@ -94,7 +94,7 @@ export function PerformanceTab({ code }: { code: string }) {
   const [ga4Data, setGa4Data] = useState<GA4PerformanceResponse | null>(null);
   const [benchData, setBenchData] = useState<BenchmarkResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [days, setDays] = useState(7);
+  const [days, setDays] = useState(0);
 
   useEffect(() => {
     setLoading(true);
