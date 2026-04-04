@@ -17,7 +17,6 @@ from datetime import date, datetime, timezone
 from backend.services import bigquery_client as bq
 from backend.services.pacing import run_all_active as run_all_pacing
 from backend.services.transformation import run_transformation
-from ingestion.transformation.ga4_transform import run_ga4_transformation
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +194,8 @@ def run_daily_pipeline() -> dict:
     # ── Stage 1b: GA4 Transformation ──────────────────────────────
     logger.info("=== Daily Pipeline: Stage 1b — GA4 Transformation ===")
     try:
+        from ingestion.transformation.ga4_transform import run_ga4_transformation
+
         t1b = time.time()
         ga4_result = run_ga4_transformation("daily")
         results["stages"]["ga4_transformation"] = {
