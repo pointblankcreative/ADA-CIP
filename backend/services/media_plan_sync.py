@@ -147,13 +147,13 @@ def _cell(data: list[list[str]], row: int, col: int) -> str:
 def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
     """Parse the Blocking Chart tab using label-based discovery."""
     all_data = ws.get_all_values()
-    if len(all_data) < 12:
-        raise ValueError(f"Blocking Chart has only {len(all_data)} rows — expected >= 12")
+    if len(all_data) < 8:
+        raise ValueError(f"Blocking Chart has only {len(all_data)} rows — expected >= 8")
 
     # ── Discover metadata positions ─────────────────────────────────
     client_pos = _find_label(all_data, "Client")
     project_pos = _find_label(all_data, "Project")
-    dates_pos = _find_label(all_data, "Start & End")
+    dates_pos = _find_label(all_data, "Start & End") or _find_label(all_data, "Run Dates")
     budget_pos = _find_label(all_data, "Net Budget")
 
     client_name = _cell(all_data, client_pos[0], client_pos[1] + 1) if client_pos else ""
@@ -196,7 +196,7 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
 
     # ── Find header row (contains "Platform") ───────────────────────
     header_row_idx = None
-    for r in range(8, min(15, len(all_data))):
+    for r in range(4, min(15, len(all_data))):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "platform" in row_text:
             header_row_idx = r
@@ -322,7 +322,7 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
 
     # Find header row by looking for "Site/Network" or "Goal"
     header_row_idx = None
-    for r in range(8, min(15, len(all_data))):
+    for r in range(4, min(15, len(all_data))):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "site/network" in row_text or ("goal" in row_text and "start" in row_text):
             header_row_idx = r
