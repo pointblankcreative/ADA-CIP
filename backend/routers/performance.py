@@ -3,6 +3,10 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.models.performance import (
+    AdPerformanceResponse,
+    AdRow,
+    AdSetPerformanceResponse,
+    AdSetRow,
     CampaignRow,
     DailyMetric,
     PerformanceResponse,
@@ -71,6 +75,204 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, str]:
         return result
     except Exception:
         return {}
+
+
+def _resolve_perf_dates(
+    start_date: str | None,
+    end_date: str | None,
+    days: int | None,
+) -> tuple[str | None, str | None]:
+    if days and not start_date:
+        end_date = end_date or date.today().isoformat()
+        start_date = (date.fromisoformat(end_date) - timedelta(days=days)).isoformat()
+    return start_date, end_date
+
+
+@router.get("/{project_code}/adsets", response_model=AdSetPerformanceResponse)
+async def get_adset_performance(
+    project_code: str,
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    days: int | None = Query(None),
+    platform: str | None = Query(None),
+):
+    start_date, end_date = _resolve_perf_dates(start_date, end_date, days)
+    date_clause, date_params = _date_filter(start_date, end_date)
+    plat = "AND f.platform_id = @platform" if platform else ""
+    params = [bq.string_param("project_code", project_code)] + date_params
+    if platform:
+        params.append(bq.string_param("platform", platform))
+
+    reach_plat = "AND platform_id = @platform" if platform else ""
+    sql = f"""
+        WITH ad_metrics AS (
+            SELECT
+                f.campaign_id,
+                ANY_VALUE(f.campaign_name) AS campaign_name,
+                f.ad_set_id,
+                ANY_VALUE(f.ad_set_name) AS ad_set_name,
+                f.platform_id,
+                SUM(f.spend) AS spend,
+                SUM(f.impressions) AS impressions,
+                SUM(f.clicks) AS clicks,
+                SUM(f.conversions) AS conversions,
+                SUM(f.engagements) AS engagements,
+                SUM(f.video_views) AS video_views,
+                SUM(f.video_completions) AS video_completions,
+                COUNT(DISTINCT f.ad_id) AS ad_count
+            FROM {bq.table('fact_digital_daily')} f
+            WHERE f.project_code = @project_code AND {date_clause} {plat}
+            GROUP BY f.campaign_id, f.ad_set_id, f.ad_set_name, f.platform_id
+        ),
+        reach AS (
+            SELECT
+                platform_id,
+                campaign_id,
+                MAX(reach) AS reach,
+                MAX(frequency) AS frequency,
+                ANY_VALUE(reach_window) AS reach_window
+            FROM {bq.table('fact_adset_daily')}
+            WHERE project_code = @project_code AND {date_clause} {reach_plat}
+            GROUP BY platform_id, campaign_id
+        )
+        SELECT
+            a.ad_set_id,
+            a.ad_set_name,
+            a.platform_id,
+            a.campaign_name,
+            a.spend,
+            a.impressions,
+            a.clicks,
+            a.conversions,
+            a.engagements,
+            a.video_views,
+            a.video_completions,
+            a.ad_count,
+            SAFE_DIVIDE(a.spend, NULLIF(a.impressions, 0)) * 1000 AS cpm,
+            SAFE_DIVIDE(a.spend, NULLIF(a.clicks, 0)) AS cpc,
+            SAFE_DIVIDE(a.clicks, NULLIF(a.impressions, 0)) AS ctr,
+            SAFE_DIVIDE(a.video_completions, NULLIF(a.video_views, 0)) AS vcr,
+            SAFE_DIVIDE(a.engagements, NULLIF(a.impressions, 0)) AS engagement_rate,
+            r.reach,
+            r.frequency,
+            r.reach_window,
+            SAFE_DIVIDE(a.spend, NULLIF(r.reach, 0)) * 1000 AS cost_per_reach
+        FROM ad_metrics a
+        LEFT JOIN reach r
+            ON a.platform_id = r.platform_id
+            AND a.campaign_id = r.campaign_id
+        ORDER BY a.spend DESC
+    """
+
+    rows = bq.run_query(sql, params)
+    no_reach = {"google_ads", "pinterest"}
+    reach_ok = sorted({r["platform_id"] for r in rows if r.get("reach")}) if rows else []
+    note = None
+    if reach_ok:
+        names = [PLATFORM_NAMES.get(p, p) for p in reach_ok if p not in no_reach]
+        if names:
+            note = "Reach from " + ", ".join(names) + ". Not additive across audiences."
+    return AdSetPerformanceResponse(
+        project_code=project_code,
+        start_date=date.fromisoformat(start_date) if start_date else None,
+        end_date=date.fromisoformat(end_date) if end_date else None,
+        ad_sets=[
+            AdSetRow(
+                ad_set_id=r.get("ad_set_id"),
+                ad_set_name=r.get("ad_set_name"),
+                platform_id=r["platform_id"],
+                campaign_name=r.get("campaign_name"),
+                spend=_float(r.get("spend")),
+                impressions=_int(r.get("impressions")),
+                clicks=_int(r.get("clicks")),
+                conversions=_float(r.get("conversions")),
+                engagements=_int(r.get("engagements")),
+                video_views=_int(r.get("video_views")),
+                video_completions=_int(r.get("video_completions")),
+                cpm=_float_or_none(r.get("cpm")),
+                cpc=_float_or_none(r.get("cpc")),
+                ctr=_float_or_none(r.get("ctr")),
+                vcr=_float_or_none(r.get("vcr")),
+                engagement_rate=_float_or_none(r.get("engagement_rate")),
+                reach=_int_or_none(r.get("reach")),
+                frequency=_float_or_none(r.get("frequency")),
+                reach_window=r.get("reach_window"),
+                cost_per_reach=_float_or_none(r.get("cost_per_reach")),
+                ad_count=_int(r.get("ad_count")),
+            )
+            for r in rows
+        ],
+        total_reach_note=note,
+    )
+
+
+@router.get("/{project_code}/ads", response_model=AdPerformanceResponse)
+async def get_ad_performance(
+    project_code: str,
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    days: int | None = Query(None),
+    platform: str | None = Query(None),
+):
+    start_date, end_date = _resolve_perf_dates(start_date, end_date, days)
+    date_clause, date_params = _date_filter(start_date, end_date)
+    plat = "AND f.platform_id = @platform" if platform else ""
+    params = [bq.string_param("project_code", project_code)] + date_params
+    if platform:
+        params.append(bq.string_param("platform", platform))
+
+    sql = f"""
+        SELECT
+            f.ad_id,
+            ANY_VALUE(f.ad_name) AS ad_name,
+            ANY_VALUE(f.ad_set_name) AS ad_set_name,
+            f.platform_id,
+            ANY_VALUE(f.campaign_name) AS campaign_name,
+            SUM(f.spend) AS spend,
+            SUM(f.impressions) AS impressions,
+            SUM(f.clicks) AS clicks,
+            SUM(f.conversions) AS conversions,
+            SUM(f.engagements) AS engagements,
+            SUM(f.video_views) AS video_views,
+            SUM(f.video_completions) AS video_completions,
+            SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
+            SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
+            SAFE_DIVIDE(SUM(f.clicks), NULLIF(SUM(f.impressions), 0)) AS ctr,
+            SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS vcr,
+            SAFE_DIVIDE(SUM(f.engagements), NULLIF(SUM(f.impressions), 0)) AS engagement_rate
+        FROM {bq.table('fact_digital_daily')} f
+        WHERE f.project_code = @project_code AND {date_clause} {plat}
+        GROUP BY f.ad_id, f.platform_id
+        ORDER BY engagement_rate DESC NULLS LAST
+    """
+    rows = bq.run_query(sql, params)
+    return AdPerformanceResponse(
+        project_code=project_code,
+        start_date=date.fromisoformat(start_date) if start_date else None,
+        end_date=date.fromisoformat(end_date) if end_date else None,
+        ads=[
+            AdRow(
+                ad_id=r.get("ad_id"),
+                ad_name=r.get("ad_name"),
+                ad_set_name=r.get("ad_set_name"),
+                platform_id=r["platform_id"],
+                campaign_name=r.get("campaign_name"),
+                spend=_float(r.get("spend")),
+                impressions=_int(r.get("impressions")),
+                clicks=_int(r.get("clicks")),
+                conversions=_float(r.get("conversions")),
+                engagements=_int(r.get("engagements")),
+                video_views=_int(r.get("video_views")),
+                video_completions=_int(r.get("video_completions")),
+                cpm=_float_or_none(r.get("cpm")),
+                cpc=_float_or_none(r.get("cpc")),
+                ctr=_float_or_none(r.get("ctr")),
+                vcr=_float_or_none(r.get("vcr")),
+                engagement_rate=_float_or_none(r.get("engagement_rate")),
+            )
+            for r in rows
+        ],
+    )
 
 
 @router.get("/{project_code}", response_model=PerformanceResponse)
@@ -146,6 +348,62 @@ async def get_performance(
         ORDER BY f.date
     """
     daily_rows = bq.run_query(daily_sql, base_params)
+
+    adset_by_date: dict[str, dict] = {}
+    total_reach_adset: int | None = None
+    avg_frequency_adset: float | None = None
+    reach_platforms: list[str] = []
+    reach_note: str | None = None
+    high_frequency_warning: str | None = None
+    try:
+        ap_ad = [bq.string_param("project_code", project_code)] + date_params
+        adset_daily_sql = f"""
+            SELECT date, MAX(reach) AS reach, MAX(frequency) AS frequency
+            FROM {bq.table('fact_adset_daily')}
+            WHERE project_code = @project_code AND {date_clause}
+            GROUP BY date
+        """
+        for ar in bq.run_query(adset_daily_sql, ap_ad):
+            dk = ar["date"].isoformat() if hasattr(ar["date"], "isoformat") else str(ar["date"])
+            adset_by_date[dk] = ar
+        sum_sql = f"""
+            SELECT MAX(reach) AS max_reach, AVG(frequency) AS avg_freq
+            FROM {bq.table('fact_adset_daily')}
+            WHERE project_code = @project_code AND {date_clause}
+        """
+        sr = bq.run_query(sum_sql, ap_ad)
+        if sr:
+            total_reach_adset = _int_or_none(sr[0].get("max_reach"))
+            avg_frequency_adset = _float_or_none(sr[0].get("avg_freq"))
+        plat_sql = f"""
+            SELECT DISTINCT platform_id
+            FROM {bq.table('fact_adset_daily')}
+            WHERE project_code = @project_code AND {date_clause}
+              AND reach IS NOT NULL AND reach > 0
+        """
+        reach_platforms = sorted({r["platform_id"] for r in bq.run_query(plat_sql, ap_ad)})
+        if reach_platforms:
+            reach_note = "Reach from " + ", ".join(
+                PLATFORM_NAMES.get(p, p) for p in reach_platforms
+            ) + "."
+        warn_sql = f"""
+            SELECT ad_set_name, platform_id, MAX(frequency) AS frequency
+            FROM {bq.table('fact_adset_daily')}
+            WHERE project_code = @project_code AND {date_clause} AND frequency > 5
+            GROUP BY ad_set_name, platform_id
+            ORDER BY frequency DESC
+            LIMIT 1
+        """
+        wr = bq.run_query(warn_sql, ap_ad)
+        if wr:
+            w = wr[0]
+            pn = PLATFORM_NAMES.get(w["platform_id"], w["platform_id"])
+            nm = w.get("ad_set_name") or "An audience"
+            high_frequency_warning = (
+                f"{nm} on {pn} reached {float(w['frequency']):.1f} frequency — consider refreshing creative."
+            )
+    except Exception:
+        pass
 
     # ── platform breakdown ──────────────────────────────────────────
     platform_sql = f"""
@@ -251,6 +509,11 @@ async def get_performance(
         total_engagements=_int_or_none(t.get("total_engagements")),
         total_cpa=_float_or_none(t.get("total_cpa")),
         total_conversion_rate=_float_or_none(t.get("total_conversion_rate")),
+        total_reach_adset=total_reach_adset,
+        avg_frequency_adset=avg_frequency_adset,
+        reach_platforms=reach_platforms,
+        reach_note=reach_note,
+        high_frequency_warning=high_frequency_warning,
         available_metrics=available,
         metric_platforms=metric_platforms,
         daily=[
@@ -265,6 +528,18 @@ async def get_performance(
                 ctr=_float_or_none(r.get("ctr")),
                 reach=_int_or_none(r.get("reach")),
                 frequency=_float_or_none(r.get("frequency")),
+                reach_adset=_int_or_none(
+                    adset_by_date.get(
+                        r["date"].isoformat() if hasattr(r["date"], "isoformat") else str(r["date"]),
+                        {},
+                    ).get("reach")
+                ),
+                frequency_adset=_float_or_none(
+                    adset_by_date.get(
+                        r["date"].isoformat() if hasattr(r["date"], "isoformat") else str(r["date"]),
+                        {},
+                    ).get("frequency")
+                ),
                 video_views=_int_or_none(r.get("video_views")),
                 video_completions=_int_or_none(r.get("video_completions")),
                 vcr=_float_or_none(r.get("vcr")),

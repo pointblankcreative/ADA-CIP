@@ -486,6 +486,36 @@ OPTIONS(
 
 
 -- ==============================================================================
+-- TABLE: fact_adset_daily
+-- Reach / frequency at ad set or campaign grain (separate from fact_digital_daily ad rows).
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_adset_daily` (
+  date DATE NOT NULL,
+  project_code STRING,
+  platform_id STRING NOT NULL,
+  account_id STRING,
+  campaign_id STRING NOT NULL,
+  campaign_name STRING NOT NULL,
+  ad_set_id STRING,
+  ad_set_name STRING,
+  reach INT64,
+  frequency FLOAT64,
+  reach_window STRING DEFAULT '7d',
+  impressions INT64,
+  video_views INT64,
+  video_completions INT64,
+  ingestion_source STRING DEFAULT 'funnel_transform',
+  loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+PARTITION BY date
+CLUSTER BY project_code, platform_id
+OPTIONS(
+  description='Daily reach/frequency from Funnel.io at ad-set or campaign grain. Not additive across rows.'
+);
+
+
+-- ==============================================================================
 -- SEED DATA: Platform Dimension
 -- ==============================================================================
 

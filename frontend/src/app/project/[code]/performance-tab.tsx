@@ -16,7 +16,16 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import { api, type PerformanceResponse, type ObjectiveType, type GA4PerformanceResponse, type BenchmarkResponse, type BenchmarkValue } from "@/lib/api";
+import {
+  api,
+  type PerformanceResponse,
+  type ObjectiveType,
+  type GA4PerformanceResponse,
+  type BenchmarkResponse,
+  type BenchmarkValue,
+  type AdSetPerformanceResponse,
+  type AdPerformanceResponse,
+} from "@/lib/api";
 import { Card, KpiCard, type BenchmarkIndicator } from "@/components/card";
 import {
   formatCurrency,
@@ -90,10 +99,19 @@ const fmtPct = (v: number | null) => v != null ? `${(v * 100).toFixed(1)}%` : "�
 const fmtCad = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "—";
 const safeFix = (v: number | null, d = 0) => v != null ? v.toFixed(d) : "0";
 
+function freqHealthDot(f: number | null | undefined): string | null {
+  if (f == null || f <= 0) return null;
+  if (f <= 3) return "bg-emerald-500";
+  if (f <= 5) return "bg-amber-400";
+  return "bg-red-500";
+}
+
 export function PerformanceTab({ code }: { code: string }) {
   const [data, setData] = useState<PerformanceResponse | null>(null);
   const [ga4Data, setGa4Data] = useState<GA4PerformanceResponse | null>(null);
   const [benchData, setBenchData] = useState<BenchmarkResponse | null>(null);
+  const [adsetsData, setAdsetsData] = useState<AdSetPerformanceResponse | null>(null);
+  const [adsData, setAdsData] = useState<AdPerformanceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(0);
 
@@ -103,10 +121,14 @@ export function PerformanceTab({ code }: { code: string }) {
       api.performance.get(code, days).catch(() => null),
       api.ga4.analytics(code, days).catch(() => null),
       api.benchmarks.get(code).catch(() => null),
-    ]).then(([perf, ga4, bench]) => {
+      api.performance.adsets(code, days).catch(() => null),
+      api.performance.ads(code, days).catch(() => null),
+    ]).then(([perf, ga4, bench, adsets, ads]) => {
       setData(perf);
       setGa4Data(ga4);
       setBenchData(bench);
+      setAdsetsData(adsets);
+      setAdsData(ads);
     }).finally(() => setLoading(false));
   }, [code, days]);
 
@@ -151,12 +173,18 @@ export function PerformanceTab({ code }: { code: string }) {
 
   const bm = benchData?.benchmarks ?? {};
 
+  const hasAdsetReachSeries = data.daily.some(
+    (d) => d.reach_adset != null && d.reach_adset > 0,
+  );
+
   const chartData = data.daily.map((d) => ({
     ...d,
     dateLabel: d.date.slice(5),
     ctrPct: d.ctr != null ? d.ctr * 100 : null,
     convRatePct: d.conversion_rate != null ? d.conversion_rate * 100 : null,
     vcrPct: d.vcr != null ? d.vcr * 100 : null,
+    reach: d.reach_adset ?? d.reach ?? null,
+    frequency: d.frequency_adset ?? d.frequency ?? null,
   }));
 
   return (
@@ -194,6 +222,13 @@ export function PerformanceTab({ code }: { code: string }) {
         </div>
       </div>
 
+      {data.high_frequency_warning && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <span className="font-medium">High frequency — </span>
+          {data.high_frequency_warning}
+        </div>
+      )}
+
       {/* ── KPI Cards ─────────────────────────────────────────────── */}
 
       {showAwareness && (
@@ -205,7 +240,13 @@ export function PerformanceTab({ code }: { code: string }) {
           )}
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
             <KpiCard label="Spend" value={formatCurrency(data.total_spend)} />
-            {has(data, "reach") && data.total_reach ? (
+            {data.total_reach_adset != null && data.total_reach_adset > 0 ? (
+              <KpiCard
+                label="Reach"
+                value={formatNumber(data.total_reach_adset)}
+                sub={data.reach_note ?? "From fact_adset_daily"}
+              />
+            ) : has(data, "reach") && data.total_reach ? (
               <KpiCard
                 label="Reach"
                 value={formatNumber(data.total_reach)}
@@ -217,7 +258,14 @@ export function PerformanceTab({ code }: { code: string }) {
                 value={formatNumber(data.total_impressions)}
               />
             )}
-            {has(data, "frequency") && data.total_frequency ? (
+            {data.avg_frequency_adset != null && data.avg_frequency_adset > 0 ? (
+              <KpiCard
+                label="Frequency"
+                value={data.avg_frequency_adset.toFixed(1)}
+                sub={data.reach_note ?? undefined}
+                benchmark={toBenchmark(bm.frequency, data.avg_frequency_adset, { format: (v) => v.toFixed(1) })}
+              />
+            ) : has(data, "frequency") && data.total_frequency ? (
               <KpiCard
                 label="Frequency"
                 value={data.total_frequency.toFixed(1)}
@@ -332,12 +380,14 @@ export function PerformanceTab({ code }: { code: string }) {
       </Card>
 
       {/* ── Awareness Charts ──────────────────────────────────────── */}
-      {showAwareness && has(data, "reach") && (
+      {showAwareness && (has(data, "reach") || hasAdsetReachSeries) && (
         <Card>
           <h4 className="mb-4 text-sm font-medium text-slate-400">
             Reach &amp; Frequency
-            {metricNote(data, "reach") && (
-              <span className="ml-2 text-xs font-normal text-slate-600">{metricNote(data, "reach")}</span>
+            {(data.reach_note || metricNote(data, "reach")) && (
+              <span className="ml-2 text-xs font-normal text-slate-600">
+                {data.reach_note ?? metricNote(data, "reach")}
+              </span>
             )}
           </h4>
           <div className="h-64">
@@ -534,6 +584,118 @@ export function PerformanceTab({ code }: { code: string }) {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* ── Audience (ad set) drill-down ─────────────────────────── */}
+      {adsetsData && adsetsData.ad_sets.length > 0 && (
+        <Card className="overflow-hidden !p-0">
+          <div className="px-5 py-4 border-b border-slate-800">
+            <h4 className="text-sm font-medium text-slate-400">Audience performance</h4>
+            {adsetsData.total_reach_note && (
+              <p className="mt-1 text-xs text-slate-500">{adsetsData.total_reach_note}</p>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
+                  <th className="px-5 py-3 font-medium">Audience</th>
+                  <th className="px-5 py-3 font-medium">Platform</th>
+                  <th className="px-5 py-3 font-medium text-right">Reach</th>
+                  <th className="px-5 py-3 font-medium text-right">Freq.</th>
+                  <th className="px-5 py-3 font-medium text-right">Spend</th>
+                  <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
+                  <th className="px-5 py-3 font-medium text-right">Ads</th>
+                </tr>
+              </thead>
+              <tbody>
+                {adsetsData.ad_sets.map((row, i) => (
+                  <tr
+                    key={`${row.ad_set_id}-${row.platform_id}-${i}`}
+                    className="border-t border-slate-800/50 hover:bg-slate-800/30"
+                  >
+                    <td className="max-w-[220px] truncate px-5 py-3 text-slate-200">
+                      {row.ad_set_name ?? "—"}
+                    </td>
+                    <td className="px-5 py-3 text-slate-400">{platformLabel(row.platform_id)}</td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
+                      {row.reach != null ? formatNumber(row.reach) : "—"}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
+                      <span className="inline-flex items-center justify-end gap-1.5">
+                        {row.frequency != null ? row.frequency.toFixed(1) : "—"}
+                        {freqHealthDot(row.frequency) && (
+                          <span className={`inline-block h-2 w-2 rounded-full ${freqHealthDot(row.frequency)}`} />
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
+                      {formatCurrency(row.spend)}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      {row.ad_count}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* ── Creative (ad) drill-down ──────────────────────────────── */}
+      {adsData && adsData.ads.length > 0 && (
+        <Card className="overflow-hidden !p-0">
+          <div className="px-5 py-4 border-b border-slate-800">
+            <h4 className="text-sm font-medium text-slate-400">Creative performance</h4>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
+                  <th className="px-5 py-3 font-medium">Ad</th>
+                  <th className="px-5 py-3 font-medium">Audience</th>
+                  <th className="px-5 py-3 font-medium">Platform</th>
+                  <th className="px-5 py-3 font-medium text-right">Spend</th>
+                  <th className="px-5 py-3 font-medium text-right">CTR</th>
+                  <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
+                  <th className="px-5 py-3 font-medium text-right">VCR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {adsData.ads.map((row, i) => (
+                  <tr
+                    key={`${row.ad_id}-${row.platform_id}-${i}`}
+                    className="border-t border-slate-800/50 hover:bg-slate-800/30"
+                  >
+                    <td className="max-w-[200px] truncate px-5 py-3 text-slate-200">
+                      {row.ad_name ?? "—"}
+                    </td>
+                    <td className="max-w-[160px] truncate px-5 py-3 text-slate-500">
+                      {row.ad_set_name ?? "—"}
+                    </td>
+                    <td className="px-5 py-3 text-slate-400">{platformLabel(row.platform_id)}</td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
+                      {formatCurrency(row.spend)}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      {row.vcr != null ? formatPercent(row.vcr * 100) : "—"}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

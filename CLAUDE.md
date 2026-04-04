@@ -1415,6 +1415,8 @@ On the performance tab KPI cards, add benchmark context:
 
 ### Task 27: Bug Fix — Media Plan Sync Success Message (from staging QA 2026-04-02)
 
+✅ **DONE** — `admin_create_project` returns `media_plan_sync` with `status` success / error (with `message`) / skipped; `/admin/projects/new` maps each to the correct banner and line count.
+
 **Priority: High — misleading user feedback.**
 
 **Bug:** When creating a new project via `/admin/projects/new` with a media plan Google Sheets URL, the success banner says "No media plan linked — you can add one later from the project management page" even when a URL was provided. The project IS created successfully (25042 confirmed) but the media plan sync result is reported incorrectly.
@@ -1438,6 +1440,8 @@ On the performance tab KPI cards, add benchmark context:
 ---
 
 ### Task 28: Bug Fix — GA4 URL Not Saving (from staging QA 2026-04-02)
+
+✅ **DONE** — `project_ga4_urls` ensured via `_ensure_table()`; POST/DELETE raise clear errors; `settings-tab.tsx` shows failures in a red banner and refetches/updates list on success.
 
 **Priority: High — feature completely non-functional.**
 
@@ -1477,6 +1481,8 @@ On the performance tab KPI cards, add benchmark context:
 ---
 
 ### Task 29: Fix CORS Dual-URL Format in Deploy Workflow
+
+✅ **DONE** — `.github/workflows/deploy.yml` and `infrastructure/deploy.sh` set `CORS_ORIGINS` to both gcloud “old” and project-number “new” Cloud Run URLs (`^##^` delimiter in Actions).
 
 **Priority: Medium — affects every new deploy to staging.**
 
@@ -1525,6 +1531,316 @@ This ensures CORS works regardless of which URL format the browser uses.
 - All new features work with the existing date range selector (7d/14d/30d/All)
 - Project creation with media plan URL shows correct sync status (success/error/skipped) — not always "no plan linked"
 - Deploy workflow sets CORS_ORIGINS with both old and new Cloud Run URL formats
+- `fact_adset_daily` table is populated with reach/frequency data from Meta, TikTok, Reddit, Snapchat, LinkedIn, and StackAdapt (unique impressions)
+- Reach and frequency KPI cards on the performance page show actual data for awareness campaigns, with platform attribution notes
+- Ad set (audience) performance table shows reach, frequency, spend, and engagement metrics per audience
+- Ad (creative) performance table shows CTR, engagement rate, VCR, and spend per creative variant
+- Frequency > 5.0 triggers a visible warning banner on the performance page
+- Ad set and ad drill-down tables are sortable and respect the date range selector
+- StackAdapt shows reach (unique impressions) with a note that frequency is unavailable; Google Ads shows a note that reach is unavailable
+
+---
+
+### Task 30: Reach & Frequency Ingestion — New `fact_adset_daily` Table
+
+✅ **DONE** — `infrastructure/bigquery/schema.sql` includes `fact_adset_daily`; `ingestion/transformation/adset_transform.py` loads reach/frequency rows (Meta, StackAdapt, TikTok, Reddit, Snapchat, LinkedIn); Stage **1c** in `daily_job.py`. Run backfill: `python -m ingestion.transformation.adset_transform --full`. If Reddit column names differ in Funnel, adjust the Reddit block in the transform SQL.
+
+**Problem:** Reach and frequency data exists in Funnel.io but isn't making it into CIP. The current transform only pulls ad-level rows (where `ad_id` IS NOT NULL and spend > 0). Reach and frequency are reported by ad platforms at the ad set / ad group level — separate rows in Funnel.io where `ad_name` is NULL.
+
+**Data audit (2026-04-04) — reach/frequency availability in Funnel.io:**
+
+| Platform | Reach | Frequency | Granularity | Column names |
+|----------|-------|-----------|-------------|-------------|
+| Meta | ✅ 4,557 rows | ✅ 4,557 rows | Ad set level (separate rows from spend) | `Reach___7_Day_Ad_Set__Facebook_Ads`, `Frequency___7_Day_Ad_Set__Facebook_Ads` |
+| StackAdapt | ✅ 12,684 rows | ❌ Empty | Creative level (same rows as spend) | `Unique_impressions_1_Day_Creative__StackAdapt` (frequency col exists but unpopulated) |
+| TikTok | ✅ 910 rows | ✅ 910 rows | Ad group level | `Reach___7_Day_Adgroup__TikTok`, `Frequency___7_Day_Adgroup__TikTok` |
+| Reddit | ✅ 386 rows | ✅ 386 rows | Ad group level | `Reach___7_Days_Adgroup__Reddit`, `Frequency___7_Days_Adgroup__Reddit` |
+| Snapchat | ✅ 234 rows | ✅ 234 rows | Campaign level | `Reach___7_Day_Campaign__Snapchat`, `Frequency___7_Day_Campaign__Snapchat` |
+| Pinterest | ❌ No data | ❌ No data | Columns exist but empty | `Reach_7_days___7_Days_Ad_Group__Pinterest`, `Frequency_7_days___7_Days_Ad_Group__Pinterest` |
+| LinkedIn | ✅ (campaign level) | ✅ (campaign level) | Campaign level | `Reach___7_Day_Campaign__LinkedIn`, `Average_frequency___7_Day_Campaign__LinkedIn` |
+| Google Ads | ❌ N/A | ❌ N/A | Not available via Funnel.io | — |
+
+**Why a separate table:** Reach is not additive the way spend is — you can't sum reach across ad sets to get total reach (audiences overlap). Mixing ad-set-level rows into `fact_digital_daily` would break spend aggregations. A separate table keeps the data clean.
+
+#### Step 1: Create the `fact_adset_daily` table
+
+```sql
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_adset_daily` (
+  date DATE NOT NULL,
+  project_code STRING,
+  platform_id STRING NOT NULL,
+  account_id STRING,
+  campaign_id STRING NOT NULL,
+  campaign_name STRING NOT NULL,
+  ad_set_id STRING,             -- NULL for platforms reporting at campaign level (Snapchat, LinkedIn)
+  ad_set_name STRING,
+  reach INT64,                  -- 7-day reach (or 1-day for StackAdapt)
+  frequency FLOAT64,            -- 7-day frequency (or 1-day for StackAdapt)
+  reach_window STRING DEFAULT '7d',  -- '7d' or '1d' — documents the attribution window
+  impressions INT64,            -- ad-set level impressions (if available on same row)
+  video_views INT64,
+  video_completions INT64,
+  ingestion_source STRING DEFAULT 'funnel_transform',
+  loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+PARTITION BY date
+CLUSTER BY project_code, platform_id;
+```
+
+#### Step 2: Create transformation module `ingestion/transformation/adset_transform.py`
+
+Follow the same cross-region pattern as `ga4_transform.py`:
+1. SELECT from `core_funnel_export.funnel_data` in US region — ad-set-level rows
+2. DELETE target date range in Montreal
+3. INSERT via `load_table_from_json` in Montreal
+
+**Row selection per platform:**
+
+| Platform | Filter for ad-set rows | Ad set identifier |
+|----------|----------------------|-------------------|
+| Meta | `Ad_Set_Name__Facebook_Ads IS NOT NULL AND Ad_Name__Facebook_Ads IS NULL` | `Ad_Set_ID__Facebook_Ads`, `Ad_Set_Name__Facebook_Ads` |
+| StackAdapt | `Creative__StackAdapt IS NOT NULL` (reach is on same creative-level rows as spend) | Use `Campaign_ID__StackAdapt` + `Creative_ID__StackAdapt` as ad_set_id/ad_set_name |
+| TikTok | `Adgroup_name__TikTok IS NOT NULL AND Ad_Name__TikTok IS NULL` | `Adgroup_ID__TikTok`, `Adgroup_name__TikTok` |
+| Reddit | `Adgroup_Name__Reddit IS NOT NULL` (check if ad-level exists) | `Adgroup_ID__Reddit`, `Adgroup_Name__Reddit` |
+| Snapchat | `Campaign_Name__Snapchat IS NOT NULL AND Ad_Squad_Name__Snapchat IS NULL` | ad_set_id = NULL (campaign level only) |
+| LinkedIn | `Campaign_Type__LinkedIn IS NOT NULL` (campaign level) | ad_set_id = NULL (campaign level only) |
+
+**Important:** Apply the same project_code extraction regex as the main transform. Use the same `campaign_project_mapping` fallback.
+
+**StackAdapt special case:** Since StackAdapt reach data is on the same creative-level rows that already get ingested into `fact_digital_daily`, you have two options:
+- (a) Also populate reach on the existing `fact_digital_daily` rows during the main transform (simpler, but mixes granularity semantics)
+- (b) Pull StackAdapt creative rows into `fact_adset_daily` too, treating creative as the audience grouping (more consistent)
+- **Recommended: option (b)** for consistency. The `fact_adset_daily` table represents "the level at which reach/frequency is reported" regardless of what each platform calls it.
+
+#### Step 3: Wire into `daily_job.py` as Stage 1c
+
+```python
+# ── Stage 1c: Ad Set Transformation ──────────────────────────────
+logger.info("=== Daily Pipeline: Stage 1c — Ad Set Reach/Frequency ===")
+try:
+    from ingestion.transformation.adset_transform import run_adset_transformation
+    t1c = time.time()
+    result = run_adset_transformation("daily")
+    results["stages"]["adset_transformation"] = {
+        "status": result.get("status", "unknown"),
+        "rows_loaded": result.get("rows_loaded", 0),
+        "elapsed_seconds": round(time.time() - t1c, 1),
+    }
+except Exception as e:
+    logger.error("Ad Set Transformation failed: %s", e, exc_info=True)
+    results["stages"]["adset_transformation"] = {"status": "error", "error": str(e)}
+```
+
+Use lazy import (same pattern as GA4). Non-critical — don't fail the pipeline.
+
+#### Step 4: Run a full-history backfill
+
+After the transform is working in daily mode, run a full-history backfill to populate historical reach/frequency data. The `fact_adset_daily` table should go back as far as the Funnel.io data covers.
+
+---
+
+### Task 31: Ad Set & Ad Drill-Down API Endpoints
+
+✅ **DONE** — `GET /api/performance/{project_code}/adsets` and `GET /api/performance/{project_code}/ads`; main `GET /api/performance/{project_code}` extended with `total_reach_adset`, `avg_frequency_adset`, `reach_note`, `high_frequency_warning`, and daily `reach_adset` / `frequency_adset` (from `fact_adset_daily`). Reach joins to spend are at **campaign** grain for simplicity.
+
+**The performance endpoint currently only returns campaign-level rollups.** The team needs to see performance at the ad set (audience) and ad (creative) level to answer questions like:
+- "How many people in each audience have seen the ads?" → reach by ad set
+- "How many times have they seen them?" → frequency by ad set
+- "What creative are they responding to?" → engagement metrics by ad
+
+#### Step 1: New endpoint `GET /api/performance/{project_code}/adsets`
+
+**Query `fact_digital_daily`** grouped by `ad_set_id` + `ad_set_name`, and **LEFT JOIN `fact_adset_daily`** to bring in reach/frequency.
+
+**Response model `AdSetPerformance`:**
+```python
+class AdSetRow(BaseModel):
+    ad_set_id: str | None
+    ad_set_name: str | None
+    platform_id: str
+    campaign_name: str | None
+    # From fact_digital_daily (aggregated across ads)
+    spend: float = 0
+    impressions: int = 0
+    clicks: int = 0
+    conversions: float = 0
+    engagements: int = 0
+    video_views: int = 0
+    video_completions: int = 0
+    cpm: float | None = None
+    cpc: float | None = None
+    ctr: float | None = None
+    vcr: float | None = None      # video_completions / video_views
+    engagement_rate: float | None = None  # engagements / impressions
+    # From fact_adset_daily (reach/frequency)
+    reach: int | None = None
+    frequency: float | None = None
+    reach_window: str | None = None  # '7d' or '1d'
+    cost_per_reach: float | None = None  # spend / reach * 1000
+    # Ad count for drill-down context
+    ad_count: int = 0
+
+class AdSetPerformanceResponse(BaseModel):
+    project_code: str
+    start_date: date | None
+    end_date: date | None
+    ad_sets: list[AdSetRow]
+    total_reach_note: str | None = None  # e.g. "Reach data from Meta, TikTok. Not available for Google Ads."
+```
+
+**Query params:** Same as performance endpoint — `start_date`, `end_date`, `days`, `platform`.
+
+**SQL pattern:**
+```sql
+WITH ad_metrics AS (
+    SELECT ad_set_id, ad_set_name, platform_id, campaign_name,
+           SUM(spend) as spend, SUM(impressions) as impressions,
+           SUM(clicks) as clicks, SUM(conversions) as conversions,
+           SUM(engagements) as engagements,
+           SUM(video_views) as video_views, SUM(video_completions) as video_completions,
+           COUNT(DISTINCT ad_id) as ad_count
+    FROM fact_digital_daily
+    WHERE project_code = @pcode AND date BETWEEN @start AND @end
+    GROUP BY ad_set_id, ad_set_name, platform_id, campaign_name
+),
+reach_metrics AS (
+    SELECT ad_set_id, ad_set_name, platform_id,
+           MAX(reach) as reach,           -- MAX not SUM (reach is cumulative per day)
+           MAX(frequency) as frequency,   -- latest frequency snapshot
+           ANY_VALUE(reach_window) as reach_window
+    FROM fact_adset_daily
+    WHERE project_code = @pcode AND date BETWEEN @start AND @end
+    GROUP BY ad_set_id, ad_set_name, platform_id
+)
+SELECT a.*, r.reach, r.frequency, r.reach_window
+FROM ad_metrics a
+LEFT JOIN reach_metrics r USING (ad_set_id, platform_id)
+ORDER BY a.spend DESC
+```
+
+**Note on reach aggregation:** Use MAX(reach) across the date range, not SUM. Reach on day N typically includes reach from prior days (it's a rolling/cumulative window). The last date in the range will have the highest value, which is the correct total.
+
+#### Step 2: New endpoint `GET /api/performance/{project_code}/ads`
+
+**Query `fact_digital_daily`** grouped by `ad_id` + `ad_name`.
+
+**Response model `AdRow`:**
+```python
+class AdRow(BaseModel):
+    ad_id: str | None
+    ad_name: str | None
+    ad_set_name: str | None
+    platform_id: str
+    campaign_name: str | None
+    spend: float = 0
+    impressions: int = 0
+    clicks: int = 0
+    conversions: float = 0
+    engagements: int = 0
+    video_views: int = 0
+    video_completions: int = 0
+    cpm: float | None = None
+    cpc: float | None = None
+    ctr: float | None = None
+    vcr: float | None = None
+    engagement_rate: float | None = None
+
+class AdPerformanceResponse(BaseModel):
+    project_code: str
+    start_date: date | None
+    end_date: date | None
+    ads: list[AdRow]
+```
+
+No reach/frequency at ad level (not reported by platforms), but engagement metrics and CTR are the key signals for creative performance.
+
+#### Step 3: Update existing performance endpoint
+
+Add summary reach/frequency to the main `GET /api/performance/{project_code}` response:
+- Query `fact_adset_daily` for project-level reach (MAX across all ad sets per platform per date, then MAX across dates)
+- Add `total_reach`, `avg_frequency`, and `reach_platforms` (list of platforms contributing reach data) to `PerformanceResponse`
+- Add reach & frequency to the daily time series (join `fact_adset_daily` aggregated by date)
+
+---
+
+### Task 32: Performance Tab — Ad Set & Ad Drill-Down UI
+
+✅ **DONE** — Performance tab fetches drill-down endpoints; high-frequency banner; KPIs and Reach &amp; Frequency chart prefer `fact_adset_daily` series when present; **Audience performance** and **Creative performance** tables below campaigns.
+
+**Goal:** The performance page should answer these questions for political awareness campaigns:
+1. How many people in each audience have seen the ads? (reach by ad set)
+2. How many times have they seen them? (frequency by ad set)
+3. What creative are they responding to? (engagement by ad)
+4. What can we optimize? (frequency warnings, creative comparison)
+
+#### Step 1: Reach & Frequency KPIs on main performance view
+
+Update the awareness KPI cards to use actual reach/frequency data from `fact_adset_daily`:
+- **Reach card:** Show total reach with platform attribution note (e.g., "From Meta, TikTok")
+- **Frequency card:** Show average frequency with colour coding:
+  - Green (1.0–3.0): healthy range
+  - Amber (3.0–5.0): monitor for fatigue
+  - Red (>5.0): likely saturated, consider refreshing creative or expanding audience
+
+Update the Reach & Frequency chart (already exists but was empty due to no data) to use the new `fact_adset_daily` daily series.
+
+#### Step 2: Ad Set Performance Table
+
+Add a new collapsible section below the existing campaigns table: **"Audience Performance"**
+
+Table columns:
+| Column | Description |
+|--------|-------------|
+| Ad Set | `ad_set_name` (this IS the audience in Meta/TikTok) |
+| Platform | Platform chip |
+| Reach | Total reach for this audience |
+| Frequency | Average frequency |
+| Impressions | Total impressions |
+| Spend | Total spend |
+| CPM | Cost per thousand |
+| Engagement Rate | engagements / impressions |
+| VCR | video_completions / video_views (if video) |
+| Ads | Count of ads in this ad set (link to filter ad table) |
+
+**Frequency health indicator:** Each row should show a coloured dot next to the frequency value:
+- 🟢 1.0–3.0
+- 🟡 3.0–5.0
+- 🔴 >5.0
+
+**Sort:** Default sort by spend descending. Allow click-to-sort on all columns.
+
+**Missing data:** If a platform doesn't have reach data, show "—" in the reach/frequency columns. Add a footnote: "Reach data not available for [platforms]."
+
+#### Step 3: Ad (Creative) Performance Table
+
+Add another collapsible section: **"Creative Performance"**
+
+Table columns:
+| Column | Description |
+|--------|-------------|
+| Ad Name | `ad_name` (this is the creative variant) |
+| Ad Set | Parent audience |
+| Platform | Platform chip |
+| Spend | Total spend |
+| Impressions | Total impressions |
+| Clicks | Total clicks |
+| CTR | Click-through rate |
+| Engagements | Total engagements |
+| Engagement Rate | engagements / impressions |
+| VCR | Video completion rate (if video) |
+| CPC | Cost per click |
+
+**Sort:** Default by engagement rate descending (for awareness) or CTR descending (for conversion).
+
+**Optimization signals:** Highlight the top 3 performing ads with a subtle green left border. Highlight the bottom 3 with amber — these are candidates for pausing or refreshing.
+
+#### Step 4: Frequency Warning Banner
+
+When any ad set has frequency > 5.0 in the selected date range, show a warning banner at the top of the performance page:
+
+> ⚠️ **High frequency detected** — "[ad_set_name]" on [platform] has reached [X.X] frequency. Consider refreshing creative or expanding the audience to avoid ad fatigue.
+
+Only show for the highest-frequency offender. If multiple, show the worst one with a "and N others" link that scrolls to the ad set table.
 
 ---
 

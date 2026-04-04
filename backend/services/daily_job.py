@@ -211,6 +211,25 @@ def run_daily_pipeline() -> dict:
         }
         # GA4 transform is non-critical — don't mark pipeline as partial_failure
 
+    # ── Stage 1c: Ad-set reach / frequency ─────────────────────────
+    logger.info("=== Daily Pipeline: Stage 1c — Ad Set Reach/Frequency ===")
+    try:
+        from ingestion.transformation.adset_transform import run_adset_transformation
+
+        t1c = time.time()
+        adset_result = run_adset_transformation("daily")
+        results["stages"]["adset_transformation"] = {
+            "status": adset_result.get("status", "unknown"),
+            "rows_loaded": adset_result.get("rows_loaded", 0),
+            "elapsed_seconds": round(time.time() - t1c, 1),
+        }
+    except Exception as e:
+        logger.error("Ad-set Transformation failed: %s", e, exc_info=True)
+        results["stages"]["adset_transformation"] = {
+            "status": "error",
+            "error": str(e),
+        }
+
     # ── Stage 2: Pacing ─────────────────────────────────────────────
     logger.info("=== Daily Pipeline: Stage 2 — Pacing ===")
     try:

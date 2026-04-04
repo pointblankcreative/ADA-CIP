@@ -68,6 +68,8 @@ export interface DailyPerformance {
   ctr: number;
   reach?: number | null;
   frequency?: number | null;
+  reach_adset?: number | null;
+  frequency_adset?: number | null;
   video_views?: number | null;
   video_completions?: number | null;
   vcr?: number | null;
@@ -131,11 +133,75 @@ export interface PerformanceResponse {
   total_engagements?: number | null;
   total_cpa?: number | null;
   total_conversion_rate?: number | null;
+  total_reach_adset?: number | null;
+  avg_frequency_adset?: number | null;
+  reach_platforms?: string[];
+  reach_note?: string | null;
+  high_frequency_warning?: string | null;
   available_metrics: string[];
   metric_platforms: Record<string, string[]>;
   daily: DailyPerformance[];
   by_platform?: PlatformBreakdown[];
   campaigns?: CampaignRow[];
+}
+
+export interface AdSetRow {
+  ad_set_id: string | null;
+  ad_set_name: string | null;
+  platform_id: string;
+  campaign_name: string | null;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  engagements: number;
+  video_views: number;
+  video_completions: number;
+  cpm: number | null;
+  cpc: number | null;
+  ctr: number | null;
+  vcr: number | null;
+  engagement_rate: number | null;
+  reach: number | null;
+  frequency: number | null;
+  reach_window: string | null;
+  cost_per_reach: number | null;
+  ad_count: number;
+}
+
+export interface AdSetPerformanceResponse {
+  project_code: string;
+  start_date: string | null;
+  end_date: string | null;
+  ad_sets: AdSetRow[];
+  total_reach_note: string | null;
+}
+
+export interface AdRow {
+  ad_id: string | null;
+  ad_name: string | null;
+  ad_set_name: string | null;
+  platform_id: string;
+  campaign_name: string | null;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  engagements: number;
+  video_views: number;
+  video_completions: number;
+  cpm: number | null;
+  cpc: number | null;
+  ctr: number | null;
+  vcr: number | null;
+  engagement_rate: number | null;
+}
+
+export interface AdPerformanceResponse {
+  project_code: string;
+  start_date: string | null;
+  end_date: string | null;
+  ads: AdRow[];
 }
 
 export interface Alert {
@@ -282,6 +348,14 @@ export const api = {
     get: (code: string, days?: number) =>
       apiFetch<PerformanceResponse>(
         `/api/performance/${code}${days ? `?days=${days}` : ""}`
+      ),
+    adsets: (code: string, days?: number) =>
+      apiFetch<AdSetPerformanceResponse>(
+        `/api/performance/${code}/adsets${days ? `?days=${days}` : ""}`
+      ),
+    ads: (code: string, days?: number) =>
+      apiFetch<AdPerformanceResponse>(
+        `/api/performance/${code}/ads${days ? `?days=${days}` : ""}`
       ),
   },
   alerts: {
