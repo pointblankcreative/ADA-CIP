@@ -28,12 +28,17 @@ export default function ManageProjectsPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [editCode, setEditCode] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       setProjects(await api.admin.projects.list());
-    } catch { /* ignore */ } finally {
+    } catch (e) {
+      console.error("Failed to fetch projects:", e);
+      setError(e instanceof Error ? e.message : "Failed to load projects");
+    } finally {
       setLoading(false);
     }
   }, []);
@@ -135,7 +140,14 @@ export default function ManageProjectsPage() {
                 </td>
               </tr>
             )}
-            {!loading && projects.length === 0 && (
+            {!loading && error && (
+              <tr>
+                <td colSpan={9} className="px-4 py-12 text-center text-red-400">
+                  Error loading projects: {error}
+                </td>
+              </tr>
+            )}
+            {!loading && !error && projects.length === 0 && (
               <tr>
                 <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
                   No projects found.
