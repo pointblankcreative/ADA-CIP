@@ -410,6 +410,9 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
 
         plat_raw = gc(row, "platform")
         if plat_raw:
+            # Skip flight/section headers in media plan tabs too
+            if _is_section_header(plat_raw):
+                continue
             current_platform = plat_raw
 
         line_code = gc(row, "id")
@@ -460,7 +463,13 @@ def _synthesise_lines_from_mp(
     """
     lines = []
     for mp in mp_lines:
-        if not mp.get("platform_id"):
+        pid = mp.get("platform_id")
+        if not pid:
+            continue
+        # Only include lines with recognised platforms — skip flight headers
+        # that slipped through or unknown platform names
+        if pid not in PLATFORM_MAP.values():
+            logger.debug("  Skipping unrecognised platform_id in fallback: %s", pid)
             continue
         budget = mp.get("budget")
         if not budget or budget <= 0:
