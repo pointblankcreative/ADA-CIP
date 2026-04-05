@@ -462,6 +462,7 @@ def _synthesise_lines_from_mp(
     and no actual platform rows.
     """
     lines = []
+    seen: set[tuple] = set()
     for mp in mp_lines:
         pid = mp.get("platform_id")
         if not pid:
@@ -474,14 +475,21 @@ def _synthesise_lines_from_mp(
         budget = mp.get("budget")
         if not budget or budget <= 0:
             continue
+        # Deduplicate across multiple flight tabs with identical content
+        fs = mp.get("flight_start") or metadata.get("start_date")
+        fe = mp.get("flight_end") or metadata.get("end_date")
+        dedup_key = (pid, budget, mp.get("goal", ""), str(fs), str(fe))
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
         lines.append({
             "platform": mp.get("platform", ""),
-            "platform_id": mp["platform_id"],
+            "platform_id": pid,
             "objective_format": mp.get("goal", ""),
             "budget": budget,
             "objective_pct": None,
-            "flight_start": mp.get("flight_start") or metadata.get("start_date"),
-            "flight_end": mp.get("flight_end") or metadata.get("end_date"),
+            "flight_start": fs,
+            "flight_end": fe,
         })
     return lines
 
@@ -603,7 +611,7 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
             ),
             "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
             "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
-            "is_traditional": False,
+            "is_traditional": _is_traditional_media(bc_line.get("platform"), bc_line.get("platform_id")),
         })
 
         line_has_weeks = False
@@ -704,14 +712,35 @@ def _channel_category(objective_format: str) -> str:
     return "Digital"
 
 
+# Traditional (non-digital) media keywords
+_TRADITIONAL_KEYWORDS = {
+    "direct mail", "personalized mail", "direct personalized mail",
+    "print", "newspaper", "magazine", "radio", "billboard",
+    "out of home", "ooh", "transit", "flyer", "brochure",
+    "tv spot", "television",
+}
+
+
+def _is_traditional_media(platform: str | None, platform_id: str | None) -> bool:
+    """Return True if this line is traditional (non-digital) media."""
+    if not platform:
+        return False
+    plower = platform.strip().lower()
+    return any(kw in plower for kw in _TRADITIONAL_KEYWORDS)
+
+
 def _clear_existing_plan(mtl: bigquery.Client, project_code: str) -> None:
-    """Mark old plans inactive and remove old blocking chart weeks."""
+    """Remove old plan data before writing a fresh sync."""
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
     param = [bigquery.ScalarQueryParameter("pc", "STRING", project_code)]
     cfg = lambda: bigquery.QueryJobConfig(query_parameters=param)
 
     mtl.query(
         f"UPDATE {prefix}.media_plans` SET is_current = FALSE WHERE project_code = @pc AND is_current = TRUE",
+        job_config=cfg(),
+    ).result()
+    mtl.query(
+        f"DELETE FROM {prefix}.media_plan_lines` WHERE project_code = @pc",
         job_config=cfg(),
     ).result()
     mtl.query(

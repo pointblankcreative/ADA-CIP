@@ -60,11 +60,11 @@ export default function OverviewPage() {
   const totalSpend = activeProjects.reduce((s, p) => s + (p.total_spend ?? 0), 0);
 
   return (
-    <div className="p-6 lg:p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 pl-10 md:pl-0">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">
+          <h1 className="text-xl font-bold tracking-tight text-white sm:text-2xl">
             Campaign Overview
           </h1>
           <p className="mt-1 text-sm text-slate-500">

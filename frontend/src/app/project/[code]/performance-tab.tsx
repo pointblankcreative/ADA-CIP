@@ -134,7 +134,7 @@ export function PerformanceTab({ code }: { code: string }) {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {Array.from({ length: 5 }).map((_, i) => (
           <Card key={i} className="animate-pulse">
             <div className="h-3 w-20 rounded bg-slate-700" />
