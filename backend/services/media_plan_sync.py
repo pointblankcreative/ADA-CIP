@@ -366,7 +366,7 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
             col_map["days"] = i
         elif h_lower.strip() == "id":
             col_map["id"] = i
-        elif "audience name" in h_lower:
+        elif "audience name" in h_lower or "ad set name" in h_lower or "adset name" in h_lower:
             col_map["audience_name"] = i
         elif "geo" in h_lower:
             col_map["geo"] = i
@@ -390,6 +390,14 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
             col_map["frequency"] = i
         elif h_lower.strip() == "budget":
             col_map["budget"] = i
+
+    # Fallback: if no audience_name column was found, try less-specific headers
+    if "audience_name" not in col_map:
+        for i, h in enumerate(headers):
+            h_lower = h.strip().lower()
+            if h_lower == "audience" or h_lower == "name":
+                col_map["audience_name"] = i
+                break
 
     logger.info("  Media Plan tab column map: %s", col_map)
 
@@ -490,8 +498,17 @@ def _synthesise_lines_from_mp(
             "objective_pct": None,
             "flight_start": fs,
             "flight_end": fe,
+            "audience_name": mp.get("audience_name", ""),
         })
     return lines
+
+
+def _mp_lines_have_audience_data(mp_lines: list[dict]) -> bool:
+    """Check if media plan tab lines have audience-level detail worth using."""
+    return any(
+        mp.get("audience_name") and mp.get("budget") and mp.get("budget") > 0
+        for mp in mp_lines
+    )
 
 
 # ── Sync Orchestrator ───────────────────────────────────────────────
@@ -543,9 +560,15 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
         logger.info("  Parsing media plan tab: %s", mp_ws.title)
         mp_lines.extend(_parse_media_plan_tab(mp_ws))
 
-    # ── Fallback: if blocking chart had 0 platform lines (e.g. only
-    #    flight-level groupings), synthesise lines from media plan tabs
-    if not bc["lines"] and mp_lines:
+    # ── Prefer media plan tab lines when they have audience-level detail.
+    #    The blocking chart often has more granular budget rows that don't
+    #    match the intended line structure. Media plan tabs with audience
+    #    names are the authoritative source.
+    if mp_lines and _mp_lines_have_audience_data(mp_lines):
+        logger.info("  Media plan tabs have audience data — using as primary line source (%d mp lines)", len(mp_lines))
+        bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+        bc["weeks"] = []  # Clear old week indices; auto-generated from flight dates below
+    elif not bc["lines"] and mp_lines:
         logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
         bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
 
@@ -599,7 +622,7 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
             "flight_start": flight_start.isoformat() if flight_start else None,
             "flight_end": flight_end.isoformat() if flight_end else None,
             "objective": bc_line.get("objective_format"),
-            "audience_name": mp_detail.get("audience_name") if mp_detail else None,
+            "audience_name": bc_line.get("audience_name") or (mp_detail.get("audience_name") if mp_detail else None),
             "audience_targeting": mp_detail.get("audience_targeting") if mp_detail else None,
             "landing_page": mp_detail.get("landing_page") if mp_detail else None,
             "pricing_model": mp_detail.get("pricing_model") if mp_detail else None,

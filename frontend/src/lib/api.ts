@@ -36,6 +36,9 @@ export interface PacingLine {
   line_code: string | null;
   platform_id: string;
   channel_category: string;
+  audience_name: string | null;
+  flight_start: string | null;
+  flight_end: string | null;
   planned_budget: number;
   planned_spend_to_date: number;
   actual_spend_to_date: number;
@@ -420,5 +423,10 @@ export const api = {
       apiFetch<{ runs: IngestionRun[] }>(`/api/admin/ingestion-log?limit=${limit}`),
     runPacing: (code: string) =>
       apiFetch<Record<string, unknown>>(`/api/pacing/${code}/run`, { method: "POST" }),
+    updateMediaPlanLine: (lineId: string, data: { audience_name: string }) =>
+      apiFetch<Record<string, unknown>>(`/api/admin/media-plan-lines/${encodeURIComponent(lineId)}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
   },
 };

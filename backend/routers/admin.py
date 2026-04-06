@@ -306,3 +306,22 @@ async def get_ingestion_log(limit: int = Query(20, ge=1, le=100)):
     """
     rows = bq.run_query(sql, [bq.scalar_param("limit", "INT64", limit)])
     return {"runs": [dict(r) for r in rows]}
+
+
+@router.put("/media-plan-lines/{line_id}")
+async def update_media_plan_line(line_id: str, body: dict):
+    """Update a media plan line's display name (audience_name)."""
+    audience_name = body.get("audience_name")
+    if audience_name is None:
+        raise HTTPException(400, "audience_name is required")
+
+    sql = f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET audience_name = @audience_name
+        WHERE line_id = @line_id
+    """
+    bq.run_query(sql, [
+        bq.string_param("audience_name", audience_name),
+        bq.string_param("line_id", line_id),
+    ])
+    return {"status": "updated", "line_id": line_id, "audience_name": audience_name}
