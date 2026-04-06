@@ -64,7 +64,7 @@ export function KpiCard({ label, value, sub, accent, benchmark }: KpiCardProps) 
       <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
         {label}
       </p>
-      <p className={cn("mt-1.5 text-2xl font-semibold tabular-nums", accent ?? "text-white")}>
+      <p className={cn("mt-1.5 text-lg font-semibold tabular-nums sm:text-2xl break-all sm:break-normal", accent ?? "text-white")}>
         {value}
       </p>
       {sub && <p className="mt-0.5 text-xs text-slate-500">{sub}</p>}

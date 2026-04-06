@@ -28,7 +28,7 @@ export function PacingTab({ code }: { code: string }) {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <Card key={i} className="animate-pulse">
             <div className="h-3 w-20 rounded bg-slate-700" />
@@ -108,14 +108,14 @@ function LineRow({ line }: { line: PacingLine }) {
       : 0;
 
   return (
-    <Card className="!p-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-800 text-xs font-bold text-slate-300">
+    <Card className="!p-3 sm:!p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-slate-800 text-xs font-bold text-slate-300">
             {platformLabel(line.platform_id).charAt(0)}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-sm font-medium text-white">
                 {platformLabel(line.platform_id)}
               </span>
@@ -128,7 +128,7 @@ function LineRow({ line }: { line: PacingLine }) {
                 {line.channel_category}
               </span>
             </div>
-            <div className="mt-0.5 flex items-center gap-3 text-xs text-slate-500">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
               <span>{formatCurrency(line.actual_spend_to_date)} spent</span>
               <span>of {formatCurrency(line.planned_budget)} budget</span>
               {line.remaining_days > 0 && (
@@ -143,7 +143,9 @@ function LineRow({ line }: { line: PacingLine }) {
             </div>
           </div>
         </div>
-        <PacingBadge percentage={line.pacing_percentage} />
+        <div className="flex-shrink-0 self-end sm:self-auto">
+          <PacingBadge percentage={line.pacing_percentage} />
+        </div>
       </div>
 
       {/* Progress bar */}

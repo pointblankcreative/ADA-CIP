@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -9,6 +10,8 @@ import {
   Settings,
   Gauge,
   Shield,
+  Menu,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,9 +23,34 @@ const NAV = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [open, setOpen] = useState(false);
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 flex w-56 flex-col border-r border-slate-800 bg-surface">
+    <>
+      {/* Mobile hamburger button */}
+      <button
+        onClick={() => setOpen(true)}
+        className="fixed top-3 left-3 z-40 flex h-9 w-9 items-center justify-center rounded-md bg-surface border border-slate-800 text-slate-400 md:hidden"
+        aria-label="Open menu"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+
+      {/* Mobile overlay */}
+      {open && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 md:hidden"
+          onClick={() => setOpen(false)}
+        />
+      )}
+
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-56 flex-col border-r border-slate-800 bg-surface transition-transform duration-200",
+          "md:translate-x-0 md:z-30",
+          open ? "translate-x-0" : "-translate-x-full"
+        )}
+      >
       {/* Logo */}
       <div className="flex h-14 items-center gap-2.5 border-b border-slate-800 px-5">
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600">
@@ -31,9 +59,16 @@ export function Sidebar() {
         <span className="text-sm font-semibold tracking-tight text-white">
           CIP
         </span>
-        <span className="ml-auto rounded bg-brand-600/20 px-1.5 py-0.5 text-[10px] font-medium text-brand-400">
+        <span className="ml-auto rounded bg-brand-600/20 px-1.5 py-0.5 text-[10px] font-medium text-brand-400 md:ml-auto">
           v0.1
         </span>
+        <button
+          onClick={() => setOpen(false)}
+          className="ml-2 flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 md:hidden"
+          aria-label="Close menu"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Navigation */}
@@ -45,6 +80,7 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
+              onClick={() => setOpen(false)}
               className={cn(
                 "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors",
                 isActive
@@ -79,5 +115,6 @@ export function Sidebar() {
         <p className="text-[10px] text-slate-600">Point Blank Creative</p>
       </div>
     </aside>
+    </>
   );
 }
