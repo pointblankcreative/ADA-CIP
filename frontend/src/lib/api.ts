@@ -60,6 +60,17 @@ export interface PacingResponse {
   lines: PacingLine[];
 }
 
+export interface PacingHistoryPoint {
+  date: string;
+  line_id: string;
+  pacing_percentage: number;
+}
+
+export interface PacingHistoryResponse {
+  project_code: string;
+  history: PacingHistoryPoint[];
+}
+
 export interface DailyPerformance {
   date: string;
   spend: number;
@@ -371,6 +382,8 @@ export const api = {
   },
   pacing: {
     get: (code: string) => apiFetch<PacingResponse>(`/api/pacing/${code}`),
+    history: (code: string, days = 60) =>
+      apiFetch<PacingHistoryResponse>(`/api/pacing/${code}/history?days=${days}`),
     run: (code: string) =>
       apiFetch(`/api/pacing/${code}/run`, { method: "POST" }),
   },

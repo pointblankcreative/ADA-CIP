@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type PacingResponse, type PacingLine } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
+import { OscilloscopeCard } from "@/components/oscilloscope-card";
 import { PacingBadge } from "@/components/pacing-badge";
 import {
   formatCurrency,
@@ -69,6 +70,11 @@ export function PacingTab({ code }: { code: string }) {
 
   return (
     <div className="space-y-6">
+      {/* Oscilloscope health card */}
+      {data.lines.length > 0 && (
+        <OscilloscopeCard pacing={data} code={code} />
+      )}
+
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
