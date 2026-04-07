@@ -8,12 +8,12 @@
 import {
   SiMeta,
   SiGoogleads,
-  SiLinkedin,
   SiTiktok,
   SiSnapchat,
   SiReddit,
   SiPinterest,
 } from "react-icons/si";
+import { FaLinkedinIn } from "react-icons/fa6";
 import type { IconType } from "react-icons";
 
 const BRAND_COLORS: Record<string, string> = {
@@ -31,7 +31,7 @@ const BRAND_COLORS: Record<string, string> = {
 const SI_ICONS: Record<string, IconType> = {
   meta: SiMeta,
   google_ads: SiGoogleads,
-  linkedin: SiLinkedin,
+  linkedin: FaLinkedinIn,
   tiktok: SiTiktok,
   snapchat: SiSnapchat,
   reddit: SiReddit,
