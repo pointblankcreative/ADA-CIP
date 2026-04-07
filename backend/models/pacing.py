@@ -8,6 +8,9 @@ class LinePacing(BaseModel):
     line_code: str | None = None
     platform_id: str | None = None
     channel_category: str | None = None
+    audience_name: str | None = None
+    flight_start: str | None = None
+    flight_end: str | None = None
     planned_budget: float = 0
     planned_spend_to_date: float = 0
     actual_spend_to_date: float = 0

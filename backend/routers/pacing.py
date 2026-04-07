@@ -43,8 +43,12 @@ async def get_pacing(project_code: str):
             bt.pacing_percentage,
             bt.daily_budget_required,
             bt.is_over_pacing,
-            bt.is_under_pacing
+            bt.is_under_pacing,
+            mpl.audience_name,
+            mpl.flight_start,
+            mpl.flight_end
         FROM {bq.table('budget_tracking')} bt
+        LEFT JOIN {bq.table('media_plan_lines')} mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
             AND bt.date = (
                 SELECT MAX(date) FROM {bq.table('budget_tracking')}
@@ -78,6 +82,9 @@ async def get_pacing(project_code: str):
                 line_code=r.get("line_code"),
                 platform_id=r.get("platform_id"),
                 channel_category=r.get("channel_category"),
+                audience_name=r.get("audience_name"),
+                flight_start=str(r["flight_start"]) if r.get("flight_start") else None,
+                flight_end=str(r["flight_end"]) if r.get("flight_end") else None,
                 planned_budget=_float(r.get("planned_budget")),
                 planned_spend_to_date=_float(r.get("planned_spend_to_date")),
                 actual_spend_to_date=_float(r.get("actual_spend_to_date")),

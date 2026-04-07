@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type PacingResponse, type PacingLine } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { PacingBadge } from "@/components/pacing-badge";
@@ -14,6 +14,12 @@ import {
   cn,
 } from "@/lib/utils";
 
+function formatShortDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 export function PacingTab({ code }: { code: string }) {
   const [data, setData] = useState<PacingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -25,6 +31,16 @@ export function PacingTab({ code }: { code: string }) {
       .catch(() => setData(null))
       .finally(() => setLoading(false));
   }, [code]);
+
+  const handleNameUpdate = (lineId: string, newName: string) => {
+    if (!data) return;
+    setData({
+      ...data,
+      lines: data.lines.map((l: PacingLine) =>
+        l.line_id === lineId ? { ...l, audience_name: newName } : l
+      ),
+    });
+  };
 
   if (loading) {
     return (
@@ -84,7 +100,11 @@ export function PacingTab({ code }: { code: string }) {
         </h3>
         <div className="mt-3 space-y-3">
           {data.lines.map((line) => (
-            <LineRow key={line.line_id} line={line} />
+            <LineRow
+              key={line.line_id}
+              line={line}
+              onNameUpdate={handleNameUpdate}
+            />
           ))}
         </div>
       </div>
@@ -99,13 +119,66 @@ export function PacingTab({ code }: { code: string }) {
   );
 }
 
-function LineRow({ line }: { line: PacingLine }) {
+function LineRow({
+  line,
+  onNameUpdate,
+}: {
+  line: PacingLine;
+  onNameUpdate: (lineId: string, newName: string) => void;
+}) {
   const status = pacingStatus(line.pacing_percentage);
-  const barPct = Math.min(line.pacing_percentage, 150);
   const budgetPct =
     line.planned_budget > 0
       ? (line.actual_spend_to_date / line.planned_budget) * 100
       : 0;
+
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(line.audience_name || "");
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const displayName = line.audience_name || line.channel_category || "";
+  const dateRange =
+    line.flight_start && line.flight_end
+      ? `${formatShortDate(line.flight_start)} — ${formatShortDate(line.flight_end)}`
+      : null;
+
+  const handleSave = async () => {
+    const trimmed = editValue.trim();
+    if (!trimmed || trimmed === line.audience_name) {
+      setEditing(false);
+      setEditValue(line.audience_name || "");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.admin.updateMediaPlanLine(line.line_id, {
+        audience_name: trimmed,
+      });
+      onNameUpdate(line.line_id, trimmed);
+      setEditing(false);
+    } catch {
+      setEditValue(line.audience_name || "");
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleSave();
+    if (e.key === "Escape") {
+      setEditValue(line.audience_name || "");
+      setEditing(false);
+    }
+  };
 
   return (
     <Card className="!p-3 sm:!p-4">
@@ -119,18 +192,53 @@ function LineRow({ line }: { line: PacingLine }) {
               <span className="text-sm font-medium text-white">
                 {platformLabel(line.platform_id)}
               </span>
+              {editing ? (
+                <input
+                  ref={inputRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={handleSave}
+                  onKeyDown={handleKeyDown}
+                  disabled={saving}
+                  className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-blue-300 outline-none focus:border-blue-500 w-48"
+                  placeholder="Line name..."
+                />
+              ) : (
+                <>
+                  {displayName && (
+                    <span className="text-xs font-medium text-blue-400">
+                      {displayName}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => {
+                      setEditValue(line.audience_name || displayName);
+                      setEditing(true);
+                    }}
+                    className="text-slate-600 hover:text-slate-400 transition-colors"
+                    title="Edit line name"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 16 16"
+                      fill="currentColor"
+                      className="h-3 w-3"
+                    >
+                      <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L3.22 10.306a1 1 0 0 0-.258.42l-.97 3.232a.5.5 0 0 0 .616.617l3.232-.97a1 1 0 0 0 .42-.258l7.793-7.793a1.75 1.75 0 0 0 0-2.475l-.565-.566Z" />
+                    </svg>
+                  </button>
+                </>
+              )}
               {line.line_code && (
                 <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
                   {line.line_code}
                 </span>
               )}
-              <span className="text-xs text-slate-500">
-                {line.channel_category}
-              </span>
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
               <span>{formatCurrency(line.actual_spend_to_date)} spent</span>
               <span>of {formatCurrency(line.planned_budget)} budget</span>
+              {dateRange && <span>{dateRange}</span>}
               {line.remaining_days > 0 && (
                 <span>{line.remaining_days}d remaining</span>
               )}
@@ -140,6 +248,12 @@ function LineRow({ line }: { line: PacingLine }) {
                     {formatCurrency(line.daily_budget_required)}/day needed
                   </span>
                 )}
+              <span
+                className="font-mono text-[10px] text-slate-600 cursor-help"
+                title={line.line_id}
+              >
+                {line.line_id.split("-").pop()}
+              </span>
             </div>
           </div>
         </div>
