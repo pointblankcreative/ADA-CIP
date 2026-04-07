@@ -325,3 +325,36 @@ async def update_media_plan_line(line_id: str, body: dict):
         bq.string_param("line_id", line_id),
     ])
     return {"status": "updated", "line_id": line_id, "audience_name": audience_name}
+
+
+@router.post("/creative-aliases")
+async def create_creative_alias(body: dict):
+    """Create a manual creative variant alias for ad name grouping."""
+    project_code = body.get("project_code")
+    ad_name_pattern = body.get("ad_name_pattern")
+    creative_variant = body.get("creative_variant")
+    if not project_code or not ad_name_pattern or not creative_variant:
+        raise HTTPException(400, "project_code, ad_name_pattern, and creative_variant are required")
+
+    alias_id = f"cva-{uuid.uuid4().hex[:12]}"
+    sql = f"""
+        INSERT INTO {bq.table('creative_variant_aliases')}
+            (alias_id, project_code, ad_name_pattern, platform_id, creative_variant, created_by)
+        VALUES (@alias_id, @project_code, @ad_name_pattern, @platform_id, @creative_variant, 'admin')
+    """
+    bq.run_query(sql, [
+        bq.string_param("alias_id", alias_id),
+        bq.string_param("project_code", project_code),
+        bq.string_param("ad_name_pattern", ad_name_pattern),
+        bq.string_param("platform_id", body.get("platform_id") or ""),
+        bq.string_param("creative_variant", creative_variant),
+    ])
+    return {"status": "created", "alias_id": alias_id}
+
+
+@router.delete("/creative-aliases/{alias_id}")
+async def delete_creative_alias(alias_id: str):
+    """Delete a creative variant alias."""
+    sql = f"DELETE FROM {bq.table('creative_variant_aliases')} WHERE alias_id = @alias_id"
+    bq.run_query(sql, [bq.string_param("alias_id", alias_id)])
+    return {"status": "deleted", "alias_id": alias_id}

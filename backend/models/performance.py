@@ -146,3 +146,30 @@ class AdPerformanceResponse(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     ads: list[AdRow] = []
+
+
+class CreativeVariantRow(BaseModel):
+    creative_variant: str
+    ad_names: list[str] = []
+    platforms: list[str] = []
+    ad_set_names: list[str] = []
+    ad_count: int = 0
+    spend: float = 0
+    impressions: int = 0
+    clicks: int = 0
+    conversions: float = 0
+    engagements: int = 0
+    video_views: int = 0
+    video_completions: int = 0
+    cpm: float | None = None
+    cpc: float | None = None
+    ctr: float | None = None
+    vcr: float | None = None
+    engagement_rate: float | None = None
+
+
+class CreativeVariantResponse(BaseModel):
+    project_code: str
+    start_date: date | None = None
+    end_date: date | None = None
+    creatives: list[CreativeVariantRow] = []

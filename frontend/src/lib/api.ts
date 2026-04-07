@@ -207,6 +207,33 @@ export interface AdPerformanceResponse {
   ads: AdRow[];
 }
 
+export interface CreativeVariantRow {
+  creative_variant: string;
+  ad_names: string[];
+  platforms: string[];
+  ad_set_names: string[];
+  ad_count: number;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  engagements: number;
+  video_views: number;
+  video_completions: number;
+  cpm: number | null;
+  cpc: number | null;
+  ctr: number | null;
+  vcr: number | null;
+  engagement_rate: number | null;
+}
+
+export interface CreativeVariantResponse {
+  project_code: string;
+  start_date: string | null;
+  end_date: string | null;
+  creatives: CreativeVariantRow[];
+}
+
 export interface Alert {
   alert_id: string;
   project_code: string;
@@ -360,6 +387,10 @@ export const api = {
       apiFetch<AdPerformanceResponse>(
         `/api/performance/${code}/ads${days ? `?days=${days}` : ""}`
       ),
+    creatives: (code: string, days?: number) =>
+      apiFetch<CreativeVariantResponse>(
+        `/api/performance/${code}/creatives${days ? `?days=${days}` : ""}`
+      ),
   },
   alerts: {
     list: (params?: { project_code?: string; severity?: string; limit?: number }) => {
@@ -427,6 +458,20 @@ export const api = {
       apiFetch<Record<string, unknown>>(`/api/admin/media-plan-lines/${encodeURIComponent(lineId)}`, {
         method: "PUT",
         body: JSON.stringify(data),
+      }),
+    createCreativeAlias: (data: {
+      project_code: string;
+      ad_name_pattern: string;
+      creative_variant: string;
+      platform_id?: string;
+    }) =>
+      apiFetch<Record<string, unknown>>("/api/admin/creative-aliases", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteCreativeAlias: (aliasId: string) =>
+      apiFetch<Record<string, unknown>>(`/api/admin/creative-aliases/${encodeURIComponent(aliasId)}`, {
+        method: "DELETE",
       }),
   },
 };

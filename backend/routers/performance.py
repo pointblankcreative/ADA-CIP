@@ -8,6 +8,8 @@ from backend.models.performance import (
     AdSetPerformanceResponse,
     AdSetRow,
     CampaignRow,
+    CreativeVariantResponse,
+    CreativeVariantRow,
     DailyMetric,
     PerformanceResponse,
     PlatformBreakdown,
@@ -203,6 +205,120 @@ async def get_adset_performance(
             for r in rows
         ],
         total_reach_note=note,
+    )
+
+
+@router.get("/{project_code}/creatives", response_model=CreativeVariantResponse)
+async def get_creative_performance(
+    project_code: str,
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    days: int | None = Query(None),
+    platform: str | None = Query(None),
+):
+    """Aggregate ad performance by normalized creative variant name across platforms."""
+    start_date, end_date = _resolve_perf_dates(start_date, end_date, days)
+    date_clause, date_params = _date_filter(start_date, end_date)
+    plat = "AND f.platform_id = @platform" if platform else ""
+    params = [bq.string_param("project_code", project_code)] + date_params
+    if platform:
+        params.append(bq.string_param("platform", platform))
+
+    # Ensure alias table exists (may not have been created yet)
+    try:
+        bq.run_query(f"SELECT 1 FROM {bq.table('creative_variant_aliases')} LIMIT 0", [])
+        alias_join = f"""
+            LEFT JOIN {bq.table('creative_variant_aliases')} cva
+                ON cva.project_code = @project_code
+                AND (ad_agg.ad_name = cva.ad_name_pattern OR ad_agg.ad_name LIKE cva.ad_name_pattern)
+                AND (cva.platform_id IS NULL OR cva.platform_id = ad_agg.platform_id)
+        """
+        alias_col = "cva.creative_variant"
+    except Exception:
+        alias_join = ""
+        alias_col = "NULL"
+
+    sql = f"""
+        WITH ad_agg AS (
+            SELECT
+                f.ad_id,
+                ANY_VALUE(f.ad_name) AS ad_name,
+                ANY_VALUE(f.ad_set_name) AS ad_set_name,
+                f.platform_id,
+                SUM(f.spend) AS spend,
+                SUM(f.impressions) AS impressions,
+                SUM(f.clicks) AS clicks,
+                SUM(f.conversions) AS conversions,
+                SUM(f.engagements) AS engagements,
+                SUM(f.video_views) AS video_views,
+                SUM(f.video_completions) AS video_completions
+            FROM {bq.table('fact_digital_daily')} f
+            WHERE f.project_code = @project_code AND {date_clause} {plat}
+                AND f.ad_name IS NOT NULL AND f.ad_name != ''
+            GROUP BY f.ad_id, f.platform_id
+        ),
+        aliased AS (
+            SELECT ad_agg.*,
+                COALESCE(
+                    {alias_col},
+                    TRIM(REGEXP_REPLACE(
+                        REGEXP_REPLACE(ad_agg.ad_name,
+                            r'^\\d{{5}}\\s*[-_]\\s*', ''),
+                        r'\\s*[-_]?\\s*\\d+x\\d+\\s*$', ''
+                    ))
+                ) AS creative_variant
+            FROM ad_agg
+            {alias_join}
+        )
+        SELECT
+            creative_variant,
+            ARRAY_AGG(DISTINCT ad_name IGNORE NULLS) AS ad_names,
+            ARRAY_AGG(DISTINCT platform_id) AS platforms,
+            ARRAY_AGG(DISTINCT ad_set_name IGNORE NULLS) AS ad_set_names,
+            COUNT(DISTINCT ad_id) AS ad_count,
+            SUM(spend) AS spend,
+            SUM(impressions) AS impressions,
+            SUM(clicks) AS clicks,
+            SUM(conversions) AS conversions,
+            SUM(engagements) AS engagements,
+            SUM(video_views) AS video_views,
+            SUM(video_completions) AS video_completions,
+            SAFE_DIVIDE(SUM(spend), NULLIF(SUM(impressions), 0)) * 1000 AS cpm,
+            SAFE_DIVIDE(SUM(spend), NULLIF(SUM(clicks), 0)) AS cpc,
+            SAFE_DIVIDE(SUM(clicks), NULLIF(SUM(impressions), 0)) AS ctr,
+            SAFE_DIVIDE(SUM(video_completions), NULLIF(SUM(video_views), 0)) AS vcr,
+            SAFE_DIVIDE(SUM(engagements), NULLIF(SUM(impressions), 0)) AS engagement_rate
+        FROM aliased
+        GROUP BY creative_variant
+        ORDER BY spend DESC
+    """
+    rows = bq.run_query(sql, params)
+    return CreativeVariantResponse(
+        project_code=project_code,
+        start_date=date.fromisoformat(start_date) if start_date else None,
+        end_date=date.fromisoformat(end_date) if end_date else None,
+        creatives=[
+            CreativeVariantRow(
+                creative_variant=r.get("creative_variant") or "Unknown",
+                ad_names=list(r.get("ad_names") or []),
+                platforms=list(r.get("platforms") or []),
+                ad_set_names=list(r.get("ad_set_names") or []),
+                ad_count=_int(r.get("ad_count")),
+                spend=_float(r.get("spend")),
+                impressions=_int(r.get("impressions")),
+                clicks=_int(r.get("clicks")),
+                conversions=_float(r.get("conversions")),
+                engagements=_int(r.get("engagements")),
+                video_views=_int(r.get("video_views")),
+                video_completions=_int(r.get("video_completions")),
+                cpm=_float_or_none(r.get("cpm")),
+                cpc=_float_or_none(r.get("cpc")),
+                ctr=_float_or_none(r.get("ctr")),
+                vcr=_float_or_none(r.get("vcr")),
+                engagement_rate=_float_or_none(r.get("engagement_rate")),
+            )
+            for r in rows
+        ],
     )
 
 

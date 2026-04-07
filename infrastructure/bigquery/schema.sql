@@ -531,5 +531,22 @@ VALUES
   ('perion', 'Perion DOOH', 'dooh', NULL, 1, 1);
 
 -- ==============================================================================
+-- CREATIVE VARIANT ALIASES — manual overrides for grouping ads by creative
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.creative_variant_aliases` (
+  alias_id STRING NOT NULL,
+  project_code STRING NOT NULL,
+  ad_name_pattern STRING NOT NULL,
+  platform_id STRING,
+  creative_variant STRING NOT NULL,
+  created_by STRING,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+OPTIONS(
+  description='Manual overrides for grouping ads by creative variant name. ad_name_pattern can be exact or SQL LIKE pattern.'
+);
+
+-- ==============================================================================
 -- END OF SCHEMA DEFINITION
 -- ==============================================================================
