@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.models.pacing import LinePacing, PacingResponse
+from backend.models.pacing import LinePacing, PacingHistoryPoint, PacingHistoryResponse, PacingResponse
 from backend.services import bigquery_client as bq
 from backend.services.pacing import run_all_active, run_pacing_for_project
 
@@ -94,6 +94,36 @@ async def get_pacing(project_code: str):
                 daily_budget_required=_float(r.get("daily_budget_required"), None),
                 is_over_pacing=bool(r.get("is_over_pacing")),
                 is_under_pacing=bool(r.get("is_under_pacing")),
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get("/{project_code}/history", response_model=PacingHistoryResponse)
+async def get_pacing_history(
+    project_code: str,
+    days: int = Query(60, ge=7, le=365),
+):
+    """Return daily pacing snapshots from budget_tracking for historical trend."""
+    sql = f"""
+        SELECT date, line_id, pacing_percentage
+        FROM {bq.table('budget_tracking')}
+        WHERE project_code = @project_code
+            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
+        ORDER BY date ASC, line_id
+    """
+    rows = bq.run_query(sql, [
+        bq.string_param("project_code", project_code),
+        bq.scalar_param("days", "INT64", days),
+    ])
+    return PacingHistoryResponse(
+        project_code=project_code,
+        history=[
+            PacingHistoryPoint(
+                date=str(r["date"]),
+                line_id=r["line_id"],
+                pacing_percentage=float(r.get("pacing_percentage") or 0),
             )
             for r in rows
         ],

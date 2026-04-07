@@ -25,6 +25,8 @@ import {
   type BenchmarkValue,
   type AdSetPerformanceResponse,
   type AdPerformanceResponse,
+  type CreativeVariantResponse,
+  type CreativeVariantRow,
 } from "@/lib/api";
 import { Card, KpiCard, type BenchmarkIndicator } from "@/components/card";
 import {
@@ -112,6 +114,7 @@ export function PerformanceTab({ code }: { code: string }) {
   const [benchData, setBenchData] = useState<BenchmarkResponse | null>(null);
   const [adsetsData, setAdsetsData] = useState<AdSetPerformanceResponse | null>(null);
   const [adsData, setAdsData] = useState<AdPerformanceResponse | null>(null);
+  const [creativesData, setCreativesData] = useState<CreativeVariantResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(0);
 
@@ -123,12 +126,14 @@ export function PerformanceTab({ code }: { code: string }) {
       api.benchmarks.get(code).catch(() => null),
       api.performance.adsets(code, days).catch(() => null),
       api.performance.ads(code, days).catch(() => null),
-    ]).then(([perf, ga4, bench, adsets, ads]) => {
+      api.performance.creatives(code, days).catch(() => null),
+    ]).then(([perf, ga4, bench, adsets, ads, creatives]) => {
       setData(perf);
       setGa4Data(ga4);
       setBenchData(bench);
       setAdsetsData(adsets);
       setAdsData(ads);
+      setCreativesData(creatives);
     }).finally(() => setLoading(false));
   }, [code, days]);
 
@@ -650,6 +655,17 @@ export function PerformanceTab({ code }: { code: string }) {
         </Card>
       )}
 
+      {/* ── Creative variants (cross-platform) ───────────────────── */}
+      {creativesData && creativesData.creatives.length > 0 && (
+        <CreativeVariantsTable
+          data={creativesData}
+          projectCode={code}
+          onRefresh={() => {
+            api.performance.creatives(code, days).then(setCreativesData).catch(() => {});
+          }}
+        />
+      )}
+
       {/* ── Creative (ad) drill-down ──────────────────────────────── */}
       {adsData && adsData.ads.length > 0 && (
         <Card className="overflow-hidden !p-0">
@@ -741,5 +757,264 @@ export function PerformanceTab({ code }: { code: string }) {
         </>
       )}
     </div>
+  );
+}
+
+
+/* ── Creative Variants Table Component ────────────────────────────── */
+
+function CreativeVariantsTable({
+  data,
+  projectCode,
+  onRefresh,
+}: {
+  data: CreativeVariantResponse;
+  projectCode: string;
+  onRefresh: () => void;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  const toggleExpand = (variant: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(variant)) next.delete(variant);
+      else next.add(variant);
+      return next;
+    });
+  };
+
+  const handleRename = async (row: CreativeVariantRow) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === row.creative_variant) {
+      setRenaming(null);
+      return;
+    }
+    try {
+      // Create alias for each original ad name in this variant
+      for (const adName of row.ad_names) {
+        await api.admin.createCreativeAlias({
+          project_code: projectCode,
+          ad_name_pattern: adName,
+          creative_variant: trimmed,
+        });
+      }
+      setRenaming(null);
+      onRefresh();
+    } catch {
+      setRenaming(null);
+    }
+  };
+
+  return (
+    <Card className="overflow-hidden !p-0">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex w-full items-center justify-between px-5 py-4 border-b border-slate-800 hover:bg-slate-800/30 transition-colors"
+      >
+        <h4 className="text-sm font-medium text-slate-400">
+          Creative variants
+          <span className="ml-2 text-slate-600">
+            ({data.creatives.length})
+          </span>
+        </h4>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          className={cn(
+            "h-4 w-4 text-slate-600 transition-transform",
+            collapsed && "-rotate-90"
+          )}
+        >
+          <path
+            fillRule="evenodd"
+            d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"
+          />
+        </svg>
+      </button>
+
+      {!collapsed && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
+                <th className="px-5 py-3 font-medium">Creative Variant</th>
+                <th className="px-5 py-3 font-medium">Platforms</th>
+                <th className="px-5 py-3 font-medium text-right">Ad Sets</th>
+                <th className="px-5 py-3 font-medium text-right">Ads</th>
+                <th className="px-5 py-3 font-medium text-right">Spend</th>
+                <th className="px-5 py-3 font-medium text-right">CTR</th>
+                <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
+                <th className="px-5 py-3 font-medium text-right">VCR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.creatives.map((row) => {
+                const isExpanded = expanded.has(row.creative_variant);
+                const isRenaming = renaming === row.creative_variant;
+
+                return (
+                  <VariantRowGroup
+                    key={row.creative_variant}
+                    row={row}
+                    isExpanded={isExpanded}
+                    isRenaming={isRenaming}
+                    renameValue={renameValue}
+                    onToggle={() => toggleExpand(row.creative_variant)}
+                    onStartRename={() => {
+                      setRenaming(row.creative_variant);
+                      setRenameValue(row.creative_variant);
+                    }}
+                    onRenameChange={setRenameValue}
+                    onRenameSubmit={() => handleRename(row)}
+                    onRenameCancel={() => setRenaming(null)}
+                  />
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function VariantRowGroup({
+  row,
+  isExpanded,
+  isRenaming,
+  renameValue,
+  onToggle,
+  onStartRename,
+  onRenameChange,
+  onRenameSubmit,
+  onRenameCancel,
+}: {
+  row: CreativeVariantRow;
+  isExpanded: boolean;
+  isRenaming: boolean;
+  renameValue: string;
+  onToggle: () => void;
+  onStartRename: () => void;
+  onRenameChange: (v: string) => void;
+  onRenameSubmit: () => void;
+  onRenameCancel: () => void;
+}) {
+  return (
+    <>
+      <tr
+        className="border-t border-slate-800/50 hover:bg-slate-800/30 cursor-pointer"
+        onClick={onToggle}
+      >
+        <td className="px-5 py-3">
+          <div className="flex items-center gap-2">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              className={cn(
+                "h-3 w-3 text-slate-600 transition-transform flex-shrink-0",
+                isExpanded && "rotate-90"
+              )}
+            >
+              <path d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z" />
+            </svg>
+            {isRenaming ? (
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={(e) => onRenameChange(e.target.value)}
+                onBlur={onRenameSubmit}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onRenameSubmit();
+                  if (e.key === "Escape") onRenameCancel();
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="rounded border border-slate-600 bg-slate-800 px-2 py-0.5 text-sm text-blue-300 outline-none focus:border-blue-500 w-64"
+              />
+            ) : (
+              <>
+                <span className="text-slate-200 truncate max-w-[250px]">
+                  {row.creative_variant}
+                </span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onStartRename();
+                  }}
+                  className="text-slate-600 hover:text-slate-400 transition-colors flex-shrink-0"
+                  title="Rename variant"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3">
+                    <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L3.22 10.306a1 1 0 0 0-.258.42l-.97 3.232a.5.5 0 0 0 .616.617l3.232-.97a1 1 0 0 0 .42-.258l7.793-7.793a1.75 1.75 0 0 0 0-2.475l-.565-.566Z" />
+                  </svg>
+                </button>
+              </>
+            )}
+          </div>
+        </td>
+        <td className="px-5 py-3">
+          <div className="flex flex-wrap gap-1">
+            {row.platforms.map((p) => (
+              <span
+                key={p}
+                className="inline-block rounded-full px-2 py-0.5 text-[10px] font-medium"
+                style={{
+                  backgroundColor: `${PLATFORM_COLORS[p] || "#64748b"}20`,
+                  color: PLATFORM_COLORS[p] || "#94a3b8",
+                }}
+              >
+                {platformLabel(p)}
+              </span>
+            ))}
+          </div>
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.ad_set_names.length}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.ad_count}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-300">
+          {formatCurrency(row.spend)}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.vcr != null ? formatPercent(row.vcr * 100) : "—"}
+        </td>
+      </tr>
+
+      {/* Expanded detail: show original ad names, ad sets, and platforms */}
+      {isExpanded && (
+        <>
+          {row.ad_names.map((adName, i) => (
+            <tr
+              key={`${row.creative_variant}-detail-${i}`}
+              className="bg-slate-900/50 border-t border-slate-800/30"
+            >
+              <td className="pl-12 pr-5 py-2 text-xs text-slate-500 truncate max-w-[300px]" colSpan={2}>
+                {adName}
+              </td>
+              <td colSpan={6} />
+            </tr>
+          ))}
+          {row.ad_set_names.length > 0 && (
+            <tr className="bg-slate-900/50 border-t border-slate-800/30">
+              <td className="pl-12 pr-5 py-2 text-xs text-slate-600" colSpan={8}>
+                Ad sets: {row.ad_set_names.join(", ")}
+              </td>
+            </tr>
+          )}
+        </>
+      )}
+    </>
   );
 }

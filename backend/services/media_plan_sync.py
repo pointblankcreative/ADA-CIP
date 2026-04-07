@@ -47,6 +47,56 @@ _FLIGHT_RE = re.compile(
     r"^(flight\s+\w+|phase\s+\d+|wave\s+\d+|burst\s+\d+)$", re.IGNORECASE
 )
 
+# Project code regex — matches 5-digit codes starting with 2x (e.g. 25042, 26009)
+_PROJECT_CODE_RE = re.compile(r'(?:^|\b)(2[0-9]\d{3})(?:\b|\s|-|_|$)')
+
+
+def _tab_belongs_to_project(
+    title: str,
+    all_data: list[list[str]],
+    bc_metadata: dict,
+    project_code: str,
+) -> tuple[bool, str]:
+    """Check whether a media plan tab belongs to the current project.
+
+    Returns (keep, reason) — reason explains why it was kept or skipped.
+    """
+    # ── Check 1: project code in tab title (no API call needed) ─────
+    codes_in_title = _PROJECT_CODE_RE.findall(title)
+    if codes_in_title:
+        if project_code in codes_in_title:
+            return True, f"tab title contains project code {project_code}"
+        return False, f"tab title contains code(s) {codes_in_title}, not {project_code}"
+
+    # ── Check 2: read tab metadata and compare to blocking chart ────
+    if len(all_data) < 5:
+        return True, "too few rows for metadata, including by default"
+
+    client_pos = _find_label(all_data, "Client")
+    project_pos = _find_label(all_data, "Project")
+
+    tab_client = _cell(all_data, client_pos[0], client_pos[1] + 1) if client_pos else ""
+    tab_project = _cell(all_data, project_pos[0], project_pos[1] + 1) if project_pos else ""
+
+    bc_client = bc_metadata.get("client_name", "")
+    bc_project = bc_metadata.get("project_name", "")
+
+    # If the tab has no metadata at all, include by default
+    if not tab_client and not tab_project:
+        return True, "no Client/Project metadata found, including by default"
+
+    # Compare: skip if BOTH client and project are present and NEITHER matches
+    client_match = not tab_client or not bc_client or tab_client.lower() == bc_client.lower()
+    project_match = not tab_project or not bc_project or tab_project.lower() == bc_project.lower()
+
+    if client_match and project_match:
+        return True, f"metadata matches (client='{tab_client}', project='{tab_project}')"
+
+    return False, (
+        f"metadata mismatch — tab has client='{tab_client}', project='{tab_project}'; "
+        f"blocking chart has client='{bc_client}', project='{bc_project}'"
+    )
+
 def _is_section_header(raw: str) -> bool:
     """Return True if the value looks like a flight/section header, not a platform."""
     return bool(_FLIGHT_RE.match(raw.strip()))
@@ -327,9 +377,9 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
 
 # ── Media Plan Tab Parser ───────────────────────────────────────────
 
-def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
+def _parse_media_plan_tab(ws: gspread.Worksheet, prefetched_data: list[list[str]] | None = None) -> list[dict]:
     """Parse the Media Plan tab for detailed line items with targeting info."""
-    all_data = ws.get_all_values()
+    all_data = prefetched_data or ws.get_all_values()
     if len(all_data) < 14:
         return []
 
@@ -553,12 +603,22 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
         else:
             raise ValueError("Could not find Blocking Chart tab")
 
-    # ── Parse blocking chart + all media plan tabs ─────────────────
+    # ── Parse blocking chart + filter media plan tabs to this project ─
     bc = _parse_blocking_chart(blocking_ws)
-    mp_lines: list[dict] = []
+
+    filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
-        logger.info("  Parsing media plan tab: %s", mp_ws.title)
-        mp_lines.extend(_parse_media_plan_tab(mp_ws))
+        tab_data = mp_ws.get_all_values()
+        keep, reason = _tab_belongs_to_project(mp_ws.title, tab_data, bc["metadata"], project_code)
+        if keep:
+            logger.info("  Including media plan tab: '%s' — %s", mp_ws.title, reason)
+            filtered_tabs.append((mp_ws, tab_data))
+        else:
+            logger.warning("  Skipping media plan tab: '%s' — %s", mp_ws.title, reason)
+
+    mp_lines: list[dict] = []
+    for mp_ws, tab_data in filtered_tabs:
+        mp_lines.extend(_parse_media_plan_tab(mp_ws, prefetched_data=tab_data))
 
     # ── Prefer media plan tab lines when they have audience-level detail.
     #    The blocking chart often has more granular budget rows that don't

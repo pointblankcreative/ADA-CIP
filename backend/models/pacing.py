@@ -30,3 +30,14 @@ class PacingResponse(BaseModel):
     total_actual_to_date: float = 0
     overall_pacing_percentage: float = 0
     lines: list[LinePacing] = []
+
+
+class PacingHistoryPoint(BaseModel):
+    date: str
+    line_id: str
+    pacing_percentage: float
+
+
+class PacingHistoryResponse(BaseModel):
+    project_code: str
+    history: list[PacingHistoryPoint] = []

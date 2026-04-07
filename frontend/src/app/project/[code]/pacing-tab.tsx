@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type PacingResponse, type PacingLine } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
+import { OscilloscopeCard } from "@/components/oscilloscope-card";
+import { PlatformIcon } from "@/components/platform-icon";
 import { PacingBadge } from "@/components/pacing-badge";
 import {
   formatCurrency,
@@ -69,6 +71,11 @@ export function PacingTab({ code }: { code: string }) {
 
   return (
     <div className="space-y-6">
+      {/* Oscilloscope health card */}
+      {data.lines.length > 0 && (
+        <OscilloscopeCard pacing={data} code={code} />
+      )}
+
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
@@ -184,9 +191,7 @@ function LineRow({
     <Card className="!p-3 sm:!p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-slate-800 text-xs font-bold text-slate-300">
-            {platformLabel(line.platform_id).charAt(0)}
-          </div>
+          <PlatformIcon platformId={line.platform_id} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-sm font-medium text-white">
