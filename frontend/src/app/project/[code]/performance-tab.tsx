@@ -660,8 +660,18 @@ export function PerformanceTab({ code }: { code: string }) {
         <CreativeVariantsTable
           data={creativesData}
           projectCode={code}
-          onRefresh={() => {
-            api.performance.creatives(code, days).then(setCreativesData).catch(() => {});
+          onRename={(oldVariant: string, newVariant: string) => {
+            setCreativesData((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                creatives: prev.creatives.map((row) =>
+                  row.creative_variant === oldVariant
+                    ? { ...row, creative_variant: newVariant }
+                    : row
+                ),
+              };
+            });
           }}
         />
       )}
@@ -770,7 +780,7 @@ function CreativeVariantsTable({
 }: {
   data: CreativeVariantResponse;
   projectCode: string;
-  onRefresh: () => void;
+  onRename: (oldVariant: string, newVariant: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState(false);
@@ -793,7 +803,6 @@ function CreativeVariantsTable({
       return;
     }
     try {
-      // Create alias for each original ad name in this variant
       for (const adName of row.ad_names) {
         await api.admin.createCreativeAlias({
           project_code: projectCode,
@@ -801,8 +810,18 @@ function CreativeVariantsTable({
           creative_variant: trimmed,
         });
       }
+      // Optimistic update — reflect new name immediately
+      const oldVariant = row.creative_variant;
+      onRename(oldVariant, trimmed);
+      // Track the new variant name in expanded state
+      setExpanded((prev) => {
+        if (!prev.has(oldVariant)) return prev;
+        const next = new Set(prev);
+        next.delete(oldVariant);
+        next.add(trimmed);
+        return next;
+      });
       setRenaming(null);
-      onRefresh();
     } catch {
       setRenaming(null);
     }

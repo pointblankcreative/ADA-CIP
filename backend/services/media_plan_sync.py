@@ -85,17 +85,17 @@ def _tab_belongs_to_project(
     if not tab_client and not tab_project:
         return True, "no Client/Project metadata found, including by default"
 
-    # Compare: skip if BOTH client and project are present and NEITHER matches
-    client_match = not tab_client or not bc_client or tab_client.lower() == bc_client.lower()
-    project_match = not tab_project or not bc_project or tab_project.lower() == bc_project.lower()
+    # Compare: reject if EITHER client or project mismatches (when both sides have values)
+    client_mismatch = tab_client and bc_client and tab_client.lower() != bc_client.lower()
+    project_mismatch = tab_project and bc_project and tab_project.lower() != bc_project.lower()
 
-    if client_match and project_match:
-        return True, f"metadata matches (client='{tab_client}', project='{tab_project}')"
+    if client_mismatch or project_mismatch:
+        return False, (
+            f"metadata mismatch — tab has client='{tab_client}', project='{tab_project}'; "
+            f"blocking chart has client='{bc_client}', project='{bc_project}'"
+        )
 
-    return False, (
-        f"metadata mismatch — tab has client='{tab_client}', project='{tab_project}'; "
-        f"blocking chart has client='{bc_client}', project='{bc_project}'"
-    )
+    return True, f"metadata compatible (client='{tab_client}', project='{tab_project}')"
 
 def _is_section_header(raw: str) -> bool:
     """Return True if the value looks like a flight/section header, not a platform."""
