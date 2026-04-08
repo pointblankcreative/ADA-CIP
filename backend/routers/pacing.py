@@ -106,6 +106,15 @@ async def get_pacing_history(
     days: int = Query(60, ge=7, le=365),
 ):
     """Return daily pacing snapshots from budget_tracking for historical trend."""
+    project_sql = f"""
+        SELECT project_code
+        FROM {bq.table('dim_projects')}
+        WHERE project_code = @project_code
+    """
+    projects = bq.run_query(project_sql, [bq.string_param("project_code", project_code)])
+    if not projects:
+        raise HTTPException(404, f"Project {project_code} not found")
+
     sql = f"""
         SELECT date, line_id, pacing_percentage
         FROM {bq.table('budget_tracking')}
