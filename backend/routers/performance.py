@@ -231,7 +231,7 @@ async def get_creative_performance(
             LEFT JOIN {bq.table('creative_variant_aliases')} cva
                 ON cva.project_code = @project_code
                 AND (ad_agg.ad_name = cva.ad_name_pattern OR ad_agg.ad_name LIKE cva.ad_name_pattern)
-                AND (cva.platform_id IS NULL OR cva.platform_id = ad_agg.platform_id)
+                AND (cva.platform_id IS NULL OR cva.platform_id = '' OR cva.platform_id = ad_agg.platform_id)
         """
         alias_col = "cva.creative_variant"
     except Exception:
