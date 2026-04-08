@@ -558,7 +558,7 @@ def _synthesise_lines_from_mp(
         # Deduplicate across multiple flight tabs with identical content
         fs = mp.get("flight_start") or metadata.get("start_date")
         fe = mp.get("flight_end") or metadata.get("end_date")
-        dedup_key = (pid, budget, mp.get("goal", ""), str(fs), str(fe))
+        dedup_key = (pid, budget, mp.get("goal", ""), str(fs), str(fe), mp.get("audience_name", ""))
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
