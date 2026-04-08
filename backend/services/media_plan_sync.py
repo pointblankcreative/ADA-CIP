@@ -51,6 +51,30 @@ _FLIGHT_RE = re.compile(
 _PROJECT_CODE_RE = re.compile(r'(?:^|\b)(2[0-9]\d{3})(?:\b|\s|-|_|$)')
 
 
+def _sum_tab_budgets(all_data: list[list[str]]) -> float:
+    """Sum all numeric values in the 'Budget' column of a media plan tab."""
+    # Find the header row and budget column
+    budget_col = None
+    header_row_idx = None
+    for r in range(min(15, len(all_data))):
+        for c in range(len(all_data[r])):
+            if all_data[r][c].strip().lower() == "budget":
+                budget_col = c
+                header_row_idx = r
+                break
+        if budget_col is not None:
+            break
+    if budget_col is None or header_row_idx is None:
+        return 0.0
+    total = 0.0
+    for r in range(header_row_idx + 1, len(all_data)):
+        if r < len(all_data) and budget_col < len(all_data[r]):
+            val = _parse_money(all_data[r][budget_col])
+            if val and val > 0:
+                total += val
+    return total
+
+
 def _tab_belongs_to_project(
     title: str,
     all_data: list[list[str]],
@@ -70,6 +94,7 @@ def _tab_belongs_to_project(
 
     # ── Check 2: read tab metadata and compare to blocking chart ────
     if len(all_data) < 5:
+        logger.warning("  Tab '%s': too few rows for metadata, including by default", title)
         return True, "too few rows for metadata, including by default"
 
     client_pos = _find_label(all_data, "Client")
@@ -83,6 +108,7 @@ def _tab_belongs_to_project(
 
     # If the tab has no metadata at all, include by default
     if not tab_client and not tab_project:
+        logger.warning("  Tab '%s': no Client/Project metadata found, including by default", title)
         return True, "no Client/Project metadata found, including by default"
 
     # Compare: reject if EITHER client or project mismatches (when both sides have values)
@@ -94,6 +120,18 @@ def _tab_belongs_to_project(
             f"metadata mismatch — tab has client='{tab_client}', project='{tab_project}'; "
             f"blocking chart has client='{bc_client}', project='{bc_project}'"
         )
+
+    # ── Check 3: compare tab budget total to blocking chart budget ──
+    bc_budget = bc_metadata.get("net_budget")
+    if bc_budget and bc_budget > 0:
+        tab_budget = _sum_tab_budgets(all_data)
+        if tab_budget > 0:
+            ratio = tab_budget / bc_budget
+            if ratio < 0.3 or ratio > 3.0:
+                return False, (
+                    f"budget mismatch — tab total ${tab_budget:,.0f} vs "
+                    f"blocking chart ${bc_budget:,.0f} (ratio {ratio:.1f})"
+                )
 
     return True, f"metadata compatible (client='{tab_client}', project='{tab_project}')"
 
@@ -655,9 +693,10 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     #    match the intended line structure. Media plan tabs with audience
     #    names are the authoritative source.
     if mp_lines and _mp_lines_have_audience_data(mp_lines):
-        logger.info("  Media plan tabs have audience data — using as primary line source (%d mp lines)", len(mp_lines))
-        bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
-        bc["weeks"] = []  # Clear old week indices; auto-generated from flight dates below
+        # Enrich blocking chart lines with audience data from media plan tabs
+        # rather than replacing them — preserves weekly activation patterns
+        logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines", len(bc["lines"]))
+        # The _match_mp_line() call below (line ~696) handles enrichment
     elif not bc["lines"] and mp_lines:
         logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
         bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
@@ -688,12 +727,13 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
 
     line_records = []
     week_records = []
+    used_indices: set[int] = set()
 
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
 
         # Match with media plan tab detail by platform + line_code or budget
-        mp_detail = _match_mp_line(bc_line, mp_lines)
+        mp_detail = _match_mp_line(bc_line, mp_lines, used_indices)
 
         flight_start = bc_line.get("flight_start") or meta.get("start_date")
         flight_end = bc_line.get("flight_end") or meta.get("end_date")
@@ -781,33 +821,41 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     return result
 
 
-def _match_mp_line(bc_line: dict, mp_lines: list[dict]) -> dict | None:
-    """Best-effort match a blocking chart line to a media plan tab line."""
+def _match_mp_line(bc_line: dict, mp_lines: list[dict], used_indices: set[int]) -> dict | None:
+    """Best-effort match a blocking chart line to a media plan tab line.
+
+    Uses used_indices to track which mp_lines have already been matched,
+    avoiding order-dependent side effects from mutating the list.
+    """
     if not mp_lines:
         return None
     bc_plat = bc_line.get("platform_id")
     bc_budget = bc_line.get("budget", 0)
 
-    candidates = [l for l in mp_lines if l.get("platform_id") == bc_plat]
+    candidates = [(i, l) for i, l in enumerate(mp_lines)
+                  if l.get("platform_id") == bc_plat and i not in used_indices]
     if not candidates:
         return None
 
     # Prefer match with budget within 10%, and that has a line_code
-    with_budget = [c for c in candidates if c.get("budget")]
+    with_budget = [(i, c) for i, c in candidates if c.get("budget")]
     if with_budget:
-        best = min(with_budget, key=lambda l: abs((l.get("budget") or 0) - bc_budget))
+        best_i, best = min(with_budget, key=lambda t: abs((t[1].get("budget") or 0) - bc_budget))
         if abs(best["budget"] - bc_budget) / max(bc_budget, 1) < 0.1:
-            mp_lines.remove(best)
+            used_indices.add(best_i)
             return best
 
     # Fall back to first candidate with a line_code
-    with_code = [c for c in candidates if c.get("line_code")]
+    with_code = [(i, c) for i, c in candidates if c.get("line_code")]
     if with_code:
-        pick = with_code[0]
-        mp_lines.remove(pick)
+        pick_i, pick = with_code[0]
+        used_indices.add(pick_i)
         return pick
 
-    return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) == 1:
+        used_indices.add(candidates[0][0])
+        return candidates[0][1]
+    return None
 
 
 def _channel_category(objective_format: str) -> str:
