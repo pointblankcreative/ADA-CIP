@@ -776,7 +776,7 @@ export function PerformanceTab({ code }: { code: string }) {
 function CreativeVariantsTable({
   data,
   projectCode,
-  onRefresh,
+  onRename,
 }: {
   data: CreativeVariantResponse;
   projectCode: string;
