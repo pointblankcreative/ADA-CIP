@@ -346,7 +346,7 @@ async def create_creative_alias(body: dict):
         bq.string_param("alias_id", alias_id),
         bq.string_param("project_code", project_code),
         bq.string_param("ad_name_pattern", ad_name_pattern),
-        bq.string_param("platform_id", body.get("platform_id") or ""),
+        bq.string_param("platform_id", body.get("platform_id") or None),
         bq.string_param("creative_variant", creative_variant),
     ])
     return {"status": "created", "alias_id": alias_id}

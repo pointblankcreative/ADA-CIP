@@ -97,6 +97,28 @@ def _tab_belongs_to_project(
 
     return True, f"metadata compatible (client='{tab_client}', project='{tab_project}')"
 
+
+def _line_belongs_to_project(mp_line: dict, project_code: str) -> bool:
+    """Check if a media plan line likely belongs to the target project.
+
+    Scans text fields for project codes. If any are found and NONE match
+    the target, the line is from a different project.
+    """
+    text_fields = [
+        mp_line.get("audience_name", ""),
+        mp_line.get("audience_targeting", ""),
+        mp_line.get("technical_targeting", ""),
+        mp_line.get("goal", ""),
+        mp_line.get("platform", ""),
+        mp_line.get("landing_page", ""),
+    ]
+    combined = " ".join(text_fields)
+    codes = _PROJECT_CODE_RE.findall(combined)
+    if not codes:
+        return True  # no project code found — can't tell, include
+    return project_code in codes
+
+
 def _is_section_header(raw: str) -> bool:
     """Return True if the value looks like a flight/section header, not a platform."""
     return bool(_FLIGHT_RE.match(raw.strip()))
@@ -619,6 +641,14 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     mp_lines: list[dict] = []
     for mp_ws, tab_data in filtered_tabs:
         mp_lines.extend(_parse_media_plan_tab(mp_ws, prefetched_data=tab_data))
+
+    # ── Row-level project filter: remove lines that contain a different
+    #    project code in their text fields (catches mixed-project tabs)
+    before_count = len(mp_lines)
+    mp_lines = [l for l in mp_lines if _line_belongs_to_project(l, project_code)]
+    if len(mp_lines) < before_count:
+        logger.info("  Row-level project filter: %d → %d lines (removed %d from other projects)",
+                     before_count, len(mp_lines), before_count - len(mp_lines))
 
     # ── Prefer media plan tab lines when they have audience-level detail.
     #    The blocking chart often has more granular budget rows that don't
