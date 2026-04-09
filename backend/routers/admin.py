@@ -3,6 +3,7 @@ import re
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, field_validator
 
 from backend.models.projects import (
     AdminProjectResponse,
@@ -13,6 +14,21 @@ from backend.services import bigquery_client as bq
 from backend.services.daily_job import run_daily_pipeline
 from backend.services.media_plan_sync import sync_media_plan
 from backend.services.transformation import run_transformation
+
+
+class MediaPlanLineUpdate(BaseModel):
+    """Request body for updating a media plan line's audience_name."""
+    audience_name: str
+
+    @field_validator("audience_name")
+    @classmethod
+    def validate_audience_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("audience_name must not be empty")
+        if len(v) > 500:
+            raise ValueError("audience_name must be 500 characters or fewer")
+        return v
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -326,22 +342,53 @@ async def get_ingestion_log(limit: int = Query(20, ge=1, le=100)):
 
 
 @router.put("/media-plan-lines/{line_id}")
-async def update_media_plan_line(line_id: str, body: dict):
-    """Update a media plan line's display name (audience_name)."""
-    audience_name = body.get("audience_name")
-    if audience_name is None:
-        raise HTTPException(400, "audience_name is required")
+async def update_media_plan_line(line_id: str, body: MediaPlanLineUpdate):
+    """Update a media plan line's display name (audience_name).
 
+    Also persists the override to media_plan_line_overrides so it survives
+    re-syncs (the override is keyed on project_code + platform_id + budget).
+    """
+    # Update the current line in media_plan_lines
     sql = f"""
         UPDATE {bq.table('media_plan_lines')}
         SET audience_name = @audience_name
         WHERE line_id = @line_id
     """
     bq.run_query(sql, [
-        bq.string_param("audience_name", audience_name),
+        bq.string_param("audience_name", body.audience_name),
         bq.string_param("line_id", line_id),
     ])
-    return {"status": "updated", "line_id": line_id, "audience_name": audience_name}
+
+    # Fetch the line's stable key fields to persist the override
+    line_row = bq.run_query(f"""
+        SELECT project_code, platform_id, budget
+        FROM {bq.table('media_plan_lines')}
+        WHERE line_id = @line_id
+    """, [bq.string_param("line_id", line_id)])
+
+    if line_row:
+        row = line_row[0]
+        # Upsert into overrides table (keyed on project_code + platform_id + budget ±1%)
+        bq.run_query(f"""
+            MERGE {bq.table('media_plan_line_overrides')} t
+            USING (SELECT @pc AS project_code, @pid AS platform_id, @budget AS budget) s
+            ON t.project_code = s.project_code
+               AND t.platform_id = s.platform_id
+               AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01
+            WHEN MATCHED THEN UPDATE SET
+                audience_name = @audience_name,
+                updated_at = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT
+                (project_code, platform_id, budget, audience_name, updated_at)
+                VALUES (@pc, @pid, @budget, @audience_name, CURRENT_TIMESTAMP())
+        """, [
+            bq.string_param("pc", row["project_code"]),
+            bq.string_param("pid", row.get("platform_id") or ""),
+            bq.scalar_param("budget", "FLOAT64", float(row.get("budget") or 0)),
+            bq.string_param("audience_name", body.audience_name),
+        ])
+
+    return {"status": "updated", "line_id": line_id, "audience_name": body.audience_name}
 
 
 @router.post("/creative-aliases")

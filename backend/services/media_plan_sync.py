@@ -878,6 +878,8 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         _write_records(mtl, "media_plans", [media_plan_record])
         _write_records(mtl, "media_plan_lines", line_records)
         _write_records(mtl, "blocking_chart_weeks", week_records)
+        # Apply any saved audience_name overrides so manual edits survive re-sync
+        _apply_audience_overrides(mtl, project_code)
     finally:
         mtl.close()
 
@@ -994,6 +996,37 @@ def _is_traditional_media(platform: str | None, platform_id: str | None) -> bool
         return False
     plower = platform.strip().lower()
     return any(kw in plower for kw in _TRADITIONAL_KEYWORDS)
+
+
+def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
+    """Re-apply saved audience_name overrides after a fresh sync.
+
+    Matches overrides on (project_code, platform_id, budget ±1%) so they
+    survive line_id changes across re-syncs.
+    """
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    sql = f"""
+        UPDATE {prefix}.media_plan_lines` l
+        SET l.audience_name = o.audience_name
+        FROM {prefix}.media_plan_line_overrides` o
+        WHERE l.project_code = o.project_code
+          AND l.platform_id = o.platform_id
+          AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
+          AND l.project_code = @pc
+    """
+    try:
+        result = mtl.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            ]),
+        ).result()
+        affected = result.num_dml_affected_rows or 0
+        if affected:
+            logger.info("    Applied %d audience_name overrides for %s", affected, project_code)
+    except Exception as e:
+        # Table may not exist yet on first run — safe to skip
+        logger.warning("  Could not apply audience overrides: %s", e)
 
 
 def _clear_existing_plan(mtl: bigquery.Client, project_code: str) -> None:
