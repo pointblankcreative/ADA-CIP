@@ -693,10 +693,15 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     #    match the intended line structure. Media plan tabs with audience
     #    names are the authoritative source.
     if mp_lines and _mp_lines_have_audience_data(mp_lines):
-        # Enrich blocking chart lines with audience data from media plan tabs
-        # rather than replacing them — preserves weekly activation patterns
-        logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines", len(bc["lines"]))
-        # The _match_mp_line() call below (line ~696) handles enrichment
+        if bc["lines"]:
+            # Enrich blocking chart lines with audience data from media plan tabs
+            # rather than replacing them — preserves weekly activation patterns
+            logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines", len(bc["lines"]))
+            # The _match_mp_line() call below handles enrichment
+        else:
+            # Blocking chart had no line items — use media plan tabs as primary source
+            logger.warning("  Blocking chart produced 0 lines but mp tabs have audience data — synthesising")
+            bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
     elif not bc["lines"] and mp_lines:
         logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
         bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
