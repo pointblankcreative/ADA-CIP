@@ -703,19 +703,35 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
     #    The blocking chart often has more granular budget rows that don't
     #    match the intended line structure. Media plan tabs with audience
     #    names are the authoritative source.
+    #    IMPORTANT: Never replace bc["lines"] or clear bc["weeks"] when they
+    #    already exist — that destroys weekly activation patterns (burst/pause).
+    mp_matches: dict[int, dict] = {}
+
     if mp_lines and _mp_lines_have_audience_data(mp_lines):
         if bc["lines"]:
             # Enrich blocking chart lines with audience data from media plan tabs
             # rather than replacing them — preserves weekly activation patterns
-            logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines", len(bc["lines"]))
-            # The _match_mp_line() call below handles enrichment
+            mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+            logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines "
+                        "(%d matched)", len(bc["lines"]), len(mp_matches))
+            for bc_idx, mp_detail in mp_matches.items():
+                bc_line = bc["lines"][bc_idx]
+                if not bc_line.get("audience_name") and mp_detail.get("audience_name"):
+                    bc_line["audience_name"] = mp_detail["audience_name"]
+                # Use media plan tab's explicit per-line dates when available
+                if mp_detail.get("flight_start"):
+                    bc_line["flight_start"] = mp_detail["flight_start"]
+                if mp_detail.get("flight_end"):
+                    bc_line["flight_end"] = mp_detail["flight_end"]
         else:
             # Blocking chart had no line items — use media plan tabs as primary source
             logger.warning("  Blocking chart produced 0 lines but mp tabs have audience data — synthesising")
             bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+            mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
     elif not bc["lines"] and mp_lines:
         logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
         bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
 
     meta = bc["metadata"]
     plan_id = f"plan-{project_code}-{uuid.uuid4().hex[:8]}"
@@ -743,13 +759,12 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
     line_records = []
     week_records = []
-    used_indices: set[int] = set()
 
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
 
-        # Match with media plan tab detail by platform + line_code or budget
-        mp_detail = _match_mp_line(bc_line, mp_lines, used_indices)
+        # Use pre-computed global match from _match_all_mp_lines
+        mp_detail = mp_matches.get(i)
 
         flight_start = bc_line.get("flight_start") or meta.get("start_date")
         flight_end = bc_line.get("flight_end") or meta.get("end_date")
@@ -837,41 +852,70 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
     return result
 
 
-def _match_mp_line(bc_line: dict, mp_lines: list[dict], used_indices: set[int]) -> dict | None:
-    """Best-effort match a blocking chart line to a media plan tab line.
+def _match_all_mp_lines(
+    bc_lines: list[dict], mp_lines: list[dict]
+) -> dict[int, dict]:
+    """Optimally match blocking chart lines to media plan tab lines.
 
-    Uses used_indices to track which mp_lines have already been matched,
-    avoiding order-dependent side effects from mutating the list.
+    Builds a score matrix for all (bc_line, mp_line) pairs and greedily
+    assigns best matches by descending score.  This avoids the order-dependent
+    side effects of one-at-a-time matching — two similar Meta lines with close
+    budgets now both get correct matches.
+
+    Returns a dict mapping bc_line_index → matched mp_line dict.
     """
-    if not mp_lines:
-        return None
-    bc_plat = bc_line.get("platform_id")
-    bc_budget = bc_line.get("budget", 0)
+    if not mp_lines or not bc_lines:
+        return {}
 
-    candidates = [(i, l) for i, l in enumerate(mp_lines)
-                  if l.get("platform_id") == bc_plat and i not in used_indices]
-    if not candidates:
-        return None
+    # Build scored pairs: (score, bc_idx, mp_idx)
+    scored_pairs: list[tuple[float, int, int]] = []
 
-    # Prefer match with budget within 10%, and that has a line_code
-    with_budget = [(i, c) for i, c in candidates if c.get("budget")]
-    if with_budget:
-        best_i, best = min(with_budget, key=lambda t: abs((t[1].get("budget") or 0) - bc_budget))
-        if abs(best["budget"] - bc_budget) / max(bc_budget, 1) < 0.1:
-            used_indices.add(best_i)
-            return best
+    for bc_idx, bc_line in enumerate(bc_lines):
+        bc_plat = bc_line.get("platform_id")
+        bc_budget = bc_line.get("budget", 0)
 
-    # Fall back to first candidate with a line_code
-    with_code = [(i, c) for i, c in candidates if c.get("line_code")]
-    if with_code:
-        pick_i, pick = with_code[0]
-        used_indices.add(pick_i)
-        return pick
+        for mp_idx, mp_line in enumerate(mp_lines):
+            if mp_line.get("platform_id") != bc_plat:
+                continue
 
-    if len(candidates) == 1:
-        used_indices.add(candidates[0][0])
-        return candidates[0][1]
-    return None
+            score = 0.0
+            mp_budget = mp_line.get("budget") or 0
+
+            # Budget proximity — tight match worth most
+            if mp_budget and bc_budget:
+                budget_diff = abs(mp_budget - bc_budget) / max(bc_budget, 1)
+                if budget_diff < 0.01:
+                    score += 100
+                elif budget_diff < 0.1:
+                    score += 80 - (budget_diff * 200)
+                elif budget_diff < 0.5:
+                    score += 20
+
+            # Bonus for having a line_code
+            if mp_line.get("line_code"):
+                score += 10
+
+            # Bonus for having audience_name
+            if mp_line.get("audience_name"):
+                score += 5
+
+            if score > 0:
+                scored_pairs.append((score, bc_idx, mp_idx))
+
+    # Greedy assignment by descending score
+    scored_pairs.sort(key=lambda t: t[0], reverse=True)
+    used_bc: set[int] = set()
+    used_mp: set[int] = set()
+    result: dict[int, dict] = {}
+
+    for score, bc_idx, mp_idx in scored_pairs:
+        if bc_idx in used_bc or mp_idx in used_mp:
+            continue
+        result[bc_idx] = mp_lines[mp_idx]
+        used_bc.add(bc_idx)
+        used_mp.add(mp_idx)
+
+    return result
 
 
 def _channel_category(objective_format: str) -> str:
