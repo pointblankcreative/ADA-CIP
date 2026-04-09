@@ -927,6 +927,7 @@ def _match_all_mp_lines(
                 continue
 
             score = 0.0
+            has_budget_match = False
             mp_budget = mp_line.get("budget") or 0
 
             # Budget proximity — tight match worth most
@@ -934,20 +935,24 @@ def _match_all_mp_lines(
                 budget_diff = abs(mp_budget - bc_budget) / max(bc_budget, 1)
                 if budget_diff < 0.01:
                     score += 100
+                    has_budget_match = True
                 elif budget_diff < 0.1:
                     score += 80 - (budget_diff * 200)
+                    has_budget_match = True
                 elif budget_diff < 0.5:
                     score += 20
+                    has_budget_match = True
 
-            # Bonus for having a line_code
+            # Bonus for having a line_code (can match even without budget)
             if mp_line.get("line_code"):
                 score += 10
 
-            # Bonus for having audience_name
-            if mp_line.get("audience_name"):
+            # Bonus for having audience_name (only if budget or line_code matched)
+            if mp_line.get("audience_name") and (has_budget_match or mp_line.get("line_code")):
                 score += 5
 
-            if score > 0:
+            # Require at least a budget match or a line_code to consider pairing
+            if score > 0 and (has_budget_match or mp_line.get("line_code")):
                 scored_pairs.append((score, bc_idx, mp_idx))
 
     # Greedy assignment by descending score
