@@ -268,6 +268,7 @@ export interface AdminProject extends Project {
   first_data_date: string | null;
   last_data_date: string | null;
   media_plan_sheet_id: string | null;
+  media_plan_tab_name: string | null;
   media_plan_synced: boolean;
   slack_channel_id: string | null;
   alert_count: number;
@@ -282,6 +283,7 @@ export interface ProjectCreatePayload {
   end_date: string;
   net_budget: number;
   media_plan_sheet_url?: string;
+  media_plan_tab_name?: string;
   slack_channel_id?: string;
 }
 

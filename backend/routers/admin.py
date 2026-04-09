@@ -31,9 +31,18 @@ async def api_run_transformation(mode: str = "daily"):
 async def api_sync_media_plan(
     sheet_id: str = Query(..., description="Google Sheets document ID"),
     project_code: str = Query(..., description="YYNNN project code"),
-    tab_name: str | None = Query(None, description="Specific tab name to sync from the sheet. If omitted, all matching tabs are used."),
+    tab_name: str | None = Query(None, description="Override tab name. If omitted, uses the project's stored media_plan_tab_name."),
 ):
     """Parse a Google Sheets media plan and populate BigQuery tables."""
+    # If no explicit tab_name override, fall back to the project's stored preference
+    if tab_name is None:
+        rows = bq.run_query(f"""
+            SELECT media_plan_tab_name FROM {bq.table('dim_projects')}
+            WHERE project_code = @pcode
+        """, [bq.string_param("pcode", project_code)])
+        if rows and rows[0].get("media_plan_tab_name"):
+            tab_name = rows[0]["media_plan_tab_name"]
+
     result = sync_media_plan(sheet_id=sheet_id, project_code=project_code, tab_name=tab_name)
     return result
 
@@ -96,6 +105,7 @@ async def admin_list_projects():
             p.net_budget,
             p.currency,
             p.media_plan_sheet_id,
+            p.media_plan_tab_name,
             p.slack_channel_id,
             COALESCE(s.total_spend, 0) AS total_spend,
             DATE_DIFF(p.end_date, CURRENT_DATE(), DAY) AS days_remaining,
@@ -147,6 +157,7 @@ async def admin_list_projects():
             first_data_date=r.get("first_data_date"),
             last_data_date=r.get("last_data_date"),
             media_plan_sheet_id=r.get("media_plan_sheet_id"),
+            media_plan_tab_name=r.get("media_plan_tab_name"),
             media_plan_synced=bool(r.get("media_plan_synced")),
             slack_channel_id=r.get("slack_channel_id"),
             alert_count=r.get("alert_count") or 0,
@@ -188,14 +199,15 @@ async def admin_create_project(req: ProjectCreateRequest):
             end_date = @end_date,
             net_budget = @budget,
             media_plan_sheet_id = @sheet_id,
+            media_plan_tab_name = @tab_name,
             slack_channel_id = @slack,
             status = 'active',
             updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN INSERT
             (project_code, project_name, client_id, start_date, end_date,
-             net_budget, media_plan_sheet_id, slack_channel_id, status)
+             net_budget, media_plan_sheet_id, media_plan_tab_name, slack_channel_id, status)
             VALUES (@pcode, @pname, @client_id, @start_date, @end_date,
-                    @budget, @sheet_id, @slack, 'active')
+                    @budget, @sheet_id, @tab_name, @slack, 'active')
     """, [
         bq.string_param("pcode", req.project_code),
         bq.string_param("pname", req.project_name),
@@ -204,13 +216,14 @@ async def admin_create_project(req: ProjectCreateRequest):
         bq.date_param("end_date", req.end_date),
         bq.scalar_param("budget", "NUMERIC", req.net_budget),
         bq.string_param("sheet_id", sheet_id or ""),
+        bq.string_param("tab_name", req.media_plan_tab_name or ""),
         bq.string_param("slack", req.slack_channel_id or ""),
     ])
 
     # Optionally sync media plan
     if sheet_id:
         try:
-            sync_result = sync_media_plan(sheet_id, req.project_code)
+            sync_result = sync_media_plan(sheet_id, req.project_code, tab_name=req.media_plan_tab_name or None)
             sync_result.setdefault("status", "success")
         except Exception as e:
             logger.warning("Media plan sync failed for %s: %s", req.project_code, e)
@@ -263,6 +276,9 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
         sheet_id = _extract_sheet_id(req.media_plan_sheet_url)
         updates.append("media_plan_sheet_id = @sheet_id")
         params.append(bq.string_param("sheet_id", sheet_id))
+    if req.media_plan_tab_name is not None:
+        updates.append("media_plan_tab_name = @tab_name")
+        params.append(bq.string_param("tab_name", req.media_plan_tab_name))
 
     if not updates:
         raise HTTPException(400, "No fields to update")
@@ -280,7 +296,7 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
     if req.media_plan_sheet_url:
         sheet_id = _extract_sheet_id(req.media_plan_sheet_url)
         try:
-            sync_result = sync_media_plan(sheet_id, project_code)
+            sync_result = sync_media_plan(sheet_id, project_code, tab_name=req.media_plan_tab_name or None)
             sync_result.setdefault("status", "success")
         except Exception as e:
             logger.warning("Media plan sync failed for %s: %s", project_code, e)

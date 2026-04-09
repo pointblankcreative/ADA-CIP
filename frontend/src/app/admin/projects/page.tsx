@@ -71,6 +71,7 @@ export default function ManageProjectsPage() {
       status: p.status,
       net_budget: String(p.net_budget ?? ""),
       slack_channel_id: p.slack_channel_id ?? "",
+      media_plan_tab_name: p.media_plan_tab_name ?? "",
     });
   }
 
@@ -81,6 +82,7 @@ export default function ManageProjectsPage() {
       if (editFields.status) payload.status = editFields.status;
       if (editFields.net_budget) payload.net_budget = parseFloat(editFields.net_budget);
       if (editFields.slack_channel_id !== undefined) payload.slack_channel_id = editFields.slack_channel_id;
+      if (editFields.media_plan_tab_name !== undefined) payload.media_plan_tab_name = editFields.media_plan_tab_name || null;
       await api.admin.projects.update(code, payload);
       setEditCode(null);
       await fetchProjects();
@@ -127,6 +129,7 @@ export default function ManageProjectsPage() {
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Budget</th>
               <th className="px-4 py-3 text-center">Sheet</th>
+              <th className="px-4 py-3">Tab</th>
               <th className="px-4 py-3">Slack</th>
               <th className="px-4 py-3 text-center">Alerts</th>
               <th className="px-4 py-3">Actions</th>
@@ -135,21 +138,21 @@ export default function ManageProjectsPage() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
+                <td colSpan={10} className="px-4 py-12 text-center text-slate-500">
                   <Loader2 className="mx-auto h-5 w-5 animate-spin" />
                 </td>
               </tr>
             )}
             {!loading && error && (
               <tr>
-                <td colSpan={9} className="px-4 py-12 text-center text-red-400">
+                <td colSpan={10} className="px-4 py-12 text-center text-red-400">
                   Error loading projects: {error}
                 </td>
               </tr>
             )}
             {!loading && !error && projects.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
+                <td colSpan={10} className="px-4 py-12 text-center text-slate-500">
                   No projects found.
                 </td>
               </tr>
@@ -202,6 +205,18 @@ export default function ManageProjectsPage() {
                       <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400" />
                     ) : (
                       <XCircle className="mx-auto h-4 w-4 text-slate-600" />
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">
+                    {isEditing ? (
+                      <input
+                        value={editFields.media_plan_tab_name}
+                        onChange={(e) => setEditFields((f) => ({ ...f, media_plan_tab_name: e.target.value }))}
+                        className="w-32 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white"
+                        placeholder="Tab name"
+                      />
+                    ) : (
+                      p.media_plan_tab_name || "—"
                     )}
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400">

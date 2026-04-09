@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.dim_projects` (
   currency STRING DEFAULT 'CAD',
   status STRING DEFAULT 'planning',
   media_plan_sheet_id STRING,
+  media_plan_tab_name STRING,  -- Preferred tab name for media plan sync
   slack_channel_id STRING,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
