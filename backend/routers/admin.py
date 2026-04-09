@@ -31,9 +31,10 @@ async def api_run_transformation(mode: str = "daily"):
 async def api_sync_media_plan(
     sheet_id: str = Query(..., description="Google Sheets document ID"),
     project_code: str = Query(..., description="YYNNN project code"),
+    tab_name: str | None = Query(None, description="Specific tab name to sync from the sheet. If omitted, all matching tabs are used."),
 ):
     """Parse a Google Sheets media plan and populate BigQuery tables."""
-    result = sync_media_plan(sheet_id, project_code)
+    result = sync_media_plan(sheet_id=sheet_id, project_code=project_code, tab_name=tab_name)
     return result
 
 

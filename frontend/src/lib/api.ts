@@ -449,11 +449,11 @@ export const api = {
           body: JSON.stringify(data),
         }),
     },
-    syncMediaPlan: (sheetId: string, projectCode: string) =>
-      apiFetch<Record<string, unknown>>(
-        `/api/admin/sync-media-plan?sheet_id=${encodeURIComponent(sheetId)}&project_code=${encodeURIComponent(projectCode)}`,
-        { method: "POST" }
-      ),
+    syncMediaPlan: (sheetId: string, projectCode: string, tabName?: string) => {
+      let url = `/api/admin/sync-media-plan?sheet_id=${encodeURIComponent(sheetId)}&project_code=${encodeURIComponent(projectCode)}`;
+      if (tabName) url += `&tab_name=${encodeURIComponent(tabName)}`;
+      return apiFetch<Record<string, unknown>>(url, { method: "POST" });
+    },
     runTransformation: (mode = "daily") =>
       apiFetch<Record<string, unknown>>(
         `/api/admin/run-transformation?mode=${mode}`,

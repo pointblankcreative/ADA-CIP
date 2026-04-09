@@ -623,12 +623,15 @@ def _mp_lines_have_audience_data(mp_lines: list[dict]) -> bool:
 
 # ── Sync Orchestrator ───────────────────────────────────────────────
 
-def sync_media_plan(sheet_id: str, project_code: str) -> dict:
+def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = None) -> dict:
     """Sync a Google Sheets media plan into BigQuery.
 
     Args:
         sheet_id: Google Sheets document ID.
         project_code: YYNNN project code.
+        tab_name: Optional specific tab name to sync. If provided, only this
+            tab is processed (case-insensitive match). If omitted, all matching
+            tabs are used (existing behaviour).
 
     Returns:
         Summary dict with counts of records written.
@@ -668,6 +671,14 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
 
     filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
+        # If a specific tab was requested, skip non-matching tabs
+        if tab_name:
+            if mp_ws.title.strip().lower() != tab_name.strip().lower():
+                logger.debug("  Skipping tab '%s' — doesn't match requested tab_name='%s'",
+                             mp_ws.title, tab_name)
+                continue
+            else:
+                logger.info("  Tab '%s' matches requested tab_name — processing", mp_ws.title)
         tab_data = mp_ws.get_all_values()
         keep, reason = _tab_belongs_to_project(mp_ws.title, tab_data, bc["metadata"], project_code)
         if keep:
