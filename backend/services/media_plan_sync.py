@@ -245,6 +245,45 @@ def _mtl_client() -> bigquery.Client:
     )
 
 
+# ── Schema migrations (idempotent) ────────────────────────────────
+
+_MIGRATIONS_RUN = False
+
+
+def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
+    """Run one-time schema migrations. Guarded so it executes at most once per process."""
+    global _MIGRATIONS_RUN
+    if _MIGRATIONS_RUN:
+        return
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+
+    stmts = [
+        # Bug 5 (ADAC-26): per-line flight dates
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_start DATE",
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_end DATE",
+        # Bug 3 (ADAC-18): audience_name overrides table
+        f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
+            project_code STRING,
+            platform_id STRING,
+            budget FLOAT64,
+            audience_name STRING,
+            updated_at TIMESTAMP
+        )""",
+    ]
+    for sql in stmts:
+        try:
+            mtl.query(sql).result()
+        except Exception as e:
+            # Column/table already exists — safe to ignore
+            if "Already Exists" in str(e) or "Duplicate" in str(e):
+                pass
+            else:
+                logger.warning("  Schema migration warning: %s", e)
+
+    _MIGRATIONS_RUN = True
+    logger.info("  Schema migrations verified")
+
+
 # ── Generic label finder ────────────────────────────────────────────
 
 def _find_label(data: list[list[str]], label: str, max_row: int = 15) -> tuple[int, int] | None:
@@ -637,6 +676,13 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         Summary dict with counts of records written.
     """
     logger.info("Syncing media plan for %s from sheet %s", project_code, sheet_id)
+
+    # Ensure schema is up to date (idempotent, runs once per process)
+    init_mtl = _mtl_client()
+    try:
+        _ensure_schema_migrations(init_mtl)
+    finally:
+        init_mtl.close()
 
     gc = _get_gspread_client()
     ss = gc.open_by_key(sheet_id)
