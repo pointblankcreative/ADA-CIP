@@ -38,6 +38,7 @@ function NewProjectForm() {
     end_date: "",
     net_budget: 0,
     media_plan_sheet_url: "",
+    media_plan_tab_name: "",
     slack_channel_id: "",
   });
 
@@ -61,6 +62,7 @@ function NewProjectForm() {
       const payload: ProjectCreatePayload = {
         ...form,
         media_plan_sheet_url: form.media_plan_sheet_url || undefined,
+        media_plan_tab_name: form.media_plan_tab_name || undefined,
         slack_channel_id: form.slack_channel_id || undefined,
       };
       const result = await api.admin.projects.create(payload);
@@ -209,6 +211,22 @@ function NewProjectForm() {
                 If provided, the media plan will be synced automatically.
               </p>
               <MediaPlanSharingInstructions />
+            </div>
+
+            {/* Media Plan Tab Name */}
+            <div>
+              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+                Media Plan Tab Name
+              </label>
+              <input
+                placeholder="e.g. Media Plan V2"
+                value={form.media_plan_tab_name}
+                onChange={(e) => set("media_plan_tab_name", e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                If set, only this tab will be synced. Leave blank to sync all matching tabs.
+              </p>
             </div>
 
             {/* Slack Channel */}

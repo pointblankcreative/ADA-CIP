@@ -27,6 +27,7 @@ class ProjectDetail(ProjectSummary):
     first_data_date: date | None = None
     last_data_date: date | None = None
     media_plan_sheet_id: str | None = None
+    media_plan_tab_name: str | None = None
     slack_channel_id: str | None = None
     created_at: datetime | None = None
 
@@ -39,6 +40,7 @@ class ProjectCreateRequest(BaseModel):
     end_date: date
     net_budget: float
     media_plan_sheet_url: str | None = None
+    media_plan_tab_name: str | None = None
     slack_channel_id: str | None = None
 
     @field_validator("project_code")
@@ -72,6 +74,7 @@ class ProjectUpdateRequest(BaseModel):
     status: str | None = None
     slack_channel_id: str | None = None
     media_plan_sheet_url: str | None = None
+    media_plan_tab_name: str | None = None
 
     @field_validator("status")
     @classmethod
