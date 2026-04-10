@@ -263,7 +263,7 @@ function LineRow({
           </div>
         </div>
         <div className="flex-shrink-0 self-end sm:self-auto">
-          <PacingBadge percentage={line.pacing_percentage} />
+          <PacingBadge percentage={line.pacing_percentage} lineStatus={line.line_status} />
         </div>
       </div>
 
