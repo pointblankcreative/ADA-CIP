@@ -462,6 +462,11 @@ export const api = {
         `/api/admin/run-transformation?mode=${mode}`,
         { method: "POST" }
       ),
+    runAdsetTransformation: (mode = "daily") =>
+      apiFetch<Record<string, unknown>>(
+        `/api/admin/run-adset-transformation?mode=${mode}`,
+        { method: "POST" }
+      ),
     dailyRun: () =>
       apiFetch<Record<string, unknown>>("/api/admin/daily-run", { method: "POST" }),
     dataFreshness: () =>
