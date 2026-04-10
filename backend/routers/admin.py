@@ -14,6 +14,7 @@ from backend.services import bigquery_client as bq
 from backend.services.daily_job import run_daily_pipeline
 from backend.services.media_plan_sync import sync_media_plan
 from backend.services.transformation import run_transformation
+from ingestion.transformation.adset_transform import run_adset_transformation
 
 
 class MediaPlanLineUpdate(BaseModel):
@@ -40,6 +41,15 @@ async def api_run_transformation(mode: str = "daily"):
     mode: "daily" (last 7 days, default) or "full" (all history).
     """
     result = run_transformation(mode)
+    return result
+
+
+@router.post("/run-adset-transformation")
+async def api_run_adset_transformation(mode: str = "daily"):
+    """Trigger the Funnel.io → fact_adset_daily reach/frequency transformation.
+    mode: "daily" (last 7 days, default) or "full" (all history).
+    """
+    result = run_adset_transformation(mode)
     return result
 
 

@@ -58,8 +58,13 @@ def _date_filter(start_date: str | None, end_date: str | None) -> tuple[str, lis
     return (" AND ".join(clauses) if clauses else "1=1"), params
 
 
-def _load_media_plan_objectives(project_code: str) -> dict[str, str]:
-    """Load objective from media_plan_lines for a project, keyed by normalised platform."""
+def _load_media_plan_objectives(project_code: str) -> dict[str, list[str]]:
+    """Load objectives from media_plan_lines for a project, keyed by platform.
+
+    Returns a list of objective strings per platform because a single platform
+    can have multiple lines with different objectives (e.g. Meta running both
+    an awareness flight and a conversion flight).
+    """
     try:
         sql = f"""
             SELECT platform_id, objective
@@ -68,12 +73,12 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, str]:
               AND objective IS NOT NULL
         """
         rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
-        result: dict[str, str] = {}
+        result: dict[str, list[str]] = {}
         for r in rows:
             pid = r.get("platform_id")
             obj = r.get("objective")
             if pid and obj:
-                result[pid] = obj
+                result.setdefault(pid, []).append(obj)
         return result
     except Exception:
         return {}
@@ -574,8 +579,22 @@ async def get_performance(
     campaign_objectives: list[str] = []
     for r in campaign_rows:
         pid = r.get("platform_id", "")
-        mp_obj = media_plan_objectives.get(pid)
-        obj = classify_objective(mp_obj, r.get("campaign_name"))
+        mp_objs = media_plan_objectives.get(pid, [])
+        if mp_objs:
+            # Classify each media-plan line objective for this platform,
+            # then pick the most specific one for this campaign.
+            line_classifications = [
+                classify_objective(mp_obj, r.get("campaign_name"))
+                for mp_obj in mp_objs
+            ]
+            # If any line matches the campaign name keywords, prefer that;
+            # otherwise use the first non-mixed classification.
+            obj = classify_objective(None, r.get("campaign_name"))
+            if obj == "mixed" and line_classifications:
+                # Fall back to the platform-level consensus
+                obj = classify_project(line_classifications)
+        else:
+            obj = classify_objective(None, r.get("campaign_name"))
         campaign_objectives.append(obj)
 
     project_objective = classify_project(campaign_objectives)
