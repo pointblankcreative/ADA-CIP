@@ -19,6 +19,7 @@ import {
   extractChannels,
   generateWavePath,
   pacingToColor,
+  isLinePending,
 } from "@/lib/oscilloscope";
 import { formatPercent, platformLabel, cn } from "@/lib/utils";
 import { PacingBadge } from "@/components/pacing-badge";
@@ -295,14 +296,18 @@ export function OscilloscopeCard({
   const health = computeHealthScore(pacing.lines);
   const channels = extractChannels(pacing.lines, pacing.overall_pacing_percentage);
 
-  const healthLabel =
-    health > 0.85
+  const allPending = pacing.lines.length > 0 && pacing.lines.every(isLinePending);
+
+  const healthLabel = allPending
+    ? "Awaiting Data"
+    : health > 0.85
       ? "Healthy"
       : health > 0.5
         ? "Attention"
         : "Critical";
-  const healthColor =
-    health > 0.85
+  const healthColor = allPending
+    ? "text-blue-400"
+    : health > 0.85
       ? "text-emerald-400"
       : health > 0.5
         ? "text-amber-400"
@@ -331,7 +336,9 @@ export function OscilloscopeCard({
                 {healthLabel}
               </span>
               <span className="text-[10px] text-slate-600">
-                {formatPercent(pacing.overall_pacing_percentage)} paced
+                {allPending
+                  ? "Lines pending activation"
+                  : `${formatPercent(pacing.overall_pacing_percentage)} paced`}
               </span>
             </div>
             <div className="flex items-center gap-3 text-[10px] text-slate-600">
@@ -389,6 +396,7 @@ export function OscilloscopeCard({
                   <tr className="text-slate-600 uppercase tracking-wider">
                     <th className="pb-2 pr-4 font-medium">Line</th>
                     <th className="pb-2 pr-4 font-medium">Platform</th>
+                    <th className="pb-2 pr-4 font-medium">Flight</th>
                     <th className="pb-2 pr-4 font-medium text-right">Pacing</th>
                     <th className="pb-2 font-medium text-right">Status</th>
                   </tr>
@@ -405,11 +413,21 @@ export function OscilloscopeCard({
                       <td className="py-2 pr-4 text-slate-500">
                         {platformLabel(line.platform_id)}
                       </td>
+                      <td className="py-2 pr-4 text-slate-600 whitespace-nowrap">
+                        {line.flight_start && line.flight_end
+                          ? `${line.flight_start.slice(5)} — ${line.flight_end.slice(5)}`
+                          : "—"}
+                      </td>
                       <td className="py-2 pr-4 text-right tabular-nums text-slate-400">
-                        {formatPercent(line.pacing_percentage)}
+                        {isLinePending(line)
+                          ? "—"
+                          : formatPercent(line.pacing_percentage)}
                       </td>
                       <td className="py-2 text-right">
-                        <PacingBadge percentage={line.pacing_percentage} />
+                        <PacingBadge
+                          percentage={line.pacing_percentage}
+                          lineStatus={line.line_status}
+                        />
                       </td>
                     </tr>
                   ))}

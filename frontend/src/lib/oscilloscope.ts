@@ -13,11 +13,23 @@
 
 import type { PacingLine } from "./api";
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** True when a line is pending or not yet started (no meaningful pacing data). */
+export function isLinePending(line: PacingLine): boolean {
+  return (
+    line.line_status === "pending" ||
+    line.line_status === "not_started"
+  );
+}
+
 // ── Health Score ────────────────────────────────────────────────────
 
 export function computeHealthScore(lines: PacingLine[]): number {
-  if (lines.length === 0) return 0.5;
-  const devs = lines.map((l) => Math.abs(l.pacing_percentage - 100) / 100);
+  // Exclude pending/not_started lines — they have 0% pacing but aren't unhealthy
+  const active = lines.filter((l) => !isLinePending(l));
+  if (active.length === 0) return 0.5;
+  const devs = active.map((l) => Math.abs(l.pacing_percentage - 100) / 100);
   const avg = devs.reduce((a, b) => a + b, 0) / devs.length;
   const max = Math.max(...devs);
   return Math.max(0, Math.min(1, 1 - (0.7 * avg + 0.3 * max)));
@@ -34,14 +46,16 @@ export function extractChannels(
   lines: PacingLine[],
   overallPct: number
 ): [ChannelInfo, ChannelInfo, ChannelInfo] {
-  if (lines.length === 0) {
+  // Only consider active/completed lines for high/low channels
+  const active = lines.filter((l) => !isLinePending(l));
+  if (active.length === 0) {
     return [
       { pct: overallPct, label: "High" },
       { pct: overallPct, label: "Overall" },
       { pct: overallPct, label: "Low" },
     ];
   }
-  const sorted = [...lines].sort(
+  const sorted = [...active].sort(
     (a, b) => b.pacing_percentage - a.pacing_percentage
   );
   const high = sorted[0];
@@ -65,6 +79,17 @@ export function pacingToColor(pct: number): string {
   if (pct >= 85 && pct <= 115) return "#34d399"; // emerald-400
   if (pct >= 70 && pct <= 130) return "#fbbf24"; // amber-400
   return "#f87171"; // red-400
+}
+
+/** Like pacingToColor but returns blue for pending/not_started lines. */
+export function pacingToColorWithStatus(
+  pct: number,
+  lineStatus?: string
+): string {
+  if (lineStatus === "pending" || lineStatus === "not_started") {
+    return "#60a5fa"; // blue-400
+  }
+  return pacingToColor(pct);
 }
 
 // ── Wave Path Generation ────────────────────────────────────────────
