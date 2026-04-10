@@ -117,6 +117,15 @@ class TestLineStatus:
         assert row["line_status"] == "pending"
         assert row["planned_spend_to_date"] == 0.0
 
+    def test_pending_flight_started_yesterday(self):
+        """Flight starting yesterday should still be 'pending' (2-day grace for UTC + data lag)."""
+        yesterday = date.today() - timedelta(days=1)
+        flight_end = yesterday + timedelta(days=21)
+        row = self._mock_pacing_run(yesterday, flight_end)
+        assert row is not None
+        assert row["line_status"] == "pending"
+        assert row["planned_spend_to_date"] == 0.0
+
     def test_active_flight(self):
         """Flight that started 5 days ago should have status 'active'."""
         start = date.today() - timedelta(days=5)
@@ -133,3 +142,5 @@ class TestLineStatus:
         row = self._mock_pacing_run(start, end)
         assert row is not None
         assert row["line_status"] == "completed"
+        # Completed flights should still have planned_spend_to_date calculated
+        assert row["planned_spend_to_date"] > 0

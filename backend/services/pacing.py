@@ -267,18 +267,19 @@ def run_pacing_for_project(project_code: str) -> dict:
 
         # Determine line status based on flight timing
         # Data lag: ad platforms report with ~1-day delay through Funnel,
-        # so we allow a 1-day grace period before calculating pacing.
+        # and the server runs in UTC which can be a day ahead of Eastern.
+        # We use a 2-day grace period to cover both factors.
         if today < flight_start:
             line_status = "not_started"
-        elif elapsed_active_days <= 1:
-            line_status = "pending"  # started today/yesterday — no data expected yet
         elif today > flight_end:
             line_status = "completed"
+        elif elapsed_active_days <= 2:
+            line_status = "pending"  # just started — no data expected yet
         else:
             line_status = "active"
 
-        # Even pacing calculation — only meaningful for active flights
-        if line_status == "active" and total_active_days > 0 and elapsed_active_days > 0:
+        # Even pacing calculation
+        if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
             planned_spend_to_date = (budget / total_active_days) * elapsed_active_days
         else:
             planned_spend_to_date = 0.0
