@@ -86,7 +86,7 @@ async def get_pacing(project_code: str):
                 audience_name=r.get("audience_name"),
                 flight_start=str(r["flight_start"]) if r.get("flight_start") else None,
                 flight_end=str(r["flight_end"]) if r.get("flight_end") else None,
-                line_status=r.get("line_status", "active"),
+                line_status=r.get("line_status") or "active",
                 planned_budget=_float(r.get("planned_budget")),
                 planned_spend_to_date=_float(r.get("planned_spend_to_date")),
                 actual_spend_to_date=_float(r.get("actual_spend_to_date")),
