@@ -27,6 +27,7 @@ export interface Project {
   total_spend: number;
   pacing_percentage: number | null;
   days_remaining: number;
+  recently_ended?: boolean;
   updated_at: string;
 }
 
@@ -35,6 +36,10 @@ export interface PacingLine {
   line_code: string | null;
   platform_id: string;
   channel_category: string;
+  audience_name: string | null;
+  flight_start: string | null;
+  flight_end: string | null;
+  line_status?: "not_started" | "pending" | "active" | "completed";
   planned_budget: number;
   planned_spend_to_date: number;
   actual_spend_to_date: number;
@@ -56,6 +61,17 @@ export interface PacingResponse {
   lines: PacingLine[];
 }
 
+export interface PacingHistoryPoint {
+  date: string;
+  line_id: string;
+  pacing_percentage: number;
+}
+
+export interface PacingHistoryResponse {
+  project_code: string;
+  history: PacingHistoryPoint[];
+}
+
 export interface DailyPerformance {
   date: string;
   spend: number;
@@ -65,39 +81,169 @@ export interface DailyPerformance {
   cpm: number;
   cpc: number;
   ctr: number;
+  reach?: number | null;
+  frequency?: number | null;
+  reach_adset?: number | null;
+  frequency_adset?: number | null;
+  video_views?: number | null;
+  video_completions?: number | null;
+  vcr?: number | null;
+  engagements?: number | null;
+  cpa?: number | null;
+  conversion_rate?: number | null;
 }
 
 export interface PlatformBreakdown {
   platform_id: string;
+  platform_name?: string;
   spend: number;
   impressions: number;
   clicks: number;
   conversions: number;
+  reach?: number | null;
+  frequency?: number | null;
+  video_views?: number | null;
+  video_completions?: number | null;
+  engagements?: number | null;
 }
 
 export interface CampaignRow {
   campaign_name: string;
   campaign_id: string;
   platform_id: string;
+  objective?: string | null;
   spend: number;
   impressions: number;
   clicks: number;
   conversions: number;
   ctr: number;
   cpc: number;
+  cpm?: number;
+  reach?: number | null;
+  frequency?: number | null;
+  video_views?: number | null;
+  video_completions?: number | null;
+  vcr?: number | null;
+  engagements?: number | null;
+  cpa?: number | null;
+  conversion_rate?: number | null;
 }
+
+export type ObjectiveType = "awareness" | "conversion" | "mixed";
 
 export interface PerformanceResponse {
   project_code: string;
+  objective_type: ObjectiveType;
   start_date: string;
   end_date: string;
   total_spend: number;
   total_impressions: number;
   total_clicks: number;
   total_conversions: number;
+  total_reach?: number | null;
+  total_frequency?: number | null;
+  total_video_views?: number | null;
+  total_video_completions?: number | null;
+  total_vcr?: number | null;
+  total_engagements?: number | null;
+  total_cpa?: number | null;
+  total_conversion_rate?: number | null;
+  total_reach_adset?: number | null;
+  avg_frequency_adset?: number | null;
+  reach_platforms?: string[];
+  reach_note?: string | null;
+  high_frequency_warning?: string | null;
+  available_metrics: string[];
+  metric_platforms: Record<string, string[]>;
   daily: DailyPerformance[];
   by_platform?: PlatformBreakdown[];
   campaigns?: CampaignRow[];
+}
+
+export interface AdSetRow {
+  ad_set_id: string | null;
+  ad_set_name: string | null;
+  platform_id: string;
+  campaign_name: string | null;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  engagements: number;
+  video_views: number;
+  video_completions: number;
+  cpm: number | null;
+  cpc: number | null;
+  ctr: number | null;
+  vcr: number | null;
+  engagement_rate: number | null;
+  reach: number | null;
+  frequency: number | null;
+  reach_window: string | null;
+  cost_per_reach: number | null;
+  ad_count: number;
+}
+
+export interface AdSetPerformanceResponse {
+  project_code: string;
+  start_date: string | null;
+  end_date: string | null;
+  ad_sets: AdSetRow[];
+  total_reach_note: string | null;
+}
+
+export interface AdRow {
+  ad_id: string | null;
+  ad_name: string | null;
+  ad_set_name: string | null;
+  platform_id: string;
+  campaign_name: string | null;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  engagements: number;
+  video_views: number;
+  video_completions: number;
+  cpm: number | null;
+  cpc: number | null;
+  ctr: number | null;
+  vcr: number | null;
+  engagement_rate: number | null;
+}
+
+export interface AdPerformanceResponse {
+  project_code: string;
+  start_date: string | null;
+  end_date: string | null;
+  ads: AdRow[];
+}
+
+export interface CreativeVariantRow {
+  creative_variant: string;
+  ad_names: string[];
+  platforms: string[];
+  ad_set_names: string[];
+  ad_count: number;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  engagements: number;
+  video_views: number;
+  video_completions: number;
+  cpm: number | null;
+  cpc: number | null;
+  ctr: number | null;
+  vcr: number | null;
+  engagement_rate: number | null;
+}
+
+export interface CreativeVariantResponse {
+  project_code: string;
+  start_date: string | null;
+  end_date: string | null;
+  creatives: CreativeVariantRow[];
 }
 
 export interface Alert {
@@ -123,6 +269,7 @@ export interface AdminProject extends Project {
   first_data_date: string | null;
   last_data_date: string | null;
   media_plan_sheet_id: string | null;
+  media_plan_tab_name: string | null;
   media_plan_synced: boolean;
   slack_channel_id: string | null;
   alert_count: number;
@@ -137,12 +284,19 @@ export interface ProjectCreatePayload {
   end_date: string;
   net_budget: number;
   media_plan_sheet_url?: string;
+  media_plan_tab_name?: string;
   slack_channel_id?: string;
 }
 
 export interface ProjectCreateResponse {
-  project: Record<string, unknown>;
-  media_plan_sync?: { status: string; message?: string };
+  status: string;
+  project_code: string;
+  client_id: string;
+  media_plan_sync: {
+    status: "success" | "error" | "skipped";
+    message?: string;
+    lines_created?: number;
+  };
 }
 
 export interface PlatformFreshness {
@@ -164,6 +318,64 @@ export interface IngestionRun {
   error_message: string | null;
 }
 
+/* ── GA4 types ── */
+
+export interface GA4Property {
+  property_id: string;
+  property_name: string | null;
+}
+
+export interface GA4Url {
+  id: string;
+  project_code: string;
+  ga4_property_id: string;
+  url_pattern: string;
+  label: string | null;
+  created_at?: string | null;
+}
+
+export interface GA4DailyAnalytics {
+  date: string;
+  sessions: number;
+  conversions: number;
+  bounce_rate?: number | null;
+  avg_session_duration?: number | null;
+  pages_per_session?: number | null;
+}
+
+export interface GA4PerformanceResponse {
+  has_ga4: boolean;
+  urls: GA4Url[];
+  daily: GA4DailyAnalytics[];
+  total_sessions: number;
+  total_conversions: number;
+  avg_bounce_rate?: number | null;
+  avg_session_duration?: number | null;
+}
+
+/* ── Benchmark types ── */
+
+export interface BenchmarkValue {
+  benchmark_id: string;
+  scope: string;
+  platform_id: string | null;
+  metric_name: string;
+  metric_unit: string;
+  p25: number | null;
+  p50: number | null;
+  p75: number | null;
+  sample_size: number | null;
+  source: string | null;
+  notes: string | null;
+}
+
+export interface BenchmarkResponse {
+  project_code: string;
+  objective_type: string;
+  benchmarks: Record<string, BenchmarkValue>;
+  platform_benchmarks: Record<string, Record<string, BenchmarkValue>>;
+}
+
 /* ── API functions ── */
 
 export const api = {
@@ -173,6 +385,8 @@ export const api = {
   },
   pacing: {
     get: (code: string) => apiFetch<PacingResponse>(`/api/pacing/${code}`),
+    history: (code: string, days = 60) =>
+      apiFetch<PacingHistoryResponse>(`/api/pacing/${code}/history?days=${days}`),
     run: (code: string) =>
       apiFetch(`/api/pacing/${code}/run`, { method: "POST" }),
   },
@@ -180,6 +394,18 @@ export const api = {
     get: (code: string, days?: number) =>
       apiFetch<PerformanceResponse>(
         `/api/performance/${code}${days ? `?days=${days}` : ""}`
+      ),
+    adsets: (code: string, days?: number) =>
+      apiFetch<AdSetPerformanceResponse>(
+        `/api/performance/${code}/adsets${days ? `?days=${days}` : ""}`
+      ),
+    ads: (code: string, days?: number) =>
+      apiFetch<AdPerformanceResponse>(
+        `/api/performance/${code}/ads${days ? `?days=${days}` : ""}`
+      ),
+    creatives: (code: string, days?: number) =>
+      apiFetch<CreativeVariantResponse>(
+        `/api/performance/${code}/creatives${days ? `?days=${days}` : ""}`
       ),
   },
   alerts: {
@@ -193,6 +419,24 @@ export const api = {
     acknowledge: (id: string) =>
       apiFetch(`/api/alerts/${id}/acknowledge`, { method: "POST" }),
     dispatch: () => apiFetch<Record<string, unknown>>("/api/alerts/dispatch", { method: "POST" }),
+  },
+  benchmarks: {
+    get: (code: string) => apiFetch<BenchmarkResponse>(`/api/benchmarks/${code}`),
+  },
+  ga4: {
+    properties: () => apiFetch<GA4Property[]>("/api/ga4/properties"),
+    urls: (code: string) => apiFetch<GA4Url[]>(`/api/ga4/${code}/urls`),
+    addUrl: (code: string, data: { ga4_property_id: string; url_pattern: string; label?: string }) =>
+      apiFetch<GA4Url>(`/api/ga4/${code}/urls`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteUrl: (code: string, urlId: string) =>
+      apiFetch(`/api/ga4/${code}/urls/${urlId}`, { method: "DELETE" }),
+    analytics: (code: string, days?: number) => {
+      const qs = days ? `?start_date=${new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)}` : "";
+      return apiFetch<GA4PerformanceResponse>(`/api/ga4/${code}/analytics${qs}`);
+    },
   },
   admin: {
     projects: {
@@ -208,14 +452,19 @@ export const api = {
           body: JSON.stringify(data),
         }),
     },
-    syncMediaPlan: (sheetId: string, projectCode: string) =>
-      apiFetch<Record<string, unknown>>(
-        `/api/admin/sync-media-plan?sheet_id=${encodeURIComponent(sheetId)}&project_code=${encodeURIComponent(projectCode)}`,
-        { method: "POST" }
-      ),
+    syncMediaPlan: (sheetId: string, projectCode: string, tabName?: string) => {
+      let url = `/api/admin/sync-media-plan?sheet_id=${encodeURIComponent(sheetId)}&project_code=${encodeURIComponent(projectCode)}`;
+      if (tabName) url += `&tab_name=${encodeURIComponent(tabName)}`;
+      return apiFetch<Record<string, unknown>>(url, { method: "POST" });
+    },
     runTransformation: (mode = "daily") =>
       apiFetch<Record<string, unknown>>(
         `/api/admin/run-transformation?mode=${mode}`,
+        { method: "POST" }
+      ),
+    runAdsetTransformation: (mode = "daily") =>
+      apiFetch<Record<string, unknown>>(
+        `/api/admin/run-adset-transformation?mode=${mode}`,
         { method: "POST" }
       ),
     dailyRun: () =>
@@ -226,5 +475,24 @@ export const api = {
       apiFetch<{ runs: IngestionRun[] }>(`/api/admin/ingestion-log?limit=${limit}`),
     runPacing: (code: string) =>
       apiFetch<Record<string, unknown>>(`/api/pacing/${code}/run`, { method: "POST" }),
+    updateMediaPlanLine: (lineId: string, data: { audience_name: string }) =>
+      apiFetch<Record<string, unknown>>(`/api/admin/media-plan-lines/${encodeURIComponent(lineId)}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    createCreativeAlias: (data: {
+      project_code: string;
+      ad_name_pattern: string;
+      creative_variant: string;
+      platform_id?: string;
+    }) =>
+      apiFetch<Record<string, unknown>>("/api/admin/creative-aliases", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteCreativeAlias: (aliasId: string) =>
+      apiFetch<Record<string, unknown>>(`/api/admin/creative-aliases/${encodeURIComponent(aliasId)}`, {
+        method: "DELETE",
+      }),
   },
 };

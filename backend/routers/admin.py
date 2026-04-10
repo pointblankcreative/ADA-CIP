@@ -3,6 +3,7 @@ import re
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, field_validator
 
 from backend.models.projects import (
     AdminProjectResponse,
@@ -13,6 +14,22 @@ from backend.services import bigquery_client as bq
 from backend.services.daily_job import run_daily_pipeline
 from backend.services.media_plan_sync import sync_media_plan
 from backend.services.transformation import run_transformation
+from ingestion.transformation.adset_transform import run_adset_transformation
+
+
+class MediaPlanLineUpdate(BaseModel):
+    """Request body for updating a media plan line's audience_name."""
+    audience_name: str
+
+    @field_validator("audience_name")
+    @classmethod
+    def validate_audience_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("audience_name must not be empty")
+        if len(v) > 500:
+            raise ValueError("audience_name must be 500 characters or fewer")
+        return v
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -27,13 +44,32 @@ async def api_run_transformation(mode: str = "daily"):
     return result
 
 
+@router.post("/run-adset-transformation")
+async def api_run_adset_transformation(mode: str = "daily"):
+    """Trigger the Funnel.io → fact_adset_daily reach/frequency transformation.
+    mode: "daily" (last 7 days, default) or "full" (all history).
+    """
+    result = run_adset_transformation(mode)
+    return result
+
+
 @router.post("/sync-media-plan")
 async def api_sync_media_plan(
     sheet_id: str = Query(..., description="Google Sheets document ID"),
     project_code: str = Query(..., description="YYNNN project code"),
+    tab_name: str | None = Query(None, description="Override tab name. If omitted, uses the project's stored media_plan_tab_name."),
 ):
     """Parse a Google Sheets media plan and populate BigQuery tables."""
-    result = sync_media_plan(sheet_id, project_code)
+    # If no explicit tab_name override, fall back to the project's stored preference
+    if tab_name is None:
+        rows = bq.run_query(f"""
+            SELECT media_plan_tab_name FROM {bq.table('dim_projects')}
+            WHERE project_code = @pcode
+        """, [bq.string_param("pcode", project_code)])
+        if rows and rows[0].get("media_plan_tab_name"):
+            tab_name = rows[0]["media_plan_tab_name"]
+
+    result = sync_media_plan(sheet_id=sheet_id, project_code=project_code, tab_name=tab_name)
     return result
 
 
@@ -95,6 +131,7 @@ async def admin_list_projects():
             p.net_budget,
             p.currency,
             p.media_plan_sheet_id,
+            p.media_plan_tab_name,
             p.slack_channel_id,
             COALESCE(s.total_spend, 0) AS total_spend,
             DATE_DIFF(p.end_date, CURRENT_DATE(), DAY) AS days_remaining,
@@ -135,20 +172,21 @@ async def admin_list_projects():
             client_id=r.get("client_id"),
             client_name=r.get("client_name"),
             campaign_type=r.get("campaign_type"),
-            status=r.get("status", "active"),
+            status=r.get("status") or "active",
             start_date=r.get("start_date"),
             end_date=r.get("end_date"),
             net_budget=float(r["net_budget"]) if r.get("net_budget") else None,
-            currency=r.get("currency", "CAD"),
+            currency=r.get("currency") or "CAD",
             total_spend=float(r.get("total_spend", 0)),
             days_remaining=r.get("days_remaining"),
-            platforms_active=r.get("platforms_active", 0),
+            platforms_active=r.get("platforms_active") or 0,
             first_data_date=r.get("first_data_date"),
             last_data_date=r.get("last_data_date"),
             media_plan_sheet_id=r.get("media_plan_sheet_id"),
+            media_plan_tab_name=r.get("media_plan_tab_name"),
             media_plan_synced=bool(r.get("media_plan_synced")),
             slack_channel_id=r.get("slack_channel_id"),
-            alert_count=r.get("alert_count", 0),
+            alert_count=r.get("alert_count") or 0,
             created_at=r.get("created_at"),
             updated_at=r.get("updated_at"),
         )
@@ -187,14 +225,15 @@ async def admin_create_project(req: ProjectCreateRequest):
             end_date = @end_date,
             net_budget = @budget,
             media_plan_sheet_id = @sheet_id,
+            media_plan_tab_name = @tab_name,
             slack_channel_id = @slack,
             status = 'active',
             updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN INSERT
             (project_code, project_name, client_id, start_date, end_date,
-             net_budget, media_plan_sheet_id, slack_channel_id, status)
+             net_budget, media_plan_sheet_id, media_plan_tab_name, slack_channel_id, status)
             VALUES (@pcode, @pname, @client_id, @start_date, @end_date,
-                    @budget, @sheet_id, @slack, 'active')
+                    @budget, @sheet_id, @tab_name, @slack, 'active')
     """, [
         bq.string_param("pcode", req.project_code),
         bq.string_param("pname", req.project_name),
@@ -203,17 +242,20 @@ async def admin_create_project(req: ProjectCreateRequest):
         bq.date_param("end_date", req.end_date),
         bq.scalar_param("budget", "NUMERIC", req.net_budget),
         bq.string_param("sheet_id", sheet_id or ""),
+        bq.string_param("tab_name", req.media_plan_tab_name or ""),
         bq.string_param("slack", req.slack_channel_id or ""),
     ])
 
     # Optionally sync media plan
-    sync_result = None
     if sheet_id:
         try:
-            sync_result = sync_media_plan(sheet_id, req.project_code)
+            sync_result = sync_media_plan(sheet_id, req.project_code, tab_name=req.media_plan_tab_name or None)
+            sync_result.setdefault("status", "success")
         except Exception as e:
             logger.warning("Media plan sync failed for %s: %s", req.project_code, e)
-            sync_result = {"status": "error", "error": str(e)}
+            sync_result = {"status": "error", "message": str(e)}
+    else:
+        sync_result = {"status": "skipped"}
 
     return {
         "status": "created",
@@ -260,6 +302,9 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
         sheet_id = _extract_sheet_id(req.media_plan_sheet_url)
         updates.append("media_plan_sheet_id = @sheet_id")
         params.append(bq.string_param("sheet_id", sheet_id))
+    if req.media_plan_tab_name is not None:
+        updates.append("media_plan_tab_name = @tab_name")
+        params.append(bq.string_param("tab_name", req.media_plan_tab_name))
 
     if not updates:
         raise HTTPException(400, "No fields to update")
@@ -274,14 +319,16 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
     """, params)
 
     # Trigger media plan sync if sheet URL was updated
-    sync_result = None
     if req.media_plan_sheet_url:
         sheet_id = _extract_sheet_id(req.media_plan_sheet_url)
         try:
-            sync_result = sync_media_plan(sheet_id, project_code)
+            sync_result = sync_media_plan(sheet_id, project_code, tab_name=req.media_plan_tab_name or None)
+            sync_result.setdefault("status", "success")
         except Exception as e:
             logger.warning("Media plan sync failed for %s: %s", project_code, e)
-            sync_result = {"status": "error", "error": str(e)}
+            sync_result = {"status": "error", "message": str(e)}
+    else:
+        sync_result = None
 
     return {
         "status": "updated",
@@ -302,3 +349,86 @@ async def get_ingestion_log(limit: int = Query(20, ge=1, le=100)):
     """
     rows = bq.run_query(sql, [bq.scalar_param("limit", "INT64", limit)])
     return {"runs": [dict(r) for r in rows]}
+
+
+@router.put("/media-plan-lines/{line_id}")
+async def update_media_plan_line(line_id: str, body: MediaPlanLineUpdate):
+    """Update a media plan line's display name (audience_name).
+
+    Also persists the override to media_plan_line_overrides so it survives
+    re-syncs (the override is keyed on project_code + platform_id + budget).
+    """
+    # Update the current line in media_plan_lines
+    sql = f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET audience_name = @audience_name
+        WHERE line_id = @line_id
+    """
+    bq.run_query(sql, [
+        bq.string_param("audience_name", body.audience_name),
+        bq.string_param("line_id", line_id),
+    ])
+
+    # Fetch the line's stable key fields to persist the override
+    line_row = bq.run_query(f"""
+        SELECT project_code, platform_id, budget
+        FROM {bq.table('media_plan_lines')}
+        WHERE line_id = @line_id
+    """, [bq.string_param("line_id", line_id)])
+
+    if line_row:
+        row = line_row[0]
+        # Upsert into overrides table (keyed on project_code + platform_id + budget ±1%)
+        bq.run_query(f"""
+            MERGE {bq.table('media_plan_line_overrides')} t
+            USING (SELECT @pc AS project_code, @pid AS platform_id, @budget AS budget) s
+            ON t.project_code = s.project_code
+               AND t.platform_id = s.platform_id
+               AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01
+            WHEN MATCHED THEN UPDATE SET
+                audience_name = @audience_name,
+                updated_at = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT
+                (project_code, platform_id, budget, audience_name, updated_at)
+                VALUES (@pc, @pid, @budget, @audience_name, CURRENT_TIMESTAMP())
+        """, [
+            bq.string_param("pc", row["project_code"]),
+            bq.string_param("pid", row.get("platform_id") or ""),
+            bq.scalar_param("budget", "FLOAT64", float(row.get("budget") or 0)),
+            bq.string_param("audience_name", body.audience_name),
+        ])
+
+    return {"status": "updated", "line_id": line_id, "audience_name": body.audience_name}
+
+
+@router.post("/creative-aliases")
+async def create_creative_alias(body: dict):
+    """Create a manual creative variant alias for ad name grouping."""
+    project_code = body.get("project_code")
+    ad_name_pattern = body.get("ad_name_pattern")
+    creative_variant = body.get("creative_variant")
+    if not project_code or not ad_name_pattern or not creative_variant:
+        raise HTTPException(400, "project_code, ad_name_pattern, and creative_variant are required")
+
+    alias_id = f"cva-{uuid.uuid4().hex[:12]}"
+    sql = f"""
+        INSERT INTO {bq.table('creative_variant_aliases')}
+            (alias_id, project_code, ad_name_pattern, platform_id, creative_variant, created_by)
+        VALUES (@alias_id, @project_code, @ad_name_pattern, @platform_id, @creative_variant, 'admin')
+    """
+    bq.run_query(sql, [
+        bq.string_param("alias_id", alias_id),
+        bq.string_param("project_code", project_code),
+        bq.string_param("ad_name_pattern", ad_name_pattern),
+        bq.scalar_param("platform_id", "STRING", body.get("platform_id") or None),
+        bq.string_param("creative_variant", creative_variant),
+    ])
+    return {"status": "created", "alias_id": alias_id}
+
+
+@router.delete("/creative-aliases/{alias_id}")
+async def delete_creative_alias(alias_id: str):
+    """Delete a creative variant alias."""
+    sql = f"DELETE FROM {bq.table('creative_variant_aliases')} WHERE alias_id = @alias_id"
+    bq.run_query(sql, [bq.string_param("alias_id", alias_id)])
+    return {"status": "deleted", "alias_id": alias_id}

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.dim_projects` (
   currency STRING DEFAULT 'CAD',
   status STRING DEFAULT 'planning',
   media_plan_sheet_id STRING,
+  media_plan_tab_name STRING,  -- Preferred tab name for media plan sync
   slack_channel_id STRING,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
@@ -406,6 +407,116 @@ OPTIONS(
 
 
 -- ==============================================================================
+-- BENCHMARKS
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.benchmarks` (
+  benchmark_id STRING NOT NULL,
+  benchmark_type STRING NOT NULL,
+  scope STRING NOT NULL,
+  objective_type STRING NOT NULL,
+  platform_id STRING,
+  creative_format STRING,
+  metric_name STRING NOT NULL,
+  metric_unit STRING NOT NULL,
+  p25 FLOAT64,
+  p50 FLOAT64,
+  p75 FLOAT64,
+  sample_size INT64,
+  source STRING,
+  notes STRING,
+  valid_from DATE,
+  valid_to DATE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+OPTIONS(
+  description='Benchmark data for campaign performance comparison. Supports industry, client, and cross-client tiers.'
+);
+
+
+-- ==============================================================================
+-- PROJECT GA4 URL MAPPINGS
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.project_ga4_urls` (
+  id STRING NOT NULL,
+  project_code STRING NOT NULL,
+  ga4_property_id STRING NOT NULL,
+  url_pattern STRING NOT NULL,
+  label STRING,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+  created_by STRING
+)
+OPTIONS(
+  description='Maps projects to GA4 property/URL patterns for web analytics integration.'
+);
+
+
+-- ==============================================================================
+-- TABLE: fact_ga4_daily
+-- Daily GA4 web analytics from Funnel.io, pivoted by event type.
+-- Cross-region: source data in US, this table in northamerica-northeast1.
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_ga4_daily` (
+  date DATE NOT NULL,
+  ga4_property_id STRING NOT NULL,
+  property_name STRING,
+  session_source STRING,
+  session_medium STRING,
+  session_campaign STRING,
+  sessions INT64 DEFAULT 0,
+  page_views INT64 DEFAULT 0,
+  first_visits INT64 DEFAULT 0,
+  key_events FLOAT64 DEFAULT 0,
+  sign_ups INT64 DEFAULT 0,
+  scroll_events INT64 DEFAULT 0,
+  click_events INT64 DEFAULT 0,
+  form_starts INT64 DEFAULT 0,
+  form_submits INT64 DEFAULT 0,
+  user_engagements INT64 DEFAULT 0,
+  total_event_count INT64 DEFAULT 0,
+  ingestion_source STRING DEFAULT 'funnel_transform',
+  loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+PARTITION BY date
+CLUSTER BY ga4_property_id, session_source
+OPTIONS(
+  description='Daily GA4 web analytics from Funnel.io, pivoted by event type. One row per date/property/source/medium/campaign.'
+);
+
+
+-- ==============================================================================
+-- TABLE: fact_adset_daily
+-- Reach / frequency at ad set or campaign grain (separate from fact_digital_daily ad rows).
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_adset_daily` (
+  date DATE NOT NULL,
+  project_code STRING,
+  platform_id STRING NOT NULL,
+  account_id STRING,
+  campaign_id STRING NOT NULL,
+  campaign_name STRING NOT NULL,
+  ad_set_id STRING,
+  ad_set_name STRING,
+  reach INT64,
+  frequency FLOAT64,
+  reach_window STRING DEFAULT '7d',
+  impressions INT64,
+  video_views INT64,
+  video_completions INT64,
+  ingestion_source STRING DEFAULT 'funnel_transform',
+  loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+PARTITION BY date
+CLUSTER BY project_code, platform_id
+OPTIONS(
+  description='Daily reach/frequency from Funnel.io at ad-set or campaign grain. Not additive across rows.'
+);
+
+
+-- ==============================================================================
 -- SEED DATA: Platform Dimension
 -- ==============================================================================
 
@@ -419,6 +530,23 @@ VALUES
   ('tiktok', 'TikTok', 'digital', 'https://business-api.tiktok.com', 3, 1),
   ('snapchat', 'Snapchat', 'digital', 'https://adsapi.snapchat.com', 3, 2),
   ('perion', 'Perion DOOH', 'dooh', NULL, 1, 1);
+
+-- ==============================================================================
+-- CREATIVE VARIANT ALIASES — manual overrides for grouping ads by creative
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.creative_variant_aliases` (
+  alias_id STRING NOT NULL,
+  project_code STRING NOT NULL,
+  ad_name_pattern STRING NOT NULL,
+  platform_id STRING,
+  creative_variant STRING NOT NULL,
+  created_by STRING,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+OPTIONS(
+  description='Manual overrides for grouping ads by creative variant name. ad_name_pattern can be exact or SQL LIKE pattern.'
+);
 
 -- ==============================================================================
 -- END OF SCHEMA DEFINITION

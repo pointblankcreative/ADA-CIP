@@ -207,30 +207,82 @@ def run_pacing_for_project(project_code: str) -> dict:
         blocking_by_line.setdefault(r["line_id"], []).append(r)
 
     # ── 3. Fetch actual spend from fact_digital_daily ────────────────
-    # Aggregate spend by platform_id for this project
-    spend_sql = f"""
-        SELECT
-            platform_id,
-            SUM(spend) AS total_spend
-        FROM {bq.table('fact_digital_daily')}
-        WHERE project_code = @project_code
-        GROUP BY platform_id
-    """
-    spend_rows = bq.run_query(spend_sql, [bq.string_param("project_code", project_code)])
-    spend_by_platform = {r["platform_id"]: _float(r["total_spend"]) for r in spend_rows}
+    # Group lines by (platform_id, flight_start, flight_end) so we can
+    # query spend once per unique flight window instead of once per line.
+    spend_by_group: dict[tuple, float] = {}          # (platform_id, fs, fe) → total_spend
+    spend_by_line_code: dict[str, float] = {}        # line_code → total_spend
 
-    # Also get spend by line_code if available
-    line_spend_sql = f"""
-        SELECT
-            line_code,
-            SUM(spend) AS total_spend
-        FROM {bq.table('fact_digital_daily')}
-        WHERE project_code = @project_code
-            AND line_code IS NOT NULL
-        GROUP BY line_code
-    """
-    line_spend_rows = bq.run_query(line_spend_sql, [bq.string_param("project_code", project_code)])
-    spend_by_line_code = {r["line_code"]: _float(r["total_spend"]) for r in line_spend_rows}
+    flight_groups: dict[tuple, list[dict]] = {}
+    for line in lines:
+        fs = line.get("flight_start")
+        fe = line.get("flight_end")
+        pid = line.get("platform_id")
+        if isinstance(fs, str):
+            fs = date.fromisoformat(fs)
+        if isinstance(fe, str):
+            fe = date.fromisoformat(fe)
+        key = (pid, fs, fe)
+        flight_groups.setdefault(key, []).append(line)
+
+    for (pid, fs, fe), group_lines in flight_groups.items():
+        if not pid:
+            continue
+
+        params = [
+            bq.string_param("project_code", project_code),
+            bq.string_param("platform_id", pid),
+        ]
+
+        if fs is not None and fe is not None:
+            group_spend_sql = f"""
+                SELECT SUM(spend) AS total_spend
+                FROM {bq.table('fact_digital_daily')}
+                WHERE project_code = @project_code
+                    AND platform_id = @platform_id
+                    AND date >= @flight_start
+                    AND date <= @flight_end
+            """
+            params.append(bq.date_param("flight_start", fs))
+            params.append(bq.date_param("flight_end", fe))
+        else:
+            # NULL flight dates — fall back to unfiltered (backward compat)
+            group_spend_sql = f"""
+                SELECT SUM(spend) AS total_spend
+                FROM {bq.table('fact_digital_daily')}
+                WHERE project_code = @project_code
+                    AND platform_id = @platform_id
+            """
+
+        rows_result = bq.run_query(group_spend_sql, params)
+        spend_by_group[(pid, fs, fe)] = _float(rows_result[0]["total_spend"]) if rows_result else 0.0
+
+        # Also fetch spend by line_code within this flight window
+        line_codes = [l["line_code"] for l in group_lines if l.get("line_code")]
+        for lc in line_codes:
+            lc_params = [
+                bq.string_param("project_code", project_code),
+                bq.string_param("line_code", lc),
+            ]
+            if fs is not None and fe is not None:
+                lc_sql = f"""
+                    SELECT SUM(spend) AS total_spend
+                    FROM {bq.table('fact_digital_daily')}
+                    WHERE project_code = @project_code
+                        AND line_code = @line_code
+                        AND date >= @flight_start
+                        AND date <= @flight_end
+                """
+                lc_params.append(bq.date_param("flight_start", fs))
+                lc_params.append(bq.date_param("flight_end", fe))
+            else:
+                lc_sql = f"""
+                    SELECT SUM(spend) AS total_spend
+                    FROM {bq.table('fact_digital_daily')}
+                    WHERE project_code = @project_code
+                        AND line_code = @line_code
+                """
+            lc_rows = bq.run_query(lc_sql, lc_params)
+            spend_by_line_code[lc] = _float(lc_rows[0]["total_spend"]) if lc_rows else 0.0
 
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
@@ -265,25 +317,38 @@ def run_pacing_for_project(project_code: str) -> dict:
             elapsed_days_raw = (min(today, flight_end) - flight_start).days + 1
             elapsed_active_days = max(0, min(elapsed_days_raw, total_active_days))
 
+        # Determine line status based on flight timing
+        # Data lag: ad platforms report with ~1-day delay through Funnel,
+        # and the server runs in UTC which can be a day ahead of Eastern.
+        # We use a 2-day grace period to cover both factors.
+        if today < flight_start:
+            line_status = "not_started"
+        elif today > flight_end:
+            line_status = "completed"
+        elif elapsed_active_days <= 2:
+            line_status = "pending"  # just started — no data expected yet
+        else:
+            line_status = "active"
+
         # Even pacing calculation
-        if total_active_days > 0 and elapsed_active_days > 0:
+        if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
             planned_spend_to_date = (budget / total_active_days) * elapsed_active_days
         else:
             planned_spend_to_date = 0.0
 
-        # Match actual spend: prefer line_code match, then platform_id
+        # Match actual spend: prefer line_code match, then split by flight group
+        group_key = (platform_id, flight_start, flight_end)
         actual_spend = 0.0
         if line_code and line_code in spend_by_line_code:
             actual_spend = spend_by_line_code[line_code]
-        elif platform_id and platform_id in spend_by_platform:
-            # When multiple lines share a platform, split proportionally by budget
-            platform_total_budget = sum(
+        elif platform_id and group_key in spend_by_group:
+            # Split proportionally by budget among lines in the same flight group
+            group_total_budget = sum(
                 _float(l.get("budget"))
-                for l in lines
-                if l.get("platform_id") == platform_id
+                for l in flight_groups.get(group_key, [])
             )
-            if platform_total_budget > 0:
-                actual_spend = spend_by_platform[platform_id] * (budget / platform_total_budget)
+            if group_total_budget > 0:
+                actual_spend = spend_by_group[group_key] * (budget / group_total_budget)
 
         remaining_budget = budget - actual_spend
         remaining_days = max(0, (flight_end - today).days)
@@ -293,12 +358,16 @@ def run_pacing_for_project(project_code: str) -> dict:
         is_over = pacing_pct > PACING_OVER_WARNING
         is_under = 0 < pacing_pct < PACING_UNDER_WARNING
 
+        # Only generate alerts for active or completed flights — not for
+        # flights that haven't started or are still in their data-lag grace period.
         line_label = line_code or platform_id or line_id
-        line_alerts = _generate_alerts(
-            project_code, line_id, line_label,
-            pacing_pct, actual_spend, budget,
-            remaining_days, remaining_budget,
-        )
+        line_alerts = []
+        if line_status in ("active", "completed"):
+            line_alerts = _generate_alerts(
+                project_code, line_id, line_label,
+                pacing_pct, actual_spend, budget,
+                remaining_days, remaining_budget,
+            )
         all_alerts.extend(line_alerts)
 
         tracking_rows.append({
@@ -308,6 +377,7 @@ def run_pacing_for_project(project_code: str) -> dict:
             "line_code": line_code,
             "platform_id": platform_id,
             "channel_category": line.get("channel_category"),
+            "line_status": line_status,
             "planned_budget": budget,
             "planned_spend_to_date": round(planned_spend_to_date, 2),
             "actual_spend_to_date": round(actual_spend, 2),

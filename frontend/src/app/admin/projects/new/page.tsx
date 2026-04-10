@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Loader2, CheckCircle2, Copy, Check } from "lucide-react";
 import Link from "next/link";
 import { api, type ProjectCreatePayload } from "@/lib/api";
 import { Card } from "@/components/card";
+
+const SERVICE_ACCOUNT_EMAIL = "cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com";
 
 export default function NewProjectPage() {
   return (
@@ -24,7 +26,9 @@ function NewProjectForm() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{
     code: string;
-    mediaPlanSynced: boolean;
+    mediaPlanStatus: "success" | "error" | "skipped";
+    mediaPlanMessage?: string;
+    linesCreated?: number;
   } | null>(null);
   const [form, setForm] = useState<ProjectCreatePayload>({
     project_code: prefillCode,
@@ -34,6 +38,7 @@ function NewProjectForm() {
     end_date: "",
     net_budget: 0,
     media_plan_sheet_url: "",
+    media_plan_tab_name: "",
     slack_channel_id: "",
   });
 
@@ -57,11 +62,17 @@ function NewProjectForm() {
       const payload: ProjectCreatePayload = {
         ...form,
         media_plan_sheet_url: form.media_plan_sheet_url || undefined,
+        media_plan_tab_name: form.media_plan_tab_name || undefined,
         slack_channel_id: form.slack_channel_id || undefined,
       };
       const result = await api.admin.projects.create(payload);
-      const mediaSynced = result?.media_plan_sync?.status === "success";
-      setSuccess({ code: form.project_code, mediaPlanSynced: mediaSynced });
+      const syncStatus = result?.media_plan_sync?.status ?? "skipped";
+      setSuccess({
+        code: form.project_code,
+        mediaPlanStatus: syncStatus,
+        mediaPlanMessage: result?.media_plan_sync?.message,
+        linesCreated: result?.media_plan_sync?.lines_created,
+      });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create project");
     } finally {
@@ -199,6 +210,23 @@ function NewProjectForm() {
               <p className="mt-1 text-xs text-slate-500">
                 If provided, the media plan will be synced automatically.
               </p>
+              <MediaPlanSharingInstructions />
+            </div>
+
+            {/* Media Plan Tab Name */}
+            <div>
+              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+                Media Plan Tab Name
+              </label>
+              <input
+                placeholder="e.g. Media Plan V2"
+                value={form.media_plan_tab_name}
+                onChange={(e) => set("media_plan_tab_name", e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                If set, only this tab will be synced. Leave blank to sync all matching tabs.
+              </p>
             </div>
 
             {/* Slack Channel */}
@@ -226,15 +254,25 @@ function NewProjectForm() {
         )}
 
         {success && (
-          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-5 py-4">
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-400">
+          <div className={`rounded-md px-5 py-4 ${
+            success.mediaPlanStatus === "error"
+              ? "border border-amber-500/30 bg-amber-500/10"
+              : "border border-emerald-500/30 bg-emerald-500/10"
+          }`}>
+            <div className={`flex items-center gap-2 text-sm font-medium ${
+              success.mediaPlanStatus === "error" ? "text-amber-400" : "text-emerald-400"
+            }`}>
               <CheckCircle2 className="h-4 w-4" />
               Project {success.code} created successfully
             </div>
-            <p className="mt-1 text-xs text-emerald-400/70">
-              {success.mediaPlanSynced
-                ? "Media plan synced. Pacing and alerts are now active."
-                : "No media plan linked — you can add one later from the project management page."}
+            <p className={`mt-1 text-xs ${
+              success.mediaPlanStatus === "error" ? "text-amber-400/70" : "text-emerald-400/70"
+            }`}>
+              {success.mediaPlanStatus === "success"
+                ? `Media plan synced successfully — ${success.linesCreated ?? 0} line items imported. Pacing and alerts are now active.`
+                : success.mediaPlanStatus === "error"
+                  ? `Project created, but media plan sync failed: ${success.mediaPlanMessage || "unknown error"}. Make sure the spreadsheet is shared with ${SERVICE_ACCOUNT_EMAIL}`
+                  : "No media plan linked — you can add one later from the project management page."}
             </p>
             <div className="mt-3 flex gap-3">
               <Link
@@ -264,6 +302,51 @@ function NewProjectForm() {
           </button>
         )}
       </form>
+    </div>
+  );
+}
+
+function MediaPlanSharingInstructions() {
+  const [copied, setCopied] = useState(false);
+
+  const copyEmail = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(SERVICE_ACCOUNT_EMAIL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* fallback: do nothing */
+    }
+  }, []);
+
+  return (
+    <div className="mt-3 rounded-md border border-blue-500/20 bg-blue-500/5 px-4 py-3">
+      <p className="text-xs font-medium text-blue-400">
+        Share your media plan with ADA
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        To allow CIP to read this spreadsheet, share it as <strong className="text-slate-300">Viewer</strong> with:
+      </p>
+      <div className="mt-2 flex items-center gap-2">
+        <code className="flex-1 rounded bg-slate-900 px-2.5 py-1.5 text-xs text-blue-300 font-mono select-all">
+          {SERVICE_ACCOUNT_EMAIL}
+        </code>
+        <button
+          type="button"
+          onClick={copyEmail}
+          className="flex-shrink-0 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
+        >
+          {copied ? (
+            <span className="flex items-center gap-1 text-emerald-400">
+              <Check className="h-3 w-3" /> Copied
+            </span>
+          ) : (
+            <span className="flex items-center gap-1">
+              <Copy className="h-3 w-3" /> Copy
+            </span>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

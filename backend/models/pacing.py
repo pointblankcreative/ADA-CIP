@@ -8,6 +8,10 @@ class LinePacing(BaseModel):
     line_code: str | None = None
     platform_id: str | None = None
     channel_category: str | None = None
+    audience_name: str | None = None
+    flight_start: str | None = None
+    flight_end: str | None = None
+    line_status: str = "active"  # not_started | pending | active | completed
     planned_budget: float = 0
     planned_spend_to_date: float = 0
     actual_spend_to_date: float = 0
@@ -27,3 +31,14 @@ class PacingResponse(BaseModel):
     total_actual_to_date: float = 0
     overall_pacing_percentage: float = 0
     lines: list[LinePacing] = []
+
+
+class PacingHistoryPoint(BaseModel):
+    date: str
+    line_id: str
+    pacing_percentage: float
+
+
+class PacingHistoryResponse(BaseModel):
+    project_code: str
+    history: list[PacingHistoryPoint] = []

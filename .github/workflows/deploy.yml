@@ -144,20 +144,25 @@ jobs:
 
       - name: Get frontend URL and update CORS
         run: |
-          # Cloud Run has two URL formats — get both so CORS works regardless of which one is accessed
-          SHORT_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
+          # Get the URL from gcloud (old format)
+          OLD_URL=$(gcloud run services describe ${{ needs.determine-environment.outputs.frontend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
             --format='value(status.url)')
-          PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format='value(projectNumber)')
-          LONG_URL="https://${{ needs.determine-environment.outputs.frontend_service }}-${PROJECT_NUMBER}.${{ env.REGION }}.run.app"
-          echo "Short URL: $SHORT_URL"
-          echo "Long URL: $LONG_URL"
+          echo "Frontend (old format): $OLD_URL"
 
+          # Construct new-format URL: https://{service}-{project_number}.{region}.run.app
+          PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format='value(projectNumber)')
+          NEW_URL="https://${{ needs.determine-environment.outputs.frontend_service }}-${PROJECT_NUMBER}.${{ env.REGION }}.run.app"
+          echo "Frontend (new format): $NEW_URL"
+
+          # Set CORS to allow both URL formats
+          # Use ^##^ delimiter so commas inside the JSON array aren't
+          # mistaken for env-var separators by gcloud.
           gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
-            --set-env-vars="^##^CORS_ORIGINS=[\"${SHORT_URL}\",\"${LONG_URL}\"]##FRONTEND_URL=${LONG_URL}##GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}##GCP_PROJECT_ID=${{ env.PROJECT_ID }}##GCP_REGION=${{ env.REGION }}##BIGQUERY_DATASET=cip##SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json##APP_ENV=${{ needs.determine-environment.outputs.environment }}"
+            --update-env-vars="^##^CORS_ORIGINS=[\"${OLD_URL}\",\"${NEW_URL}\"]##FRONTEND_URL=${NEW_URL}"
 
       - name: Health check
         run: |

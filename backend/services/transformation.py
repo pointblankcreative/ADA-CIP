@@ -65,33 +65,41 @@ def _extract_select(sql_text: str) -> str:
         cte_part,
     )
     return cte_part + """
-SELECT
-    date,
-    platform_id,
-    campaign_id,
-    COALESCE(ad_set_id, '') AS ad_set_id,
-    COALESCE(ad_id, '') AS ad_id,
-    campaign_name,
-    ad_set_name,
-    ad_name,
-    account_id,
-    account_name,
-    project_code,
-    CAST(spend AS NUMERIC) AS spend,
-    impressions,
-    clicks,
-    reach,
-    frequency,
-    video_views,
-    video_completions,
-    CAST(conversions AS NUMERIC) AS conversions,
-    engagements,
-    cpm,
-    cpc,
-    ctr,
-    ingestion_source,
-    loaded_at
-FROM enriched_data
+SELECT * EXCEPT(rn) FROM (
+  SELECT
+      date,
+      platform_id,
+      campaign_id,
+      COALESCE(ad_set_id, '') AS ad_set_id,
+      COALESCE(ad_id, '') AS ad_id,
+      campaign_name,
+      ad_set_name,
+      ad_name,
+      account_id,
+      account_name,
+      project_code,
+      CAST(spend AS NUMERIC) AS spend,
+      impressions,
+      clicks,
+      reach,
+      frequency,
+      video_views,
+      video_completions,
+      CAST(conversions AS NUMERIC) AS conversions,
+      engagements,
+      cpm,
+      cpc,
+      ctr,
+      ingestion_source,
+      loaded_at,
+      ROW_NUMBER() OVER (
+        PARTITION BY date, platform_id, campaign_id,
+                     COALESCE(ad_set_id, ''), COALESCE(ad_id, '')
+        ORDER BY spend DESC, impressions DESC
+      ) AS rn
+  FROM enriched_data
+)
+WHERE rn = 1
 """
 
 
@@ -208,16 +216,20 @@ def run_transformation(mode: str = "daily") -> dict:
         if isinstance(max_date, str):
             max_date = date.fromisoformat(max_date)
 
-        # Step 2: DELETE target date range in Montreal
-        if mode == "daily" and min_date:
-            logger.info("  Deleting existing rows for %s → %s", min_date, max_date)
-            mtl.query(
-                f"DELETE FROM `{TARGET_TABLE}` WHERE date >= @min_d AND date <= @max_d",
-                job_config=bigquery.QueryJobConfig(query_parameters=[
-                    bigquery.ScalarQueryParameter("min_d", "DATE", min_date.isoformat()),
-                    bigquery.ScalarQueryParameter("max_d", "DATE", max_date.isoformat()),
-                ]),
-            ).result()
+        # Step 2: DELETE target rows in Montreal before re-loading
+        if min_date:
+            if mode == "full":
+                logger.info("  FULL mode: truncating fact_digital_daily before reload")
+                mtl.query(f"TRUNCATE TABLE `{TARGET_TABLE}`").result()
+            else:
+                logger.info("  Deleting existing rows for %s → %s", min_date, max_date)
+                mtl.query(
+                    f"DELETE FROM `{TARGET_TABLE}` WHERE date >= @min_d AND date <= @max_d",
+                    job_config=bigquery.QueryJobConfig(query_parameters=[
+                        bigquery.ScalarQueryParameter("min_d", "DATE", min_date.isoformat()),
+                        bigquery.ScalarQueryParameter("max_d", "DATE", max_date.isoformat()),
+                    ]),
+                ).result()
 
         # Step 3: Load into Montreal
         logger.info("  Loading %d rows into fact_digital_daily (Montreal)…", row_count)

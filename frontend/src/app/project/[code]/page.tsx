@@ -16,11 +16,13 @@ import { cn, formatCurrency } from "@/lib/utils";
 import { PacingTab } from "./pacing-tab";
 import { PerformanceTab } from "./performance-tab";
 import { AlertsTab } from "./alerts-tab";
+import { SettingsTab } from "./settings-tab";
 
 const TABS = [
   { id: "pacing", label: "Pacing", icon: Gauge },
   { id: "performance", label: "Performance", icon: BarChart3 },
   { id: "alerts", label: "Alerts", icon: AlertTriangle },
+  { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -49,23 +51,23 @@ export default function ProjectDetailPage() {
   return (
     <div className="flex min-h-screen flex-col">
       {/* Top bar */}
-      <header className="border-b border-slate-800 bg-surface px-6 py-4 lg:px-8">
-        <div className="flex items-center gap-3">
+      <header className="border-b border-slate-800 bg-surface px-4 py-4 sm:px-6 lg:px-8">
+        <div className="flex items-center gap-3 pl-10 md:pl-0">
           <Link
             href="/"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
           >
             <ArrowLeft className="h-4 w-4" />
           </Link>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-400">
                 {code}
               </span>
               {loading ? (
                 <div className="h-5 w-48 animate-pulse rounded bg-slate-700" />
               ) : (
-                <h1 className="truncate text-lg font-semibold text-white">
+                <h1 className="truncate text-base font-semibold text-white sm:text-lg">
                   {project?.project_name || `Project ${code}`}
                 </h1>
               )}
@@ -74,7 +76,7 @@ export default function ProjectDetailPage() {
               )}
             </div>
             {project && !unprovisioned && (
-              <div className="mt-0.5 flex items-center gap-4 text-xs text-slate-500">
+              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">
                 <span>Budget: {formatCurrency(project.net_budget)}</span>
                 <span>Spent: {formatCurrency(project.total_spend)}</span>
                 <span>
@@ -109,13 +111,13 @@ export default function ProjectDetailPage() {
         )}
 
         {/* Tabs */}
-        <nav className="mt-4 flex gap-1">
+        <nav className="mt-4 flex gap-1 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+                "flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-sm whitespace-nowrap transition-colors",
                 activeTab === id
                   ? "bg-brand-600/15 text-brand-400 font-medium"
                   : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
@@ -129,10 +131,11 @@ export default function ProjectDetailPage() {
       </header>
 
       {/* Tab content */}
-      <div className="flex-1 p-6 lg:p-8">
+      <div className="flex-1 p-4 sm:p-6 lg:p-8">
         {activeTab === "pacing" && <PacingTab code={code} />}
         {activeTab === "performance" && <PerformanceTab code={code} />}
         {activeTab === "alerts" && <AlertsTab code={code} />}
+        {activeTab === "settings" && <SettingsTab code={code} />}
       </div>
     </div>
   );

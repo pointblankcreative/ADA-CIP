@@ -42,6 +42,125 @@ PLATFORM_MAP = {
     "reddit": "reddit",
 }
 
+# Patterns that look like section/flight headers, NOT real platforms
+_FLIGHT_RE = re.compile(
+    r"^(flight\s+\w+|phase\s+\d+|wave\s+\d+|burst\s+\d+)$", re.IGNORECASE
+)
+
+# Project code regex — matches 5-digit codes starting with 2x (e.g. 25042, 26009)
+_PROJECT_CODE_RE = re.compile(r'(?:^|\b)(2[0-9]\d{3})(?:\b|\s|-|_|$)')
+
+
+def _sum_tab_budgets(all_data: list[list[str]]) -> float:
+    """Sum all numeric values in the 'Budget' column of a media plan tab."""
+    # Find the header row and budget column
+    budget_col = None
+    header_row_idx = None
+    for r in range(min(15, len(all_data))):
+        for c in range(len(all_data[r])):
+            if all_data[r][c].strip().lower() == "budget":
+                budget_col = c
+                header_row_idx = r
+                break
+        if budget_col is not None:
+            break
+    if budget_col is None or header_row_idx is None:
+        return 0.0
+    total = 0.0
+    for r in range(header_row_idx + 1, len(all_data)):
+        if r < len(all_data) and budget_col < len(all_data[r]):
+            val = _parse_money(all_data[r][budget_col])
+            if val and val > 0:
+                total += val
+    return total
+
+
+def _tab_belongs_to_project(
+    title: str,
+    all_data: list[list[str]],
+    bc_metadata: dict,
+    project_code: str,
+) -> tuple[bool, str]:
+    """Check whether a media plan tab belongs to the current project.
+
+    Returns (keep, reason) — reason explains why it was kept or skipped.
+    """
+    # ── Check 1: project code in tab title (no API call needed) ─────
+    codes_in_title = _PROJECT_CODE_RE.findall(title)
+    if codes_in_title:
+        if project_code in codes_in_title:
+            return True, f"tab title contains project code {project_code}"
+        return False, f"tab title contains code(s) {codes_in_title}, not {project_code}"
+
+    # ── Check 2: read tab metadata and compare to blocking chart ────
+    if len(all_data) < 5:
+        logger.warning("  Tab '%s': too few rows for metadata, including by default", title)
+        return True, "too few rows for metadata, including by default"
+
+    client_pos = _find_label(all_data, "Client")
+    project_pos = _find_label(all_data, "Project")
+
+    tab_client = _cell(all_data, client_pos[0], client_pos[1] + 1) if client_pos else ""
+    tab_project = _cell(all_data, project_pos[0], project_pos[1] + 1) if project_pos else ""
+
+    bc_client = bc_metadata.get("client_name", "")
+    bc_project = bc_metadata.get("project_name", "")
+
+    # If the tab has no metadata at all, include by default
+    if not tab_client and not tab_project:
+        logger.warning("  Tab '%s': no Client/Project metadata found, including by default", title)
+        return True, "no Client/Project metadata found, including by default"
+
+    # Compare: reject if EITHER client or project mismatches (when both sides have values)
+    client_mismatch = tab_client and bc_client and tab_client.lower() != bc_client.lower()
+    project_mismatch = tab_project and bc_project and tab_project.lower() != bc_project.lower()
+
+    if client_mismatch or project_mismatch:
+        return False, (
+            f"metadata mismatch — tab has client='{tab_client}', project='{tab_project}'; "
+            f"blocking chart has client='{bc_client}', project='{bc_project}'"
+        )
+
+    # ── Check 3: compare tab budget total to blocking chart budget ──
+    bc_budget = bc_metadata.get("net_budget")
+    if bc_budget and bc_budget > 0:
+        tab_budget = _sum_tab_budgets(all_data)
+        if tab_budget > 0:
+            ratio = tab_budget / bc_budget
+            if ratio < 0.3 or ratio > 3.0:
+                return False, (
+                    f"budget mismatch — tab total ${tab_budget:,.0f} vs "
+                    f"blocking chart ${bc_budget:,.0f} (ratio {ratio:.1f})"
+                )
+
+    return True, f"metadata compatible (client='{tab_client}', project='{tab_project}')"
+
+
+def _line_belongs_to_project(mp_line: dict, project_code: str) -> bool:
+    """Check if a media plan line likely belongs to the target project.
+
+    Scans text fields for project codes. If any are found and NONE match
+    the target, the line is from a different project.
+    """
+    text_fields = [
+        mp_line.get("audience_name", ""),
+        mp_line.get("audience_targeting", ""),
+        mp_line.get("technical_targeting", ""),
+        mp_line.get("goal", ""),
+        mp_line.get("platform", ""),
+        mp_line.get("landing_page", ""),
+    ]
+    combined = " ".join(text_fields)
+    codes = _PROJECT_CODE_RE.findall(combined)
+    if not codes:
+        return True  # no project code found — can't tell, include
+    return project_code in codes
+
+
+def _is_section_header(raw: str) -> bool:
+    """Return True if the value looks like a flight/section header, not a platform."""
+    return bool(_FLIGHT_RE.match(raw.strip()))
+
 
 def _normalise_platform(raw: str | None) -> str | None:
     if not raw:
@@ -126,9 +245,48 @@ def _mtl_client() -> bigquery.Client:
     )
 
 
+# ── Schema migrations (idempotent) ────────────────────────────────
+
+_MIGRATIONS_RUN = False
+
+
+def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
+    """Run one-time schema migrations. Guarded so it executes at most once per process."""
+    global _MIGRATIONS_RUN
+    if _MIGRATIONS_RUN:
+        return
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+
+    stmts = [
+        # Bug 5 (ADAC-26): per-line flight dates
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_start DATE",
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_end DATE",
+        # Bug 3 (ADAC-18): audience_name overrides table
+        f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
+            project_code STRING,
+            platform_id STRING,
+            budget FLOAT64,
+            audience_name STRING,
+            updated_at TIMESTAMP
+        )""",
+    ]
+    for sql in stmts:
+        try:
+            mtl.query(sql).result()
+        except Exception as e:
+            # Column/table already exists — safe to ignore
+            if "Already Exists" in str(e) or "Duplicate" in str(e):
+                pass
+            else:
+                logger.warning("  Schema migration warning: %s", e)
+
+    _MIGRATIONS_RUN = True
+    logger.info("  Schema migrations verified")
+
+
 # ── Generic label finder ────────────────────────────────────────────
 
-def _find_label(data: list[list[str]], label: str, max_row: int = 20) -> tuple[int, int] | None:
+def _find_label(data: list[list[str]], label: str, max_row: int = 15) -> tuple[int, int] | None:
     """Find (row_idx, col_idx) of a cell containing the label text."""
     label_lower = label.lower().strip()
     for r in range(min(max_row, len(data))):
@@ -149,13 +307,13 @@ def _cell(data: list[list[str]], row: int, col: int) -> str:
 def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
     """Parse the Blocking Chart tab using label-based discovery."""
     all_data = ws.get_all_values()
-    if len(all_data) < 12:
-        raise ValueError(f"Blocking Chart has only {len(all_data)} rows — expected >= 12")
+    if len(all_data) < 8:
+        raise ValueError(f"Blocking Chart has only {len(all_data)} rows — expected >= 8")
 
     # ── Discover metadata positions ─────────────────────────────────
     client_pos = _find_label(all_data, "Client")
     project_pos = _find_label(all_data, "Project")
-    dates_pos = _find_label(all_data, "Start & End")
+    dates_pos = _find_label(all_data, "Start & End") or _find_label(all_data, "Run Dates")
     budget_pos = _find_label(all_data, "Net Budget")
 
     client_name = _cell(all_data, client_pos[0], client_pos[1] + 1) if client_pos else ""
@@ -197,9 +355,8 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
     }
 
     # ── Find header row (contains "Platform") ───────────────────────
-    # Start from row 5 to handle sheets with offset/extra rows at the top
     header_row_idx = None
-    for r in range(5, min(20, len(all_data))):
+    for r in range(4, min(15, len(all_data))):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "platform" in row_text:
             header_row_idx = r
@@ -255,6 +412,10 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
         obj_fmt = _cell(all_data, row_idx, objective_col)
 
         if plat_raw:
+            # Skip flight/section headers — don't let them become current_platform
+            if _is_section_header(plat_raw):
+                logger.debug("  Skipping section header: %s", plat_raw)
+                continue
             current_platform = plat_raw
 
         if not current_platform or current_platform.lower() in ("total", "grand total", ""):
@@ -315,9 +476,9 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
 
 # ── Media Plan Tab Parser ───────────────────────────────────────────
 
-def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
+def _parse_media_plan_tab(ws: gspread.Worksheet, prefetched_data: list[list[str]] | None = None) -> list[dict]:
     """Parse the Media Plan tab for detailed line items with targeting info."""
-    all_data = ws.get_all_values()
+    all_data = prefetched_data or ws.get_all_values()
     if len(all_data) < 14:
         return []
 
@@ -325,7 +486,7 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
 
     # Find header row by looking for "Site/Network" or "Goal"
     header_row_idx = None
-    for r in range(5, min(20, len(all_data))):
+    for r in range(4, min(15, len(all_data))):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "site/network" in row_text or ("goal" in row_text and "start" in row_text):
             header_row_idx = r
@@ -354,7 +515,7 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
             col_map["days"] = i
         elif h_lower.strip() == "id":
             col_map["id"] = i
-        elif "audience name" in h_lower:
+        elif "audience name" in h_lower or "ad set name" in h_lower or "adset name" in h_lower:
             col_map["audience_name"] = i
         elif "geo" in h_lower:
             col_map["geo"] = i
@@ -379,6 +540,14 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
         elif h_lower.strip() == "budget":
             col_map["budget"] = i
 
+    # Fallback: if no audience_name column was found, try less-specific headers
+    if "audience_name" not in col_map:
+        for i, h in enumerate(headers):
+            h_lower = h.strip().lower()
+            if h_lower == "audience" or h_lower == "name":
+                col_map["audience_name"] = i
+                break
+
     logger.info("  Media Plan tab column map: %s", col_map)
 
     def gc(row: list[str], key: str) -> str:
@@ -398,6 +567,9 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
 
         plat_raw = gc(row, "platform")
         if plat_raw:
+            # Skip flight/section headers in media plan tabs too
+            if _is_section_header(plat_raw):
+                continue
             current_platform = plat_raw
 
         line_code = gc(row, "id")
@@ -438,31 +610,93 @@ def _parse_media_plan_tab(ws: gspread.Worksheet) -> list[dict]:
     return lines
 
 
+def _synthesise_lines_from_mp(
+    mp_lines: list[dict], metadata: dict
+) -> list[dict]:
+    """Create blocking-chart-style line dicts from media plan tab lines.
+
+    Used as a fallback when the blocking chart only had section/flight headers
+    and no actual platform rows.
+    """
+    lines = []
+    seen: set[tuple] = set()
+    for mp in mp_lines:
+        pid = mp.get("platform_id")
+        if not pid:
+            continue
+        # Only include lines with recognised platforms — skip flight headers
+        # that slipped through or unknown platform names
+        if pid not in PLATFORM_MAP.values():
+            logger.debug("  Skipping unrecognised platform_id in fallback: %s", pid)
+            continue
+        budget = mp.get("budget")
+        if not budget or budget <= 0:
+            continue
+        # Deduplicate across multiple flight tabs with identical content
+        fs = mp.get("flight_start") or metadata.get("start_date")
+        fe = mp.get("flight_end") or metadata.get("end_date")
+        dedup_key = (pid, budget, mp.get("goal", ""), str(fs), str(fe), mp.get("audience_name", ""))
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        lines.append({
+            "platform": mp.get("platform", ""),
+            "platform_id": pid,
+            "objective_format": mp.get("goal", ""),
+            "budget": budget,
+            "objective_pct": None,
+            "flight_start": fs,
+            "flight_end": fe,
+            "audience_name": mp.get("audience_name", ""),
+        })
+    return lines
+
+
+def _mp_lines_have_audience_data(mp_lines: list[dict]) -> bool:
+    """Check if media plan tab lines have audience-level detail worth using."""
+    return any(
+        mp.get("audience_name") and mp.get("budget") and mp.get("budget") > 0
+        for mp in mp_lines
+    )
+
+
 # ── Sync Orchestrator ───────────────────────────────────────────────
 
-def sync_media_plan(sheet_id: str, project_code: str) -> dict:
+def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = None) -> dict:
     """Sync a Google Sheets media plan into BigQuery.
 
     Args:
         sheet_id: Google Sheets document ID.
         project_code: YYNNN project code.
+        tab_name: Optional specific tab name to sync. If provided, only this
+            tab is processed (case-insensitive match). If omitted, all matching
+            tabs are used (existing behaviour).
 
     Returns:
         Summary dict with counts of records written.
     """
     logger.info("Syncing media plan for %s from sheet %s", project_code, sheet_id)
 
+    # Ensure schema is up to date (idempotent, runs once per process)
+    init_mtl = _mtl_client()
+    try:
+        _ensure_schema_migrations(init_mtl)
+    finally:
+        init_mtl.close()
+
     gc = _get_gspread_client()
     ss = gc.open_by_key(sheet_id)
 
-    # Find tabs by name, skipping example/template tabs
-    skip_words = {"example", "template", "sample"}
+    # Find tabs by name — skip example/template tabs, collect ALL media plan tabs
     blocking_ws = None
     media_plan_tabs: list[gspread.Worksheet] = []
+    _skip_words = {"example", "template", "sample"}
+
     for ws in ss.worksheets():
         title_lower = ws.title.lower()
-        if any(w in title_lower for w in skip_words):
-            logger.info("  Skipping tab: %s (example/template)", ws.title)
+        # Skip example/template tabs
+        if any(w in title_lower for w in _skip_words):
+            logger.info("  Skipping tab: %s", ws.title)
             continue
         if "blocking" in title_lower and "chart" in title_lower:
             blocking_ws = ws
@@ -478,12 +712,72 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
         else:
             raise ValueError("Could not find Blocking Chart tab")
 
-    # ── Parse both tabs (merge all media plan flight tabs) ───────────
+    # ── Parse blocking chart + filter media plan tabs to this project ─
     bc = _parse_blocking_chart(blocking_ws)
-    mp_lines: list[dict] = []
+
+    filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
-        logger.info("  Parsing media plan tab: %s", mp_ws.title)
-        mp_lines.extend(_parse_media_plan_tab(mp_ws))
+        # If a specific tab was requested, skip non-matching tabs
+        if tab_name:
+            if mp_ws.title.strip().lower() != tab_name.strip().lower():
+                logger.debug("  Skipping tab '%s' — doesn't match requested tab_name='%s'",
+                             mp_ws.title, tab_name)
+                continue
+            else:
+                logger.info("  Tab '%s' matches requested tab_name — processing", mp_ws.title)
+        tab_data = mp_ws.get_all_values()
+        keep, reason = _tab_belongs_to_project(mp_ws.title, tab_data, bc["metadata"], project_code)
+        if keep:
+            logger.info("  Including media plan tab: '%s' — %s", mp_ws.title, reason)
+            filtered_tabs.append((mp_ws, tab_data))
+        else:
+            logger.warning("  Skipping media plan tab: '%s' — %s", mp_ws.title, reason)
+
+    mp_lines: list[dict] = []
+    for mp_ws, tab_data in filtered_tabs:
+        mp_lines.extend(_parse_media_plan_tab(mp_ws, prefetched_data=tab_data))
+
+    # ── Row-level project filter: remove lines that contain a different
+    #    project code in their text fields (catches mixed-project tabs)
+    before_count = len(mp_lines)
+    mp_lines = [l for l in mp_lines if _line_belongs_to_project(l, project_code)]
+    if len(mp_lines) < before_count:
+        logger.info("  Row-level project filter: %d → %d lines (removed %d from other projects)",
+                     before_count, len(mp_lines), before_count - len(mp_lines))
+
+    # ── Prefer media plan tab lines when they have audience-level detail.
+    #    The blocking chart often has more granular budget rows that don't
+    #    match the intended line structure. Media plan tabs with audience
+    #    names are the authoritative source.
+    #    IMPORTANT: Never replace bc["lines"] or clear bc["weeks"] when they
+    #    already exist — that destroys weekly activation patterns (burst/pause).
+    mp_matches: dict[int, dict] = {}
+
+    if mp_lines and _mp_lines_have_audience_data(mp_lines):
+        if bc["lines"]:
+            # Enrich blocking chart lines with audience data from media plan tabs
+            # rather than replacing them — preserves weekly activation patterns
+            mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+            logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines "
+                        "(%d matched)", len(bc["lines"]), len(mp_matches))
+            for bc_idx, mp_detail in mp_matches.items():
+                bc_line = bc["lines"][bc_idx]
+                if not bc_line.get("audience_name") and mp_detail.get("audience_name"):
+                    bc_line["audience_name"] = mp_detail["audience_name"]
+                # Use media plan tab's explicit per-line dates when available
+                if mp_detail.get("flight_start"):
+                    bc_line["flight_start"] = mp_detail["flight_start"]
+                if mp_detail.get("flight_end"):
+                    bc_line["flight_end"] = mp_detail["flight_end"]
+        else:
+            # Blocking chart had no line items — use media plan tabs as primary source
+            logger.warning("  Blocking chart produced 0 lines but mp tabs have audience data — synthesising")
+            bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+            mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+    elif not bc["lines"] and mp_lines:
+        logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
+        bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
 
     meta = bc["metadata"]
     plan_id = f"plan-{project_code}-{uuid.uuid4().hex[:8]}"
@@ -515,8 +809,8 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
 
-        # Match with media plan tab detail by platform + line_code or budget
-        mp_detail = _match_mp_line(bc_line, mp_lines)
+        # Use pre-computed global match from _match_all_mp_lines
+        mp_detail = mp_matches.get(i)
 
         flight_start = bc_line.get("flight_start") or meta.get("start_date")
         flight_end = bc_line.get("flight_end") or meta.get("end_date")
@@ -535,7 +829,7 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
             "flight_start": flight_start.isoformat() if flight_start else None,
             "flight_end": flight_end.isoformat() if flight_end else None,
             "objective": bc_line.get("objective_format"),
-            "audience_name": mp_detail.get("audience_name") if mp_detail else None,
+            "audience_name": bc_line.get("audience_name") or (mp_detail.get("audience_name") if mp_detail else None),
             "audience_targeting": mp_detail.get("audience_targeting") if mp_detail else None,
             "landing_page": mp_detail.get("landing_page") if mp_detail else None,
             "pricing_model": mp_detail.get("pricing_model") if mp_detail else None,
@@ -547,11 +841,13 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
             ),
             "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
             "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
-            "is_traditional": False,
+            "is_traditional": _is_traditional_media(bc_line.get("platform"), bc_line.get("platform_id")),
         })
 
+        line_has_weeks = False
         for w in bc["weeks"]:
             if w["line_index"] == i:
+                line_has_weeks = True
                 week_records.append({
                     "id": f"{line_id}-w-{w['week_start'].isoformat()}",
                     "line_id": line_id,
@@ -560,6 +856,21 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
                     "is_active": w["is_active"],
                 })
 
+        # If no blocking chart weeks exist for this line (e.g. fallback
+        # from media plan tabs), generate weekly entries from flight dates
+        if not line_has_weeks and flight_start and flight_end:
+            week_cursor = flight_start - timedelta(days=flight_start.weekday())  # Monday
+            while week_cursor <= flight_end:
+                is_active = flight_start <= week_cursor + timedelta(days=6) and week_cursor <= flight_end
+                week_records.append({
+                    "id": f"{line_id}-w-{week_cursor.isoformat()}",
+                    "line_id": line_id,
+                    "project_code": project_code,
+                    "week_start": week_cursor.isoformat(),
+                    "is_active": is_active,
+                })
+                week_cursor += timedelta(days=7)
+
     # ── Write to BigQuery ───────────────────────────────────────────
     mtl = _mtl_client()
     try:
@@ -567,6 +878,8 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
         _write_records(mtl, "media_plans", [media_plan_record])
         _write_records(mtl, "media_plan_lines", line_records)
         _write_records(mtl, "blocking_chart_weeks", week_records)
+        # Apply any saved audience_name overrides so manual edits survive re-sync
+        _apply_audience_overrides(mtl, project_code)
     finally:
         mtl.close()
 
@@ -587,33 +900,75 @@ def sync_media_plan(sheet_id: str, project_code: str) -> dict:
     return result
 
 
-def _match_mp_line(bc_line: dict, mp_lines: list[dict]) -> dict | None:
-    """Best-effort match a blocking chart line to a media plan tab line."""
-    if not mp_lines:
-        return None
-    bc_plat = bc_line.get("platform_id")
-    bc_budget = bc_line.get("budget", 0)
+def _match_all_mp_lines(
+    bc_lines: list[dict], mp_lines: list[dict]
+) -> dict[int, dict]:
+    """Optimally match blocking chart lines to media plan tab lines.
 
-    candidates = [l for l in mp_lines if l.get("platform_id") == bc_plat]
-    if not candidates:
-        return None
+    Builds a score matrix for all (bc_line, mp_line) pairs and greedily
+    assigns best matches by descending score.  This avoids the order-dependent
+    side effects of one-at-a-time matching — two similar Meta lines with close
+    budgets now both get correct matches.
 
-    # Prefer match with budget within 10%, and that has a line_code
-    with_budget = [c for c in candidates if c.get("budget")]
-    if with_budget:
-        best = min(with_budget, key=lambda l: abs((l.get("budget") or 0) - bc_budget))
-        if abs(best["budget"] - bc_budget) / max(bc_budget, 1) < 0.1:
-            mp_lines.remove(best)
-            return best
+    Returns a dict mapping bc_line_index → matched mp_line dict.
+    """
+    if not mp_lines or not bc_lines:
+        return {}
 
-    # Fall back to first candidate with a line_code
-    with_code = [c for c in candidates if c.get("line_code")]
-    if with_code:
-        pick = with_code[0]
-        mp_lines.remove(pick)
-        return pick
+    # Build scored pairs: (score, bc_idx, mp_idx)
+    scored_pairs: list[tuple[float, int, int]] = []
 
-    return candidates[0] if len(candidates) == 1 else None
+    for bc_idx, bc_line in enumerate(bc_lines):
+        bc_plat = bc_line.get("platform_id")
+        bc_budget = bc_line.get("budget", 0)
+
+        for mp_idx, mp_line in enumerate(mp_lines):
+            if mp_line.get("platform_id") != bc_plat:
+                continue
+
+            score = 0.0
+            has_budget_match = False
+            mp_budget = mp_line.get("budget") or 0
+
+            # Budget proximity — tight match worth most
+            if mp_budget and bc_budget:
+                budget_diff = abs(mp_budget - bc_budget) / max(bc_budget, 1)
+                if budget_diff < 0.01:
+                    score += 100
+                    has_budget_match = True
+                elif budget_diff < 0.1:
+                    score += 80 - (budget_diff * 200)
+                    has_budget_match = True
+                elif budget_diff < 0.5:
+                    score += 20
+                    has_budget_match = True
+
+            # Bonus for having a line_code (can match even without budget)
+            if mp_line.get("line_code"):
+                score += 10
+
+            # Bonus for having audience_name (only if budget or line_code matched)
+            if mp_line.get("audience_name") and (has_budget_match or mp_line.get("line_code")):
+                score += 5
+
+            # Require at least a budget match or a line_code to consider pairing
+            if score > 0 and (has_budget_match or mp_line.get("line_code")):
+                scored_pairs.append((score, bc_idx, mp_idx))
+
+    # Greedy assignment by descending score
+    scored_pairs.sort(key=lambda t: t[0], reverse=True)
+    used_bc: set[int] = set()
+    used_mp: set[int] = set()
+    result: dict[int, dict] = {}
+
+    for score, bc_idx, mp_idx in scored_pairs:
+        if bc_idx in used_bc or mp_idx in used_mp:
+            continue
+        result[bc_idx] = mp_lines[mp_idx]
+        used_bc.add(bc_idx)
+        used_mp.add(mp_idx)
+
+    return result
 
 
 def _channel_category(objective_format: str) -> str:
@@ -631,14 +986,66 @@ def _channel_category(objective_format: str) -> str:
     return "Digital"
 
 
+# Traditional (non-digital) media keywords
+_TRADITIONAL_KEYWORDS = {
+    "direct mail", "personalized mail", "direct personalized mail",
+    "print", "newspaper", "magazine", "radio", "billboard",
+    "out of home", "ooh", "transit", "flyer", "brochure",
+    "tv spot", "television",
+}
+
+
+def _is_traditional_media(platform: str | None, platform_id: str | None) -> bool:
+    """Return True if this line is traditional (non-digital) media."""
+    if not platform:
+        return False
+    plower = platform.strip().lower()
+    return any(kw in plower for kw in _TRADITIONAL_KEYWORDS)
+
+
+def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
+    """Re-apply saved audience_name overrides after a fresh sync.
+
+    Matches overrides on (project_code, platform_id, budget ±1%) so they
+    survive line_id changes across re-syncs.
+    """
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    sql = f"""
+        UPDATE {prefix}.media_plan_lines` l
+        SET l.audience_name = o.audience_name
+        FROM {prefix}.media_plan_line_overrides` o
+        WHERE l.project_code = o.project_code
+          AND l.platform_id = o.platform_id
+          AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
+          AND l.project_code = @pc
+    """
+    try:
+        result = mtl.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            ]),
+        ).result()
+        affected = result.num_dml_affected_rows or 0
+        if affected:
+            logger.info("    Applied %d audience_name overrides for %s", affected, project_code)
+    except Exception as e:
+        # Table may not exist yet on first run — safe to skip
+        logger.warning("  Could not apply audience overrides: %s", e)
+
+
 def _clear_existing_plan(mtl: bigquery.Client, project_code: str) -> None:
-    """Mark old plans inactive and remove old blocking chart weeks."""
+    """Remove old plan data before writing a fresh sync."""
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
     param = [bigquery.ScalarQueryParameter("pc", "STRING", project_code)]
     cfg = lambda: bigquery.QueryJobConfig(query_parameters=param)
 
     mtl.query(
         f"UPDATE {prefix}.media_plans` SET is_current = FALSE WHERE project_code = @pc AND is_current = TRUE",
+        job_config=cfg(),
+    ).result()
+    mtl.query(
+        f"DELETE FROM {prefix}.media_plan_lines` WHERE project_code = @pc",
         job_config=cfg(),
     ).result()
     mtl.query(

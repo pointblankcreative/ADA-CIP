@@ -3,12 +3,13 @@ import { cn, pacingStatus, pacingBg, pacingColor, formatPercent } from "@/lib/ut
 interface PacingBadgeProps {
   percentage: number | null | undefined;
   totalSpend?: number;
+  lineStatus?: "not_started" | "pending" | "active" | "completed";
   size?: "sm" | "md";
 }
 
-export function PacingBadge({ percentage, totalSpend = 0, size = "md" }: PacingBadgeProps) {
+export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md" }: PacingBadgeProps) {
   const status = pacingStatus(percentage);
-  const isPending = percentage == null && totalSpend > 0;
+  const isPending = lineStatus === "pending" || lineStatus === "not_started" || (percentage == null && totalSpend > 0);
 
   const labels: Record<string, string> = {
     "critical-over": "Critical Over",
@@ -19,10 +20,12 @@ export function PacingBadge({ percentage, totalSpend = 0, size = "md" }: PacingB
     unknown: "No Data",
   };
 
-  const label = percentage != null
-    ? formatPercent(percentage)
-    : isPending
-      ? "Pacing Pending"
+  const label = isPending
+    ? lineStatus === "not_started"
+      ? "Not Started"
+      : "Pending"
+    : percentage != null
+      ? formatPercent(percentage)
       : labels[status];
 
   const dotColor = isPending
