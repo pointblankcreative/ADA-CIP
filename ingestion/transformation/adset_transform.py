@@ -51,8 +51,7 @@ FROM (
     b.date,
     COALESCE(
       REGEXP_EXTRACT(b.campaign_name, r'{pc}'),
-      REGEXP_EXTRACT(b.ad_set_name, r'{pc}'),
-      cpm.project_code
+      REGEXP_EXTRACT(b.ad_set_name, r'{pc}')
     ) AS project_code,
     b.platform_id,
     b.account_id,
@@ -227,9 +226,6 @@ FROM (
         OR Average_frequency___7_Day_Campaign__LinkedIn IS NOT NULL
       )
   ) b
-  LEFT JOIN `{cpm}` cpm
-    ON b.platform_id = cpm.platform_id
-    AND b.campaign_name LIKE cpm.campaign_name
 ) ed
 WHERE ed.project_code IS NOT NULL
 """
@@ -239,13 +235,12 @@ def _build_sql(date_filter: str) -> str:
     return ADSET_SELECT_SQL.format(
         pc=PC,
         funnel=FUNNEL_TABLE,
-        cpm=CPM_TABLE,
         date_filter=date_filter,
     )
 
 
 def _us_client() -> bigquery.Client:
-    return bigquery.Client(project=settings.gcp_project_id)
+    return bigquery.Client(project=settings.gcp_project_id, location="US")
 
 
 def _mtl_client() -> bigquery.Client:
@@ -302,6 +297,27 @@ def _log_run(
     mtl.query(sql, job_config=job_config).result()
 
 
+def _apply_mapping_fallback(mtl: bigquery.Client) -> None:
+    """Apply campaign_project_mapping overrides to rows with NULL project_code.
+
+    Same pattern as transformation.py — runs entirely in Montreal after loading,
+    because campaign_project_mapping is a Montreal-region table.
+    """
+    sql = f"""
+        UPDATE `{TARGET_TABLE}` f
+        SET f.project_code = m.project_code
+        FROM `{CPM_TABLE}` m
+        WHERE f.project_code IS NULL
+          AND f.platform_id = m.platform_id
+          AND f.campaign_name LIKE m.campaign_name
+    """
+    try:
+        result = mtl.query(sql).result()
+        logger.info("  Mapping fallback applied to fact_adset_daily")
+    except Exception:
+        logger.warning("  Mapping fallback query failed (non-fatal)", exc_info=True)
+
+
 def run_adset_transformation(mode: str = "daily") -> dict:
     """Funnel.io → fact_adset_daily."""
     log_id = str(uuid.uuid4())
@@ -354,6 +370,9 @@ def run_adset_transformation(mode: str = "daily") -> dict:
         load_job = mtl.load_table_from_json(data, TARGET_TABLE, job_config=load_config)
         load_job.result()
         loaded = load_job.output_rows or row_count
+
+        # Apply campaign_project_mapping fallback (runs in Montreal)
+        _apply_mapping_fallback(mtl)
 
         _log_run(mtl, log_id, mode, started_at, "success", loaded, min_date, max_date)
 
