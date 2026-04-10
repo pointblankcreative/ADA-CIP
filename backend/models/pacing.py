@@ -11,6 +11,7 @@ class LinePacing(BaseModel):
     audience_name: str | None = None
     flight_start: str | None = None
     flight_end: str | None = None
+    line_status: str = "active"  # not_started | pending | active | completed
     planned_budget: float = 0
     planned_spend_to_date: float = 0
     actual_spend_to_date: float = 0

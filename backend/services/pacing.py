@@ -265,8 +265,20 @@ def run_pacing_for_project(project_code: str) -> dict:
             elapsed_days_raw = (min(today, flight_end) - flight_start).days + 1
             elapsed_active_days = max(0, min(elapsed_days_raw, total_active_days))
 
-        # Even pacing calculation
-        if total_active_days > 0 and elapsed_active_days > 0:
+        # Determine line status based on flight timing
+        # Data lag: ad platforms report with ~1-day delay through Funnel,
+        # so we allow a 1-day grace period before calculating pacing.
+        if today < flight_start:
+            line_status = "not_started"
+        elif elapsed_active_days <= 1:
+            line_status = "pending"  # started today/yesterday — no data expected yet
+        elif today > flight_end:
+            line_status = "completed"
+        else:
+            line_status = "active"
+
+        # Even pacing calculation — only meaningful for active flights
+        if line_status == "active" and total_active_days > 0 and elapsed_active_days > 0:
             planned_spend_to_date = (budget / total_active_days) * elapsed_active_days
         else:
             planned_spend_to_date = 0.0
@@ -293,12 +305,16 @@ def run_pacing_for_project(project_code: str) -> dict:
         is_over = pacing_pct > PACING_OVER_WARNING
         is_under = 0 < pacing_pct < PACING_UNDER_WARNING
 
+        # Only generate alerts for active or completed flights — not for
+        # flights that haven't started or are still in their data-lag grace period.
         line_label = line_code or platform_id or line_id
-        line_alerts = _generate_alerts(
-            project_code, line_id, line_label,
-            pacing_pct, actual_spend, budget,
-            remaining_days, remaining_budget,
-        )
+        line_alerts = []
+        if line_status in ("active", "completed"):
+            line_alerts = _generate_alerts(
+                project_code, line_id, line_label,
+                pacing_pct, actual_spend, budget,
+                remaining_days, remaining_budget,
+            )
         all_alerts.extend(line_alerts)
 
         tracking_rows.append({
@@ -308,6 +324,7 @@ def run_pacing_for_project(project_code: str) -> dict:
             "line_code": line_code,
             "platform_id": platform_id,
             "channel_category": line.get("channel_category"),
+            "line_status": line_status,
             "planned_budget": budget,
             "planned_spend_to_date": round(planned_spend_to_date, 2),
             "actual_spend_to_date": round(actual_spend, 2),

@@ -39,6 +39,7 @@ export interface PacingLine {
   audience_name: string | null;
   flight_start: string | null;
   flight_end: string | null;
+  line_status?: "not_started" | "pending" | "active" | "completed";
   planned_budget: number;
   planned_spend_to_date: number;
   actual_spend_to_date: number;
