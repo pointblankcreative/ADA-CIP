@@ -69,7 +69,12 @@ WITH platform_data AS (
     CAST(Frequency___7_Day_Ad_Set__Facebook_Ads AS FLOAT64) AS frequency,
     CAST(Video_Plays__Facebook_Ads AS INT64) AS video_views,
     CAST(Video_thruplay__Facebook_Ads AS INT64) AS video_completions,
-    CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC) AS conversions,
+    CASE WHEN Campaign_Objective__Facebook_Ads IN (
+           'CONVERSIONS', 'OUTCOME_LEADS', 'LEAD_GENERATION'
+         )
+         THEN CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC)
+         ELSE 0
+    END AS conversions,
     CAST(Clicks_all__Facebook_Ads AS INT64) AS engagements
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
