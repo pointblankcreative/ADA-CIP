@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.routers import admin, alerts, benchmarks, ga4, pacing, performance, projects, traditional
+from backend.routers import admin, alerts, benchmarks, diagnostics, ga4, pacing, performance, projects, traditional
 from backend.services import bigquery_client as bq
 
 logging.basicConfig(
@@ -51,6 +51,7 @@ app.include_router(alerts.router)
 app.include_router(ga4.router)
 app.include_router(benchmarks.router)
 app.include_router(traditional.router)
+app.include_router(diagnostics.router)
 app.include_router(admin.router)
 
 

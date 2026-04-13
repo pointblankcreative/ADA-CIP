@@ -245,6 +245,31 @@ def run_daily_pipeline() -> dict:
         }
         results["status"] = "partial_failure"
 
+    # ── Stage 2b: Diagnostics ───────────────────────────────────────
+    # Runs after pacing so budget_tracking is fresh (used by efficiency layer).
+    # Phase 1: persuasion Distribution pillar only. Failures are non-critical —
+    # the rest of the pipeline (staleness, Slack) still runs.
+    logger.info("=== Daily Pipeline: Stage 2b — Diagnostics ===")
+    try:
+        from backend.services.diagnostics.engine import run_all_diagnostics
+
+        t2b = time.time()
+        diag_result = run_all_diagnostics()
+        results["stages"]["diagnostics"] = {
+            "status": "success",
+            "projects_processed": diag_result.get("projects_processed", 0),
+            "projects_skipped": diag_result.get("projects_skipped", 0),
+            "total_alerts": diag_result.get("total_alerts", 0),
+            "errors": diag_result.get("errors", []),
+            "elapsed_seconds": round(time.time() - t2b, 1),
+        }
+    except Exception as e:
+        logger.error("Diagnostics failed (non-critical): %s", e, exc_info=True)
+        results["stages"]["diagnostics"] = {
+            "status": "error",
+            "error": str(e),
+        }
+
     # ── Stage 3: Staleness Check ────────────────────────────────────
     logger.info("=== Daily Pipeline: Stage 3 — Staleness Check ===")
     try:
