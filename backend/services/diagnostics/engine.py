@@ -374,17 +374,28 @@ def _query_platform_metrics(
             GROUP BY platform_id
         ),
         adset_agg AS (
-            -- fact_adset_daily stores reach/frequency with a reach_window
-            -- label (e.g. '7d', '1d'); take the MAX across the flight and
-            -- prefer the 7-day window when available.
+            -- fact_adset_daily stores reach/frequency per ad set per day
+            -- with a reach_window label ('7d', '1d', etc). Platforms like
+            -- StackAdapt only expose 1-day unique metrics, so we include
+            -- 1d alongside 7d; MAX(reach) across the flight is a
+            -- conservative floor (true unique reach requires platform-side
+            -- de-dup that we don't get at this grain).
+            --
+            -- Frequency: some sources (StackAdapt in particular) report
+            -- the frequency column as 0 even when impressions/reach > 1.
+            -- Fall back to impressions/reach when the reported frequency
+            -- is missing or zero.
             SELECT
                 platform_id,
                 MAX(reach) as reach,
-                AVG(frequency) as frequency
+                COALESCE(
+                    NULLIF(AVG(frequency), 0),
+                    SAFE_DIVIDE(SUM(impressions), NULLIF(SUM(reach), 0))
+                ) as frequency
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code
               AND date BETWEEN @flight_start AND @eval_date
-              AND (reach_window IS NULL OR reach_window IN ('7d','7day','7_day'))
+              AND (reach_window IS NULL OR reach_window IN ('7d','7day','7_day','1d','1day','1_day'))
             GROUP BY platform_id
         )
         SELECT
@@ -554,13 +565,29 @@ def _query_ga4(
 
 
 def _query_budget_pacing(project_code: str, eval_date: date) -> float | None:
-    """Get latest budget pacing percentage from budget_tracking."""
+    """Get project-level budget pacing percentage from budget_tracking.
+
+    budget_tracking is stored per-line, so we roll it up to a single
+    project-level pacing figure: SUM(actual_spend_to_date) / SUM(planned_spend_to_date) * 100.
+    Falls back to the latest prior date if the target date has no rows yet
+    (e.g. the daily budget_tracking refresh hasn't run for today).
+    """
     sql = f"""
-        SELECT pacing_percentage
-        FROM {bq.table('budget_tracking')}
-        WHERE project_code = @project_code
-          AND date = @eval_date
-        LIMIT 1
+        WITH target AS (
+          SELECT MAX(date) AS d
+          FROM {bq.table('budget_tracking')}
+          WHERE project_code = @project_code
+            AND date <= @eval_date
+        )
+        SELECT
+          SAFE_DIVIDE(
+            SUM(actual_spend_to_date),
+            NULLIF(SUM(planned_spend_to_date), 0)
+          ) * 100 AS pacing_percentage
+        FROM {bq.table('budget_tracking')} bt
+        CROSS JOIN target
+        WHERE bt.project_code = @project_code
+          AND bt.date = target.d
     """
     params = [
         bq.string_param("project_code", project_code),
@@ -568,8 +595,8 @@ def _query_budget_pacing(project_code: str, eval_date: date) -> float | None:
     ]
     try:
         rows = bq.run_query(sql, params)
-        if rows:
-            return float(rows[0].get("pacing_percentage") or 0)
+        if rows and rows[0].get("pacing_percentage") is not None:
+            return float(rows[0]["pacing_percentage"])
     except Exception:
         logger.debug("Budget pacing query failed for %s", project_code, exc_info=True)
     return None
