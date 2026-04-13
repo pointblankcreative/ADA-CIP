@@ -93,7 +93,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__Facebook_Ads IS NOT NULL
+    Campaign_ID__Facebook_Ads IS NOT NULL
     AND Campaign_Name__Facebook_Ads IS NOT NULL
     AND Ad_ID__Facebook_Ads IS NOT NULL
 
@@ -211,7 +211,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__StackAdapt IS NOT NULL
+    Campaign_ID__StackAdapt IS NOT NULL
     AND Campaign__StackAdapt IS NOT NULL
 
   UNION ALL
@@ -262,7 +262,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__TikTok IS NOT NULL
+    Campaign_ID__TikTok IS NOT NULL
     AND Campaign_name__TikTok IS NOT NULL
     AND Ad_ID__TikTok IS NOT NULL
 
@@ -314,7 +314,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__Snapchat IS NOT NULL
+    Campaign_ID__Snapchat IS NOT NULL
     AND Campaign_Name__Snapchat IS NOT NULL
     AND Ad_ID__Snapchat IS NOT NULL
 
@@ -366,7 +366,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__LinkedIn IS NOT NULL
+    Campaign_ID__LinkedIn IS NOT NULL
     AND Campaign__LinkedIn IS NOT NULL
     AND Creative_ID__LinkedIn IS NOT NULL
 
@@ -418,7 +418,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__Reddit IS NOT NULL
+    Campaign_ID__Reddit IS NOT NULL
     AND Campaign_Name__Reddit IS NOT NULL
     AND Ad_ID__Reddit IS NOT NULL
 
@@ -470,7 +470,7 @@ WITH platform_data AS (
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
-    AND Campaign_ID__Pinterest IS NOT NULL
+    Campaign_ID__Pinterest IS NOT NULL
     AND Campaign_Name__Pinterest IS NOT NULL
     AND Pin_ID__Pinterest IS NOT NULL
 ),
