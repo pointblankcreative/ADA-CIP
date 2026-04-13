@@ -27,6 +27,9 @@ from backend.services.diagnostics.shared.normalization import clamp, safe_div
 from backend.services.diagnostics.persuasion.distribution import (
     compute_distribution_pillar,
 )
+from backend.services.diagnostics.persuasion.attention import (
+    compute_attention_pillar,
+)
 
 
 def _placeholder_pillar(name: str, weight: float) -> PillarScore:
@@ -42,7 +45,7 @@ def compute_persuasion_health(data: CampaignData) -> DiagnosticOutput:
     """
     # Compute pillars
     distribution = compute_distribution_pillar(data)
-    attention = _placeholder_pillar("attention", weight=0.40)
+    attention = compute_attention_pillar(data)
     resonance = _placeholder_pillar("resonance", weight=0.25)
 
     pillars = [distribution, attention, resonance]

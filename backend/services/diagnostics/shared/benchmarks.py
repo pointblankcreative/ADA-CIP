@@ -173,6 +173,38 @@ DISTRIBUTION_SIGNAL_WEIGHTS = {
     "D4": 0.15,
 }
 
+# Signal weights within Attention pillar.
+#
+# The spec defines format-conditional weights (video+audio+static, video-only,
+# audio-only, etc.). In practice nearly every PB persuasion campaign is video
+# or video+static. Default to the video-only branch:
+#   A1=0.35, A3=0.15, A4=0.30, A5=0.20, A2=null (redistributes).
+# When A2 becomes available, include it at 0.20 and scale A1/A4/A5 down pro
+# rata (handled by the redistribute-to-active pattern in the pillar builder).
+ATTENTION_SIGNAL_WEIGHTS = {
+    "A1": 0.35,    # Video completion quality
+    "A2": 0.20,    # Audio completion quality
+    "A3": 0.15,    # Viewability
+    "A4": 0.30,    # Focused view / time-based attention
+    "A5": 0.20,    # Creative fatigue
+}
+
+# Fatigue score mapping (A5)
+A5_FATIGUE_SCORES = {
+    "NONE":     90,
+    "EARLY":    70,
+    "MODERATE": 45,
+    "SEVERE":   15,
+}
+
+# Fatigue classification thresholds (daily % change in attention metric).
+# Spec: > -0.5 = NONE; -0.5 to -1.5 = EARLY; -1.5 to -3.0 = MODERATE; < -3.0 = SEVERE
+A5_FATIGUE_THRESHOLDS = {
+    "NONE":     -0.5,
+    "EARLY":    -1.5,
+    "MODERATE": -3.0,
+}
+
 
 # ── Conversion Pillar Weights (for reference) ──────────────────────
 

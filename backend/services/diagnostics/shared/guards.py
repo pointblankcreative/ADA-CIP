@@ -24,6 +24,8 @@ MIN_ENGAGEMENTS = 50
 MIN_CLICKS = 30
 MIN_GA4_SESSIONS = 20
 MIN_CONVERSIONS_FOR_CPA = 5
+MIN_VIEWABILITY_MEASURED = 1_000
+MIN_DAYS_FOR_FATIGUE = 7
 
 
 # ── Guard functions ─────────────────────────────────────────────────
@@ -108,6 +110,36 @@ def check_has_reach_data(data: CampaignData) -> tuple[bool, str | None]:
     return True, None
 
 
+def check_has_quartile_data(data: CampaignData) -> tuple[bool, str | None]:
+    """At least one platform has video quartile completion data."""
+    totals = sum(
+        p.video_q25 + p.video_q50 + p.video_q75 + p.video_q100
+        for p in data.platform_metrics
+    )
+    if totals <= 0:
+        return False, "no_quartile_data"
+    return True, None
+
+
+def check_has_viewability_data(
+    data: CampaignData, threshold: int = MIN_VIEWABILITY_MEASURED
+) -> tuple[bool, str | None]:
+    """At least one platform reports measured viewability impressions."""
+    total_measured = sum(p.viewability_measured for p in data.platform_metrics)
+    if total_measured < threshold:
+        return False, f"min_viewability_measured_{threshold}"
+    return True, None
+
+
+def check_min_days_for_fatigue(
+    flight: FlightContext, min_days: int = MIN_DAYS_FOR_FATIGUE
+) -> tuple[bool, str | None]:
+    """Fatigue trend detection needs a rolling window of at least N days."""
+    if flight.elapsed_days < min_days:
+        return False, f"min_days_{min_days}"
+    return True, None
+
+
 # ── Composite guards ────────────────────────────────────────────────
 
 
@@ -120,11 +152,15 @@ def guard_distribution(data: CampaignData) -> tuple[bool, str | None]:
 
 
 def guard_attention(data: CampaignData) -> tuple[bool, str | None]:
-    """Standard guard for Attention pillar signals."""
+    """Standard guard for Attention pillar signals (shared min thresholds).
+
+    Individual A-signals apply their own additional guards (quartile data,
+    viewability data, fatigue window length, etc.) on top of this.
+    """
     passed, reason = check_min_days(data.flight)
     if not passed:
         return passed, reason
-    return check_min_video_starts(data)
+    return check_min_impressions(data)
 
 
 def guard_resonance(data: CampaignData) -> tuple[bool, str | None]:
