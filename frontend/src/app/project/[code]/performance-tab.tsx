@@ -379,7 +379,7 @@ export function PerformanceTab({ code }: { code: string }) {
             <KpiCard
               label="CTR"
               value={formatPercent(avgCTR)}
-              benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: fmtPct })}
+              benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
             />
             {has(data, "conversion_rate") && data.total_conversion_rate != null ? (
               <KpiCard
