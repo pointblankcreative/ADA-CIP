@@ -58,13 +58,38 @@ WITH platform_data AS (
     CAST(Frequency___7_Day_Ad_Set__Facebook_Ads AS FLOAT64) AS frequency,
     CAST(Video_Plays__Facebook_Ads AS INT64) AS video_views,
     CAST(Video_thruplay__Facebook_Ads AS INT64) AS video_completions,
-    CASE WHEN Campaign_Objective__Facebook_Ads IN (
-           'CONVERSIONS', 'OUTCOME_LEADS', 'LEAD_GENERATION'
-         )
-         THEN CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC)
-         ELSE 0
-    END AS conversions,
-    CAST(Clicks_all__Facebook_Ads AS INT64) AS engagements
+    -- Only count conversions for conversion-objective campaigns; zero for awareness/reach campaigns
+    -- even if result_value is populated. COALESCE handles both non-conversion rows and NULL values.
+    COALESCE(
+      CASE WHEN Campaign_Objective__Facebook_Ads IN (
+             'CONVERSIONS', 'OUTCOME_LEADS', 'LEAD_GENERATION'
+           )
+           THEN CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC)
+           ELSE 0
+      END,
+      0
+    ) AS conversions,
+    CAST(Clicks_all__Facebook_Ads AS INT64) AS engagements,
+    -- Diagnostic signal columns
+    CAST(n_3_Second_Video_Views__Facebook_Ads AS INT64) AS video_views_3s,
+    CAST(Video_thruplay__Facebook_Ads AS INT64) AS thruplay,
+    CAST(Video_Watches_at_25__Facebook_Ads AS INT64) AS video_q25,
+    CAST(Video_Watches_at_50__Facebook_Ads AS INT64) AS video_q50,
+    CAST(Video_Watches_at_75__Facebook_Ads AS INT64) AS video_q75,
+    CAST(Video_Watches_at_100__Facebook_Ads AS INT64) AS video_q100,
+    CAST(Post_Engagement__Facebook_Ads AS INT64) AS post_engagement,
+    CAST(Post_Reactions__Facebook_Ads AS INT64) AS post_reactions,
+    CAST(Post_Comments__Facebook_Ads AS INT64) AS post_comments,
+    CAST(Outbound_Clicks__Facebook_Ads AS INT64) AS outbound_clicks,
+    CAST(Landing_Page_Views__Facebook_Ads AS INT64) AS landing_page_views,
+    CAST(Website_Registrations_Completed__Facebook_Ads AS NUMERIC) AS registrations,
+    CAST(Website_Leads__Facebook_Ads AS NUMERIC) AS leads,
+    CAST(On_Facebook_Leads__Facebook_Ads AS NUMERIC) AS on_platform_leads,
+    CAST(Website_Contacts__Facebook_Ads AS NUMERIC) AS contacts,
+    CAST(Website_Donations__Facebook_Ads AS NUMERIC) AS donations,
+    Campaign_Objective__Facebook_Ads AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -89,7 +114,27 @@ WITH platform_data AS (
     SUM(video_views) AS video_views,
     SUM(video_completions) AS video_completions,
     SUM(conversions) AS conversions,
-    SUM(engagements) AS engagements
+    SUM(engagements) AS engagements,
+    -- Diagnostic signal columns (Google Ads: limited availability)
+    CAST(NULL AS INT64) AS video_views_3s,
+    CAST(NULL AS INT64) AS thruplay,
+    CAST(NULL AS INT64) AS video_q25,
+    CAST(NULL AS INT64) AS video_q50,
+    CAST(NULL AS INT64) AS video_q75,
+    CAST(NULL AS INT64) AS video_q100,
+    CAST(NULL AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(NULL AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    SUM(conversions) AS registrations,          -- Google Ads: all conversions mapped generically
+    CAST(0 AS NUMERIC) AS leads,
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM (
     SELECT
       CAST(Date AS DATE) AS date,
@@ -144,7 +189,27 @@ WITH platform_data AS (
     CAST(Video_started__StackAdapt AS INT64) AS video_views,
     CAST(Video_completed_95__StackAdapt AS INT64) AS video_completions,
     CAST(Conversions__StackAdapt AS NUMERIC) AS conversions,
-    CAST(0 AS INT64) AS engagements
+    CAST(0 AS INT64) AS engagements,
+    -- Diagnostic signal columns (StackAdapt: video quartiles + viewability available)
+    CAST(Video_started__StackAdapt AS INT64) AS video_views_3s,  -- CTV: intentional start = meaningful start
+    CAST(Video_completed_95__StackAdapt AS INT64) AS thruplay,   -- 95% completion = thruplay equivalent
+    CAST(Video_completed_25__StackAdapt AS INT64) AS video_q25,
+    CAST(Video_completed_50__StackAdapt AS INT64) AS video_q50,
+    CAST(Video_completed_75__StackAdapt AS INT64) AS video_q75,
+    CAST(Video_completed_95__StackAdapt AS INT64) AS video_q100, -- SA reports 95%, not 100%
+    CAST(NULL AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(NULL AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    CAST(0 AS NUMERIC) AS registrations,
+    CAST(0 AS NUMERIC) AS leads,
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(Measured_impressions__StackAdapt AS INT64) AS viewability_measured,
+    CAST(Viewed_measured_impressions__StackAdapt AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -176,7 +241,27 @@ WITH platform_data AS (
     CAST(NULL AS INT64) AS video_views,
     CAST(NULL AS INT64) AS video_completions,
     CAST(Conversions__TikTok AS NUMERIC) AS conversions,
-    CAST(Clicks_All__TikTok AS INT64) AS engagements
+    CAST(Clicks_All__TikTok AS INT64) AS engagements,
+    -- Diagnostic signal columns (TikTok: TODO extend when Funnel.io columns confirmed)
+    CAST(NULL AS INT64) AS video_views_3s,
+    CAST(NULL AS INT64) AS thruplay,
+    CAST(NULL AS INT64) AS video_q25,
+    CAST(NULL AS INT64) AS video_q50,
+    CAST(NULL AS INT64) AS video_q75,
+    CAST(NULL AS INT64) AS video_q100,
+    CAST(NULL AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(NULL AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    CAST(0 AS NUMERIC) AS registrations,
+    CAST(0 AS NUMERIC) AS leads,
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -209,7 +294,27 @@ WITH platform_data AS (
     CAST(Video_Views_time_based__Snapchat AS INT64) AS video_views,
     CAST(NULL AS INT64) AS video_completions,
     CAST(Leads__Snapchat AS NUMERIC) AS conversions,
-    CAST(0 AS INT64) AS engagements
+    CAST(0 AS INT64) AS engagements,
+    -- Diagnostic signal columns (Snapchat: TODO extend when Funnel.io columns confirmed)
+    CAST(NULL AS INT64) AS video_views_3s,
+    CAST(NULL AS INT64) AS thruplay,
+    CAST(NULL AS INT64) AS video_q25,
+    CAST(NULL AS INT64) AS video_q50,
+    CAST(NULL AS INT64) AS video_q75,
+    CAST(NULL AS INT64) AS video_q100,
+    CAST(NULL AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(NULL AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    CAST(0 AS NUMERIC) AS registrations,
+    CAST(Leads__Snapchat AS NUMERIC) AS leads,  -- Snapchat reports leads natively
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -242,7 +347,27 @@ WITH platform_data AS (
     CAST(NULL AS INT64) AS video_views,
     CAST(NULL AS INT64) AS video_completions,
     CAST(Conversions__LinkedIn AS NUMERIC) AS conversions,
-    CAST(Action_Clicks__LinkedIn AS INT64) AS engagements
+    CAST(Action_Clicks__LinkedIn AS INT64) AS engagements,
+    -- Diagnostic signal columns (LinkedIn: TODO extend when Funnel.io columns confirmed)
+    CAST(NULL AS INT64) AS video_views_3s,
+    CAST(NULL AS INT64) AS thruplay,
+    CAST(NULL AS INT64) AS video_q25,
+    CAST(NULL AS INT64) AS video_q50,
+    CAST(NULL AS INT64) AS video_q75,
+    CAST(NULL AS INT64) AS video_q100,
+    CAST(NULL AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(NULL AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    CAST(0 AS NUMERIC) AS registrations,
+    CAST(Conversions__LinkedIn AS NUMERIC) AS leads,  -- LinkedIn lead gen
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -275,7 +400,27 @@ WITH platform_data AS (
     CAST(Video_Starts__Reddit AS INT64) AS video_views,
     CAST(Video_Watches_100__Reddit AS INT64) AS video_completions,
     CAST(Key_Conversion_Total_Count__Reddit AS NUMERIC) AS conversions,
-    CAST(NULL AS INT64) AS engagements
+    CAST(NULL AS INT64) AS engagements,
+    -- Diagnostic signal columns (Reddit: limited availability)
+    CAST(NULL AS INT64) AS video_views_3s,
+    CAST(NULL AS INT64) AS thruplay,
+    CAST(NULL AS INT64) AS video_q25,
+    CAST(NULL AS INT64) AS video_q50,
+    CAST(NULL AS INT64) AS video_q75,
+    CAST(Video_Watches_100__Reddit AS INT64) AS video_q100,
+    CAST(NULL AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(NULL AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    CAST(0 AS NUMERIC) AS registrations,
+    CAST(0 AS NUMERIC) AS leads,
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -308,7 +453,27 @@ WITH platform_data AS (
     CAST(Paid_video_views__Pinterest AS INT64) AS video_views,
     CAST(Paid_video_watched_at_100__Pinterest AS INT64) AS video_completions,
     CAST(Conversions__Pinterest AS NUMERIC) AS conversions,
-    CAST(Paid_engagements__Pinterest AS INT64) AS engagements
+    CAST(Paid_engagements__Pinterest AS INT64) AS engagements,
+    -- Diagnostic signal columns (Pinterest: outbound clicks available natively)
+    CAST(NULL AS INT64) AS video_views_3s,
+    CAST(NULL AS INT64) AS thruplay,
+    CAST(NULL AS INT64) AS video_q25,
+    CAST(NULL AS INT64) AS video_q50,
+    CAST(NULL AS INT64) AS video_q75,
+    CAST(Paid_video_watched_at_100__Pinterest AS INT64) AS video_q100,
+    CAST(Paid_engagements__Pinterest AS INT64) AS post_engagement,
+    CAST(NULL AS INT64) AS post_reactions,
+    CAST(NULL AS INT64) AS post_comments,
+    CAST(Paid_Outbound_Clicks__Pinterest AS INT64) AS outbound_clicks,
+    CAST(NULL AS INT64) AS landing_page_views,
+    CAST(0 AS NUMERIC) AS registrations,
+    CAST(0 AS NUMERIC) AS leads,
+    CAST(0 AS NUMERIC) AS on_platform_leads,
+    CAST(0 AS NUMERIC) AS contacts,
+    CAST(0 AS NUMERIC) AS donations,
+    CAST(NULL AS STRING) AS campaign_objective,
+    CAST(NULL AS INT64) AS viewability_measured,
+    CAST(NULL AS INT64) AS viewability_viewed
   FROM
     `point-blank-ada.core_funnel_export.funnel_data`
   WHERE
@@ -347,6 +512,26 @@ enriched_data AS (
     IF(pd.impressions > 0, SAFE_DIVIDE(pd.spend, pd.impressions) * 1000, NULL) AS cpm,
     IF(pd.clicks > 0, SAFE_DIVIDE(pd.spend, pd.clicks), NULL) AS cpc,
     IF(pd.impressions > 0, SAFE_DIVIDE(pd.clicks, pd.impressions), NULL) AS ctr,
+    -- Diagnostic signal columns (pass through from platform_data)
+    pd.video_views_3s,
+    pd.thruplay,
+    pd.video_q25,
+    pd.video_q50,
+    pd.video_q75,
+    pd.video_q100,
+    pd.post_engagement,
+    pd.post_reactions,
+    pd.post_comments,
+    pd.outbound_clicks,
+    pd.landing_page_views,
+    pd.registrations,
+    pd.leads,
+    pd.on_platform_leads,
+    pd.contacts,
+    pd.donations,
+    pd.campaign_objective,
+    pd.viewability_measured,
+    pd.viewability_viewed,
     'funnel_transform' AS ingestion_source,
     CURRENT_TIMESTAMP() AS loaded_at
   FROM
@@ -389,6 +574,26 @@ USING (
     cpm,
     cpc,
     ctr,
+    -- Diagnostic signal columns
+    video_views_3s,
+    thruplay,
+    video_q25,
+    video_q50,
+    video_q75,
+    video_q100,
+    post_engagement,
+    post_reactions,
+    post_comments,
+    outbound_clicks,
+    landing_page_views,
+    registrations,
+    leads,
+    on_platform_leads,
+    contacts,
+    donations,
+    campaign_objective,
+    viewability_measured,
+    viewability_viewed,
     ingestion_source,
     loaded_at
   FROM
@@ -420,6 +625,26 @@ WHEN MATCHED THEN
     cpm = source.cpm,
     cpc = source.cpc,
     ctr = source.ctr,
+    -- Diagnostic signal columns
+    video_views_3s = source.video_views_3s,
+    thruplay = source.thruplay,
+    video_q25 = source.video_q25,
+    video_q50 = source.video_q50,
+    video_q75 = source.video_q75,
+    video_q100 = source.video_q100,
+    post_engagement = source.post_engagement,
+    post_reactions = source.post_reactions,
+    post_comments = source.post_comments,
+    outbound_clicks = source.outbound_clicks,
+    landing_page_views = source.landing_page_views,
+    registrations = source.registrations,
+    leads = source.leads,
+    on_platform_leads = source.on_platform_leads,
+    contacts = source.contacts,
+    donations = source.donations,
+    campaign_objective = source.campaign_objective,
+    viewability_measured = source.viewability_measured,
+    viewability_viewed = source.viewability_viewed,
     ingestion_source = source.ingestion_source,
     loaded_at = source.loaded_at
 
@@ -448,6 +673,26 @@ WHEN NOT MATCHED THEN
     cpm,
     cpc,
     ctr,
+    -- Diagnostic signal columns
+    video_views_3s,
+    thruplay,
+    video_q25,
+    video_q50,
+    video_q75,
+    video_q100,
+    post_engagement,
+    post_reactions,
+    post_comments,
+    outbound_clicks,
+    landing_page_views,
+    registrations,
+    leads,
+    on_platform_leads,
+    contacts,
+    donations,
+    campaign_objective,
+    viewability_measured,
+    viewability_viewed,
     ingestion_source,
     loaded_at
   )
@@ -475,6 +720,26 @@ WHEN NOT MATCHED THEN
     source.cpm,
     source.cpc,
     source.ctr,
+    -- Diagnostic signal columns
+    source.video_views_3s,
+    source.thruplay,
+    source.video_q25,
+    source.video_q50,
+    source.video_q75,
+    source.video_q100,
+    source.post_engagement,
+    source.post_reactions,
+    source.post_comments,
+    source.outbound_clicks,
+    source.landing_page_views,
+    source.registrations,
+    source.leads,
+    source.on_platform_leads,
+    source.contacts,
+    source.donations,
+    source.campaign_objective,
+    source.viewability_measured,
+    source.viewability_viewed,
     source.ingestion_source,
     source.loaded_at
   );

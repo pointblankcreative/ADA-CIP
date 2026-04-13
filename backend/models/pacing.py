@@ -30,6 +30,7 @@ class PacingResponse(BaseModel):
     total_planned_to_date: float = 0
     total_actual_to_date: float = 0
     overall_pacing_percentage: float = 0
+    pending_line_count: int = 0  # C2: count of lines excluded from overall pacing
     lines: list[LinePacing] = []
 
 

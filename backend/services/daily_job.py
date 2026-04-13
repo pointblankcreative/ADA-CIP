@@ -190,6 +190,24 @@ def run_daily_pipeline() -> dict:
         # GA4 transform is non-critical — don't mark pipeline as partial_failure
 
     # ── Stage 1c: Ad-set reach / frequency ─────────────────────────
+    # E4: Dependency Documentation
+    #
+    # The ad-set transformation (run_adset_transformation) loads reach/frequency metrics
+    # from Funnel.io into fact_adset_daily. These metrics are used by:
+    #   - Dashboard reach/frequency displays (fact-based UI metrics)
+    #   - Diagnostic signals (audience reach attainment calculations)
+    #   - Performance reporting (reach vs. impressions ratios)
+    #
+    # If this stage fails (error status):
+    #   - fact_adset_daily remains stale (no new rows loaded)
+    #   - Reach metrics in UI will be out of date
+    #   - Diagnostic signals may report lower-confidence reaches
+    #   - Pacing does NOT depend on adset data — stage 2 proceeds independently
+    #
+    # This is NON-CRITICAL for pacing calculations, but CRITICAL for reach-aware
+    # diagnostics. Mark at WARNING level if it fails so stakeholders can investigate
+    # but the pipeline continues.
+    #
     logger.info("=== Daily Pipeline: Stage 1c — Ad Set Reach/Frequency ===")
     try:
         from ingestion.transformation.adset_transform import run_adset_transformation
@@ -202,7 +220,7 @@ def run_daily_pipeline() -> dict:
             "elapsed_seconds": round(time.time() - t1c, 1),
         }
     except Exception as e:
-        logger.error("Ad-set Transformation failed: %s", e, exc_info=True)
+        logger.warning("Ad-set Transformation failed (non-critical): %s — pacing continues, reach metrics may be stale", e, exc_info=True)
         results["stages"]["adset_transformation"] = {
             "status": "error",
             "error": str(e),

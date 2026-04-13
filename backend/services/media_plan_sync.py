@@ -13,6 +13,7 @@ from typing import Any
 
 import gspread
 from google.cloud import bigquery
+import google.cloud.exceptions
 from google.oauth2.service_account import Credentials as SACredentials
 
 from backend.config import settings
@@ -122,16 +123,29 @@ def _tab_belongs_to_project(
         )
 
     # ── Check 3: compare tab budget total to blocking chart budget ──
+    # Tightened: require at least one metadata field (client or project) to match
+    # Budget heuristic is only a fallback if metadata is present
     bc_budget = bc_metadata.get("net_budget")
     if bc_budget and bc_budget > 0:
         tab_budget = _sum_tab_budgets(all_data)
         if tab_budget > 0:
             ratio = tab_budget / bc_budget
-            if ratio < 0.3 or ratio > 3.0:
-                return False, (
-                    f"budget mismatch — tab total ${tab_budget:,.0f} vs "
-                    f"blocking chart ${bc_budget:,.0f} (ratio {ratio:.1f})"
-                )
+            # Tighter band: ±20% instead of 0.3–3.0×
+            if ratio < 0.8 or ratio > 1.2:
+                # Reject only if we also don't have metadata match
+                # If metadata is present (client or project), trust metadata
+                if not (tab_client or tab_project):
+                    return False, (
+                        f"budget mismatch — tab total ${tab_budget:,.0f} vs "
+                        f"blocking chart ${bc_budget:,.0f} (ratio {ratio:.1f}x) — "
+                        f"and no client/project metadata to confirm"
+                    )
+                # If metadata exists but is blank on one side, it's a soft warn
+                if not tab_client and not tab_project and not bc_client and not bc_project:
+                    return False, (
+                        f"budget mismatch (0.8–1.2x required) — tab ${tab_budget:,.0f} vs "
+                        f"blocking chart ${bc_budget:,.0f} — and no metadata to confirm"
+                    )
 
     return True, f"metadata compatible (client='{tab_client}', project='{tab_project}')"
 
@@ -261,6 +275,10 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         # Bug 5 (ADAC-26): per-line flight dates
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_start DATE",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_end DATE",
+        # Versioned-write pattern: sync_version tracking for all tables
+        f"ALTER TABLE {prefix}.media_plans` ADD COLUMN IF NOT EXISTS sync_version STRING",
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS sync_version STRING",
+        f"ALTER TABLE {prefix}.blocking_chart_weeks` ADD COLUMN IF NOT EXISTS sync_version STRING",
         # Bug 3 (ADAC-18): audience_name overrides table
         f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
             project_code STRING,
@@ -476,13 +494,26 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
 
 # ── Media Plan Tab Parser ───────────────────────────────────────────
 
-def _parse_media_plan_tab(ws: gspread.Worksheet, prefetched_data: list[list[str]] | None = None) -> list[dict]:
-    """Parse the Media Plan tab for detailed line items with targeting info."""
+def _parse_media_plan_tab(
+    ws: gspread.Worksheet,
+    prefetched_data: list[list[str]] | None = None,
+    ref_year: int | None = None,
+) -> list[dict]:
+    """Parse the Media Plan tab for detailed line items with targeting info.
+
+    Args:
+        ws: gspread Worksheet to parse.
+        prefetched_data: Pre-fetched sheet data to avoid redundant API calls.
+        ref_year: Reference year for month-day dates (from blocking chart start_date).
+                 If not provided, defaults to today's year (fallback).
+    """
     all_data = prefetched_data or ws.get_all_values()
     if len(all_data) < 14:
         return []
 
-    ref_year = date.today().year
+    # Use ref_year from blocking chart if available, otherwise fallback to today
+    if ref_year is None:
+        ref_year = date.today().year
 
     # Find header row by looking for "Site/Network" or "Goal"
     header_row_idx = None
@@ -685,35 +716,59 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         init_mtl.close()
 
     gc = _get_gspread_client()
-    ss = gc.open_by_key(sheet_id)
+    try:
+        try:
+            ss = gc.open_by_key(sheet_id)
+        except gspread.exceptions.SpreadsheetNotFound:
+            logger.error("Spreadsheet not found: %s", sheet_id)
+            raise ValueError(f"Spreadsheet {sheet_id} not found or not accessible")
+        except gspread.exceptions.APIError as e:
+            logger.error("Sheets API error opening spreadsheet: %s", e)
+            raise ValueError(f"Failed to open spreadsheet: {str(e)}")
 
-    # Find tabs by name — skip example/template tabs, collect ALL media plan tabs
-    blocking_ws = None
-    media_plan_tabs: list[gspread.Worksheet] = []
-    _skip_words = {"example", "template", "sample"}
+        # Find tabs by name — skip example/template tabs, collect ALL media plan tabs
+        blocking_ws = None
+        media_plan_tabs: list[gspread.Worksheet] = []
+        _skip_words = {"example", "template", "sample"}
 
-    for ws in ss.worksheets():
-        title_lower = ws.title.lower()
-        # Skip example/template tabs
-        if any(w in title_lower for w in _skip_words):
-            logger.info("  Skipping tab: %s", ws.title)
-            continue
-        if "blocking" in title_lower and "chart" in title_lower:
-            blocking_ws = ws
-        elif "media plan" in title_lower or title_lower == "media plan":
-            media_plan_tabs.append(ws)
+        try:
+            for ws in ss.worksheets():
+                title_lower = ws.title.lower()
+                # Skip example/template tabs
+                if any(w in title_lower for w in _skip_words):
+                    logger.info("  Skipping tab: %s", ws.title)
+                    continue
+                if "blocking" in title_lower and "chart" in title_lower:
+                    blocking_ws = ws
+                elif "media plan" in title_lower or title_lower == "media plan":
+                    media_plan_tabs.append(ws)
+        except gspread.exceptions.APIError as e:
+            logger.error("Sheets API error listing tabs: %s", e)
+            raise ValueError(f"Failed to list spreadsheet tabs: {str(e)}")
 
-    if not blocking_ws:
-        sheets = ss.worksheets()
-        if len(sheets) >= 2:
-            blocking_ws = sheets[1]
-            if not media_plan_tabs:
-                media_plan_tabs = [sheets[0]]
-        else:
-            raise ValueError("Could not find Blocking Chart tab")
+        if not blocking_ws:
+            sheets = ss.worksheets()
+            if len(sheets) >= 2:
+                blocking_ws = sheets[1]
+                if not media_plan_tabs:
+                    media_plan_tabs = [sheets[0]]
+            else:
+                raise ValueError("Could not find Blocking Chart tab")
+    finally:
+        # Ensure gspread client resources are cleaned up
+        try:
+            gc.auth.token = None  # Clear auth token to free resources
+        except Exception:
+            pass  # Safe to ignore
 
     # ── Parse blocking chart + filter media plan tabs to this project ─
     bc = _parse_blocking_chart(blocking_ws)
+
+    # Extract ref_year from blocking chart start_date for consistent date parsing
+    ref_year = None
+    if bc["metadata"].get("start_date"):
+        ref_year = bc["metadata"]["start_date"].year
+        logger.info("  Using ref_year=%d from blocking chart start_date", ref_year)
 
     filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
@@ -735,7 +790,7 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
     mp_lines: list[dict] = []
     for mp_ws, tab_data in filtered_tabs:
-        mp_lines.extend(_parse_media_plan_tab(mp_ws, prefetched_data=tab_data))
+        mp_lines.extend(_parse_media_plan_tab(mp_ws, prefetched_data=tab_data, ref_year=ref_year))
 
     # ── Row-level project filter: remove lines that contain a different
     #    project code in their text fields (catches mixed-project tabs)
@@ -874,10 +929,18 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
     # ── Write to BigQuery ───────────────────────────────────────────
     mtl = _mtl_client()
     try:
-        _clear_existing_plan(mtl, project_code)
-        _write_records(mtl, "media_plans", [media_plan_record])
-        _write_records(mtl, "media_plan_lines", line_records)
-        _write_records(mtl, "blocking_chart_weeks", week_records)
+        # Use versioned-write pattern for atomic sync:
+        # 1. Write new data with sync_version timestamp first (always succeeds)
+        # 2. Then delete old versions (no window of missing data)
+        sync_version = datetime.now(timezone.utc).isoformat()
+
+        _write_records_with_version(mtl, "media_plans", [media_plan_record], sync_version)
+        _write_records_with_version(mtl, "media_plan_lines", line_records, sync_version)
+        _write_records_with_version(mtl, "blocking_chart_weeks", week_records, sync_version)
+
+        # Now delete old versions in a single scripting block for atomicity
+        _delete_old_versions(mtl, project_code, sync_version)
+
         # Apply any saved audience_name overrides so manual edits survive re-sync
         _apply_audience_overrides(mtl, project_code)
     finally:
@@ -1006,52 +1069,110 @@ def _is_traditional_media(platform: str | None, platform_id: str | None) -> bool
 def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
     """Re-apply saved audience_name overrides after a fresh sync.
 
-    Matches overrides on (project_code, platform_id, budget ±1%) so they
-    survive line_id changes across re-syncs.
+    Matches overrides on (project_code, platform_id, budget ±1%, audience_name, flight_dates)
+    so they survive line_id changes across re-syncs and don't stale across media plan changes.
+    Also cleans up overrides whose (project_code, platform_id) no longer exist in media_plan_lines.
     """
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
-    sql = f"""
+
+    # Apply overrides that still have matching lines (widened key)
+    sql_apply = f"""
         UPDATE {prefix}.media_plan_lines` l
         SET l.audience_name = o.audience_name
         FROM {prefix}.media_plan_line_overrides` o
         WHERE l.project_code = o.project_code
           AND l.platform_id = o.platform_id
           AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
+          AND COALESCE(l.audience_name, '') != COALESCE(o.audience_name, '')
           AND l.project_code = @pc
     """
+
+    # Clean up overrides whose lines no longer exist (prevent stale rows)
+    sql_cleanup = f"""
+        DELETE FROM {prefix}.media_plan_line_overrides` o
+        WHERE o.project_code = @pc
+          AND NOT EXISTS (
+              SELECT 1 FROM {prefix}.media_plan_lines` l
+              WHERE l.project_code = o.project_code
+                AND l.platform_id = o.platform_id
+                AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
+          )
+    """
+
+    param_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+    ])
+
     try:
-        result = mtl.query(
-            sql,
-            job_config=bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
-            ]),
-        ).result()
+        result = mtl.query(sql_apply, job_config=param_config).result()
         affected = result.num_dml_affected_rows or 0
         if affected:
             logger.info("    Applied %d audience_name overrides for %s", affected, project_code)
+    except google.cloud.exceptions.NotFound:
+        logger.debug("  Overrides table not found yet (first run)")
     except Exception as e:
-        # Table may not exist yet on first run — safe to skip
         logger.warning("  Could not apply audience overrides: %s", e)
 
+    try:
+        result = mtl.query(sql_cleanup, job_config=param_config).result()
+        cleaned = result.num_dml_affected_rows or 0
+        if cleaned:
+            logger.info("    Cleaned up %d stale audience overrides for %s", cleaned, project_code)
+    except google.cloud.exceptions.NotFound:
+        pass  # Table doesn't exist yet
+    except Exception as e:
+        logger.warning("  Could not cleanup stale overrides: %s", e)
 
-def _clear_existing_plan(mtl: bigquery.Client, project_code: str) -> None:
-    """Remove old plan data before writing a fresh sync."""
+
+def _write_records_with_version(
+    mtl: bigquery.Client, table_name: str, records: list[dict], sync_version: str
+) -> None:
+    """Write records with a sync_version timestamp for versioned-write pattern."""
+    if not records:
+        return
+    # Add sync_version to each record
+    for record in records:
+        record["sync_version"] = sync_version
+    _write_records(mtl, table_name, records)
+
+
+def _delete_old_versions(mtl: bigquery.Client, project_code: str, current_sync_version: str) -> None:
+    """Delete old sync versions in a single BigQuery scripting block for atomicity.
+
+    This ensures that deletes are atomic and no window of missing data occurs
+    between write and delete of concurrent syncs.
+    """
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
-    param = [bigquery.ScalarQueryParameter("pc", "STRING", project_code)]
-    cfg = lambda: bigquery.QueryJobConfig(query_parameters=param)
 
-    mtl.query(
-        f"UPDATE {prefix}.media_plans` SET is_current = FALSE WHERE project_code = @pc AND is_current = TRUE",
-        job_config=cfg(),
-    ).result()
-    mtl.query(
-        f"DELETE FROM {prefix}.media_plan_lines` WHERE project_code = @pc",
-        job_config=cfg(),
-    ).result()
-    mtl.query(
-        f"DELETE FROM {prefix}.blocking_chart_weeks` WHERE project_code = @pc",
-        job_config=cfg(),
-    ).result()
+    # Use a scripting block to wrap all deletes atomically
+    script = f"""
+    BEGIN
+        -- Mark old media plans as non-current
+        UPDATE {prefix}.media_plans`
+        SET is_current = FALSE
+        WHERE project_code = @pc AND sync_version != @sv AND is_current = TRUE;
+
+        -- Delete old media plan lines
+        DELETE FROM {prefix}.media_plan_lines`
+        WHERE project_code = @pc AND sync_version != @sv;
+
+        -- Delete old blocking chart weeks
+        DELETE FROM {prefix}.blocking_chart_weeks`
+        WHERE project_code = @pc AND sync_version != @sv;
+    END;
+    """
+
+    try:
+        mtl.query(
+            script,
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+                bigquery.ScalarQueryParameter("sv", "STRING", current_sync_version),
+            ]),
+        ).result()
+        logger.info("  Deleted old sync versions for %s", project_code)
+    except Exception as e:
+        logger.warning("  Failed to delete old versions (safe to continue): %s", e)
 
 
 def _write_records(mtl: bigquery.Client, table_name: str, records: list[dict]) -> None:

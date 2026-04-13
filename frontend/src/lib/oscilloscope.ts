@@ -63,12 +63,12 @@ export function extractChannels(
   return [
     {
       pct: high.pacing_percentage,
-      label: high.audience_name || high.platform_id || "High",
+      label: high.audience_name || high.channel_category || "High",
     },
     { pct: overallPct, label: "Overall" },
     {
       pct: low.pacing_percentage,
-      label: low.audience_name || low.platform_id || "Low",
+      label: low.audience_name || low.channel_category || "Low",
     },
   ];
 }

@@ -142,6 +142,7 @@ function LineRow({
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(line.audience_name || "");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -162,18 +163,20 @@ function LineRow({
     if (!trimmed || trimmed === line.audience_name) {
       setEditing(false);
       setEditValue(line.audience_name || "");
+      setError(null);
       return;
     }
     setSaving(true);
+    setError(null);
     try {
       await api.admin.updateMediaPlanLine(line.line_id, {
         audience_name: trimmed,
       });
       onNameUpdate(line.line_id, trimmed);
       setEditing(false);
-    } catch {
+    } catch (err) {
+      setError("Failed to update line name. Please try again.");
       setEditValue(line.audience_name || "");
-      setEditing(false);
     } finally {
       setSaving(false);
     }
@@ -198,16 +201,21 @@ function LineRow({
                 {platformLabel(line.platform_id)}
               </span>
               {editing ? (
-                <input
-                  ref={inputRef}
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  onBlur={handleSave}
-                  onKeyDown={handleKeyDown}
-                  disabled={saving}
-                  className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-blue-300 outline-none focus:border-blue-500 w-48"
-                  placeholder="Line name..."
-                />
+                <div className="flex flex-col gap-1">
+                  <input
+                    ref={inputRef}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={handleSave}
+                    onKeyDown={handleKeyDown}
+                    disabled={saving}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-blue-300 outline-none focus:border-blue-500 w-48 disabled:opacity-60"
+                    placeholder="Line name..."
+                  />
+                  {error && (
+                    <span className="text-xs text-red-400">{error}</span>
+                  )}
+                </div>
               ) : (
                 <>
                   {displayName && (
@@ -221,6 +229,7 @@ function LineRow({
                       setEditing(true);
                     }}
                     className="text-slate-600 hover:text-slate-400 transition-colors"
+                    aria-label="Edit line name"
                     title="Edit line name"
                   >
                     <svg

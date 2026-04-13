@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   LineChart,
   Line,
@@ -56,7 +56,10 @@ function OscilloscopeSVG({
   const colors = channels.map((c) => pacingToColor(c.pct));
 
   const bandH = height / 3;
-  const centers = [bandH * 0.5, bandH * 1.5, bandH * 2.5];
+  const centers = useMemo(
+    () => [bandH * 0.5, bandH * 1.5, bandH * 2.5],
+    [bandH]
+  );
 
   const animate = useCallback(
     (timestamp: number) => {
@@ -319,6 +322,8 @@ export function OscilloscopeCard({
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full text-left group"
+        aria-label="Toggle pacing history"
+        aria-expanded={expanded}
       >
         <div className="relative h-32 sm:h-36">
           {/* Oscilloscope background */}

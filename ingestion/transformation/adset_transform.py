@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from google.cloud import bigquery
+from google.cloud import exceptions as gcp_exceptions
 
 from backend.config import settings
 
@@ -314,8 +315,8 @@ def _apply_mapping_fallback(mtl: bigquery.Client) -> None:
     try:
         result = mtl.query(sql).result()
         logger.info("  Mapping fallback applied to fact_adset_daily")
-    except Exception:
-        logger.warning("  Mapping fallback query failed (non-fatal)", exc_info=True)
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+        logger.warning("  Mapping fallback query failed (non-fatal): %s", e, exc_info=True)
 
 
 def run_adset_transformation(mode: str = "daily") -> dict:
@@ -345,23 +346,34 @@ def run_adset_transformation(mode: str = "daily") -> dict:
             _log_run(mtl, log_id, mode, started_at, "success", 0)
             return {"status": "success", "mode": mode, "rows_loaded": 0}
 
+        # E1: Explicit NULL checks before min()/max() to handle NULL or malformed dates.
+        # If ALL dates are NULL, log an error and skip the DELETE+load step.
         dates = [r["date"] for r in data if r.get("date")]
-        min_date = min(dates) if dates else None
-        max_date = max(dates) if dates else None
+        if not dates:
+            logger.error("  No valid dates found in %d rows. Skipping DELETE and load steps.", row_count)
+            _log_run(mtl, log_id, mode, started_at, "failed", error="All dates are NULL or missing")
+            return {
+                "status": "failed",
+                "mode": mode,
+                "error": "All dates are NULL or missing",
+                "log_id": log_id,
+            }
+
+        min_date = min(dates)
+        max_date = max(dates)
         if isinstance(min_date, str):
             min_date = date.fromisoformat(min_date)
         if isinstance(max_date, str):
             max_date = date.fromisoformat(max_date)
 
-        if min_date:
-            logger.info("  Replacing fact_adset_daily for %s → %s", min_date, max_date)
-            mtl.query(
-                f"DELETE FROM `{TARGET_TABLE}` WHERE date >= @min_d AND date <= @max_d",
-                job_config=bigquery.QueryJobConfig(query_parameters=[
-                    bigquery.ScalarQueryParameter("min_d", "DATE", min_date.isoformat()),
-                    bigquery.ScalarQueryParameter("max_d", "DATE", max_date.isoformat()),
-                ]),
-            ).result()
+        logger.info("  Replacing fact_adset_daily for %s → %s", min_date, max_date)
+        mtl.query(
+            f"DELETE FROM `{TARGET_TABLE}` WHERE date >= @min_d AND date <= @max_d",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("min_d", "DATE", min_date.isoformat()),
+                bigquery.ScalarQueryParameter("max_d", "DATE", max_date.isoformat()),
+            ]),
+        ).result()
 
         load_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
@@ -370,6 +382,36 @@ def run_adset_transformation(mode: str = "daily") -> dict:
         load_job = mtl.load_table_from_json(data, TARGET_TABLE, job_config=load_config)
         load_job.result()
         loaded = load_job.output_rows or row_count
+
+        # E2: Post-load dedup using ROW_NUMBER() pattern (idempotency protection).
+        # If adset_transform runs twice with same data, the second run will see duplicates.
+        # Dedup keeps only the most recent _load_timestamp row per date/project/platform/campaign/adset.
+        logger.info("  Applying post-load dedup (ROW_NUMBER)…")
+        dedup_sql = f"""
+        DELETE FROM `{TARGET_TABLE}` t
+        WHERE EXISTS (
+          SELECT 1 FROM (
+            SELECT
+              date, project_code, platform_id, campaign_id, ad_set_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY date, project_code, platform_id, campaign_id, ad_set_id
+                ORDER BY loaded_at DESC
+              ) AS rn
+            FROM `{TARGET_TABLE}`
+          ) dedup
+          WHERE dedup.rn > 1
+            AND t.date = dedup.date
+            AND COALESCE(t.project_code, '') = COALESCE(dedup.project_code, '')
+            AND t.platform_id = dedup.platform_id
+            AND t.campaign_id = dedup.campaign_id
+            AND COALESCE(t.ad_set_id, '') = COALESCE(dedup.ad_set_id, '')
+        )
+        """
+        try:
+            mtl.query(dedup_sql).result()
+            logger.info("  Dedup complete")
+        except Exception as e:
+            logger.warning("  Post-load dedup failed (non-fatal): %s", e, exc_info=True)
 
         # Apply campaign_project_mapping fallback (runs in Montreal)
         _apply_mapping_fallback(mtl)

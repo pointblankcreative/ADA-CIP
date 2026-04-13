@@ -35,17 +35,9 @@ def _make_line(
     }
 
 
-def _mock_run_query(calls_map):
-    """Return a side_effect function that matches SQL fragments to results."""
-    def side_effect(sql, params=None):
-        for fragment, result in calls_map:
-            if fragment in sql:
-                # If result is callable, call it with params for dynamic matching
-                if callable(result):
-                    return result(sql, params)
-                return result
-        return []
-    return side_effect
+# J1 fix: Removed brittle _mock_run_query helper. Tests now use explicit inline
+# query_router() functions with deterministic dispatch logic that checks both SQL
+# content AND parameter values together, eliminating fragile substring matching.
 
 
 # ── Test: flight-date-filtered spend ──────────────────────────────
@@ -63,8 +55,9 @@ class TestFlightDateFiltering:
     ):
         """A line with flight Apr 9–30 should get $0 spend when all spend
         occurred Feb 25–Apr 2 (before the flight started)."""
+        # J2 fix: Proper date mocking that handles both .today() and .fromisoformat()
         mock_date.today.return_value = date(2026, 4, 9)
-        mock_date.fromisoformat = date.fromisoformat
+        mock_date.fromisoformat.side_effect = lambda iso_str: date.fromisoformat(iso_str)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
         mock_bq.string_param.side_effect = lambda n, v: (n, v)
         mock_bq.date_param.side_effect = lambda n, v: (n, v)
@@ -121,7 +114,7 @@ class TestFlightDateFiltering:
         """Two lines on the same platform with the same flight dates should
         split spend proportionally by budget."""
         mock_date.today.return_value = date(2026, 4, 15)
-        mock_date.fromisoformat = date.fromisoformat
+        mock_date.fromisoformat.side_effect = lambda iso_str: date.fromisoformat(iso_str)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
         mock_bq.string_param.side_effect = lambda n, v: (n, v)
         mock_bq.date_param.side_effect = lambda n, v: (n, v)
@@ -154,6 +147,21 @@ class TestFlightDateFiltering:
         assert by_id["L1"]["actual_spend_to_date"] == expected_l1
         assert by_id["L2"]["actual_spend_to_date"] == expected_l2
 
+        # J4 fix: Assert conservative-estimate requirement — planned_spend_to_date
+        # must never exceed prorated budget based on time elapsed.
+        flight_start = date(2026, 4, 9)
+        flight_end = date(2026, 4, 30)
+        days_elapsed = (date(2026, 4, 15) - flight_start).days + 1
+        total_flight_days = (flight_end - flight_start).days + 1
+
+        for line_data in [by_id["L1"], by_id["L2"]]:
+            assert line_data["planned_spend_to_date"] <= line_data["budget"] * (
+                days_elapsed / total_flight_days
+            ), (
+                f"planned_spend_to_date {line_data['planned_spend_to_date']} must not exceed "
+                f"prorated budget {line_data['budget']} * ({days_elapsed}/{total_flight_days})"
+            )
+
     @patch("backend.services.pacing.date")
     @patch("backend.services.pacing.bq")
     @patch("backend.services.pacing._write_budget_tracking")
@@ -164,7 +172,7 @@ class TestFlightDateFiltering:
         """Lines on the same platform but different flights should get spend
         only from their own flight window."""
         mock_date.today.return_value = date(2026, 4, 1)
-        mock_date.fromisoformat = date.fromisoformat
+        mock_date.fromisoformat.side_effect = lambda iso_str: date.fromisoformat(iso_str)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
         mock_bq.string_param.side_effect = lambda n, v: (n, v)
         mock_bq.date_param.side_effect = lambda n, v: (n, v)
@@ -210,7 +218,7 @@ class TestFlightDateFiltering:
         """Lines with NULL flight dates should still query spend without
         date filtering (backward compat)."""
         mock_date.today.return_value = date(2026, 4, 1)
-        mock_date.fromisoformat = date.fromisoformat
+        mock_date.fromisoformat.side_effect = lambda iso_str: date.fromisoformat(iso_str)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
         mock_bq.string_param.side_effect = lambda n, v: (n, v)
         mock_bq.date_param.side_effect = lambda n, v: (n, v)
@@ -277,7 +285,7 @@ class TestLineCodeWithDateFilter:
     ):
         """A line_code match should only count spend within the flight window."""
         mock_date.today.return_value = date(2026, 4, 15)
-        mock_date.fromisoformat = date.fromisoformat
+        mock_date.fromisoformat.side_effect = lambda iso_str: date.fromisoformat(iso_str)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
         mock_bq.string_param.side_effect = lambda n, v: (n, v)
         mock_bq.date_param.side_effect = lambda n, v: (n, v)

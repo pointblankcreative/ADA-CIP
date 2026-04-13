@@ -133,3 +133,83 @@ class TestLineStatus:
         row = self._mock_pacing_run(start, end)
         assert row is not None
         assert row["line_status"] == "completed"
+
+    def test_pause_restart_grace_period_survives_reactivation(self):
+        """J3 fix: Grace period based on first_spend_date should NOT re-trigger
+        when a flight pauses and resumes. This tests blocking_chart_weeks pattern
+        [active, inactive, active] to verify grace period doesn't reset."""
+        from unittest.mock import MagicMock
+
+        line_id = "test-pause-resume"
+        today = date.today()
+        flight_start = today - timedelta(days=10)
+        flight_end = today + timedelta(days=10)
+
+        line = {
+            "line_id": line_id,
+            "line_code": "TEST_PAUSE",
+            "platform_id": "meta",
+            "channel_category": "Digital",
+            "budget": 10000.0,
+            "flight_start": flight_start.isoformat(),
+            "flight_end": flight_end.isoformat(),
+        }
+
+        # Pattern: active (days 0-6), inactive (days 7-13), active (days 14-20)
+        blocking_weeks = [
+            {
+                "line_id": line_id,
+                "week_start": flight_start.isoformat(),
+                "is_active": True,  # Week 1: active
+            },
+            {
+                "line_id": line_id,
+                "week_start": (flight_start + timedelta(days=7)).isoformat(),
+                "is_active": False,  # Week 2: inactive (pause)
+            },
+            {
+                "line_id": line_id,
+                "week_start": (flight_start + timedelta(days=14)).isoformat(),
+                "is_active": True,  # Week 3: active (resume)
+            },
+        ]
+
+        captured_rows = []
+
+        def fake_write(project_code, as_of, rows):
+            captured_rows.extend(rows)
+
+        with patch("backend.services.pacing.bq") as mock_bq, \
+             patch("backend.services.pacing._write_budget_tracking", side_effect=fake_write), \
+             patch("backend.services.pacing._write_alerts"):
+
+            mock_bq.table.return_value = "dummy_table"
+            mock_bq.string_param.return_value = MagicMock()
+            mock_bq.scalar_param.return_value = MagicMock()
+            mock_bq.date_param.return_value = MagicMock()
+
+            call_count = [0]
+
+            def mock_run_query(sql, params=None):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return [line]
+                elif call_count[0] == 2:
+                    return blocking_weeks
+                else:
+                    return []
+
+            mock_bq.run_query.side_effect = mock_run_query
+
+            from backend.services.pacing import run_pacing_for_project
+            run_pacing_for_project("TEST_PAUSE")
+
+        assert len(captured_rows) > 0, "No tracking rows written"
+        row = captured_rows[0]
+
+        # Even with pause/resume pattern, grace period calculation uses
+        # first_spend_date from fact_digital_daily, which is spend-aware and
+        # survives pause/restart. Line should be 'active' because enough time
+        # has passed since flight_start.
+        assert row["line_status"] == "active", \
+            "Grace period should not re-trigger on resume; line should be active"

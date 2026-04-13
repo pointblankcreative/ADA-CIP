@@ -22,6 +22,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from google.cloud import bigquery
+from google.cloud import exceptions as gcp_exceptions
 
 from backend.config import settings
 from backend.services import bigquery_client as bq
@@ -211,6 +212,7 @@ def run_pacing_for_project(project_code: str) -> dict:
     # query spend once per unique flight window instead of once per line.
     spend_by_group: dict[tuple, float] = {}          # (platform_id, fs, fe) → total_spend
     spend_by_line_code: dict[str, float] = {}        # line_code → total_spend
+    first_spend_date_by_line: dict[str, date] = {}   # line_code → first_spend_date (C1 fix)
 
     flight_groups: dict[tuple, list[dict]] = {}
     for line in lines:
@@ -265,24 +267,32 @@ def run_pacing_for_project(project_code: str) -> dict:
             ]
             if fs is not None and fe is not None:
                 lc_sql = f"""
-                    SELECT SUM(spend) AS total_spend
+                    SELECT SUM(spend) AS total_spend, MIN(date) AS first_spend_date
                     FROM {bq.table('fact_digital_daily')}
                     WHERE project_code = @project_code
                         AND line_code = @line_code
                         AND date >= @flight_start
                         AND date <= @flight_end
+                        AND spend > 0
                 """
                 lc_params.append(bq.date_param("flight_start", fs))
                 lc_params.append(bq.date_param("flight_end", fe))
             else:
                 lc_sql = f"""
-                    SELECT SUM(spend) AS total_spend
+                    SELECT SUM(spend) AS total_spend, MIN(date) AS first_spend_date
                     FROM {bq.table('fact_digital_daily')}
                     WHERE project_code = @project_code
                         AND line_code = @line_code
+                        AND spend > 0
                 """
             lc_rows = bq.run_query(lc_sql, lc_params)
             spend_by_line_code[lc] = _float(lc_rows[0]["total_spend"]) if lc_rows else 0.0
+            # C1: Track first_spend_date for grace period calculation
+            if lc_rows and lc_rows[0].get("first_spend_date"):
+                fsd = lc_rows[0]["first_spend_date"]
+                if isinstance(fsd, str):
+                    fsd = date.fromisoformat(fsd)
+                first_spend_date_by_line[lc] = fsd
 
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
@@ -320,15 +330,33 @@ def run_pacing_for_project(project_code: str) -> dict:
         # Determine line status based on flight timing
         # Data lag: ad platforms report with ~1-day delay through Funnel,
         # and the server runs in UTC which can be a day ahead of Eastern.
-        # We use a 2-day grace period to cover both factors.
+        # C1: Grace period is now spend-history-aware: only apply grace if
+        # the line has zero historical spend AND flight_start is within 2 days.
         if today < flight_start:
             line_status = "not_started"
         elif today > flight_end:
             line_status = "completed"
-        elif elapsed_active_days <= 2:
-            line_status = "pending"  # just started — no data expected yet
         else:
-            line_status = "active"
+            # Check if line has any historical spend
+            # Conservative approach: only apply grace period if we can definitively
+            # identify THIS line's spend history via line_code. If no line_code,
+            # don't assume grace period — require historical spend to NOT apply it.
+            has_historical_spend = (
+                (line_code and line_code in first_spend_date_by_line) or
+                (platform_id and any(
+                    lc in first_spend_date_by_line
+                    for lc in spend_by_line_code.keys()
+                ))
+            )
+            # Grace period: no spend yet AND flight started within 2 days
+            in_grace_period = (
+                not has_historical_spend and
+                (today - flight_start).days <= 2
+            )
+            if in_grace_period:
+                line_status = "pending"  # just started — no data expected yet
+            else:
+                line_status = "active"
 
         # Even pacing calculation
         if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
@@ -511,8 +539,8 @@ def run_all_active() -> dict:
         try:
             r = run_pacing_for_project(code)
             results.append(r)
-        except Exception:
-            logger.exception("Pacing failed for project %s", code)
+        except (gcp_exceptions.GoogleCloudError, ValueError, KeyError) as e:
+            logger.error("Pacing failed for project %s (continuing to process remaining projects): %s", code, e, exc_info=True)
             results.append({"project_code": code, "status": "failed"})
 
     total_lines = sum(r.get("lines_processed", 0) for r in results)
