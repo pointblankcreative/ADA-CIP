@@ -230,8 +230,31 @@ def _classify_from_media_plan(project_code: str) -> CampaignType | None:
     return CampaignType.PERSUASION
 
 
+def _parse_frequency_cap(value) -> float:
+    """Parse frequency_cap — stored as STRING (e.g. '3/7d', '5') or None."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return 0.0
+    # Pull the first numeric chunk (handles '3/7d', '3 per 7 days', '5', etc.)
+    import re
+    m = re.search(r"[\d.]+", s)
+    try:
+        return float(m.group(0)) if m else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
-    """Query media plan lines for a project."""
+    """Query media plan lines for a project.
+
+    Column names in BQ: `budget` (not planned_budget), `estimated_impressions`
+    (not planned_impressions), no `planned_reach` column, and `frequency_cap`
+    is STRING. We alias and coerce here so the engine sees a clean shape.
+    """
     sql = f"""
         SELECT
             line_id,
@@ -239,10 +262,9 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
             channel_category,
             audience_name,
             audience_type,
-            planned_budget,
-            COALESCE(planned_impressions, 0) as planned_impressions,
-            COALESCE(planned_reach, 0) as planned_reach,
-            COALESCE(frequency_cap, 0) as frequency_cap,
+            COALESCE(budget, 0) as planned_budget,
+            COALESCE(estimated_impressions, 0) as planned_impressions,
+            frequency_cap,
             flight_start,
             flight_end,
             ffs_score,
@@ -260,6 +282,12 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
         except ValueError:
             audience_type = None
 
+        freq_cap = _parse_frequency_cap(r.get("frequency_cap"))
+        planned_impressions = int(r.get("planned_impressions") or 0)
+        # Derive planned_reach from impressions / frequency_cap when possible;
+        # there is no planned_reach column in BigQuery yet.
+        planned_reach = int(planned_impressions / freq_cap) if freq_cap > 0 else 0
+
         lines.append(MediaPlanLine(
             line_id=str(r["line_id"]),
             platform_id=r.get("platform_id"),
@@ -267,9 +295,9 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
             audience_name=r.get("audience_name"),
             audience_type=audience_type,
             planned_budget=float(r.get("planned_budget") or 0),
-            planned_impressions=int(r.get("planned_impressions") or 0),
-            planned_reach=int(r.get("planned_reach") or 0),
-            frequency_cap=float(r.get("frequency_cap") or 0),
+            planned_impressions=planned_impressions,
+            planned_reach=planned_reach,
+            frequency_cap=freq_cap,
             flight_start=r.get("flight_start"),
             flight_end=r.get("flight_end"),
             ffs_score=float(r["ffs_score"]) if r.get("ffs_score") else None,
@@ -346,13 +374,17 @@ def _query_platform_metrics(
             GROUP BY platform_id
         ),
         adset_agg AS (
+            -- fact_adset_daily stores reach/frequency with a reach_window
+            -- label (e.g. '7d', '1d'); take the MAX across the flight and
+            -- prefer the 7-day window when available.
             SELECT
                 platform_id,
-                MAX(reach_7day) as reach,
-                AVG(frequency_7day) as frequency
+                MAX(reach) as reach,
+                AVG(frequency) as frequency
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code
               AND date BETWEEN @flight_start AND @eval_date
+              AND (reach_window IS NULL OR reach_window IN ('7d','7day','7_day'))
             GROUP BY platform_id
         )
         SELECT
@@ -449,25 +481,64 @@ def _query_daily_metrics(
 def _query_ga4(
     project_code: str, flight_start: date, eval_date: date
 ) -> GA4Metrics:
-    """Query GA4 session data."""
+    """Query GA4 session data by joining project_ga4_urls → fact_ga4_daily.
+
+    `fact_ga4_daily` has no project_code column; attribution is via the
+    `project_ga4_urls` mapping table (project_code ↔ ga4_property_id +
+    url_pattern). If the project has no GA4 URLs configured, we return
+    empty metrics — this is expected and must not break Distribution signals.
+    """
+    try:
+        url_rows = bq.run_query(
+            f"""
+                SELECT ga4_property_id, url_pattern
+                FROM {bq.table('project_ga4_urls')}
+                WHERE project_code = @project_code
+            """,
+            [bq.string_param("project_code", project_code)],
+        )
+    except Exception:
+        logger.debug("GA4 url lookup failed for %s", project_code, exc_info=True)
+        return GA4Metrics()
+
+    if not url_rows:
+        return GA4Metrics()
+
+    # Build an OR clause across (property_id, url_pattern) tuples.
+    clauses = []
+    params: list = [
+        bq.date_param("flight_start", flight_start),
+        bq.date_param("eval_date", eval_date),
+    ]
+    for i, r in enumerate(url_rows):
+        pid_name = f"ga4_pid_{i}"
+        url_name = f"ga4_url_{i}"
+        clauses.append(
+            f"(ga4_property_id = @{pid_name} AND session_campaign LIKE @{url_name})"
+        )
+        params.append(bq.string_param(pid_name, str(r["ga4_property_id"])))
+        params.append(bq.string_param(url_name, f"%{r['url_pattern']}%"))
+
+    where_urls = " OR ".join(clauses) if clauses else "FALSE"
     sql = f"""
         SELECT
             COALESCE(SUM(sessions), 0) as sessions,
             COALESCE(SUM(scroll_events), 0) as scrolls,
-            COALESCE(SUM(engaged_sessions), 0) as engaged_sessions,
+            -- engaged_sessions isn't yet mapped in fact_ga4_daily; fall back
+            -- to user_engagements (Build Plan §10 open gap).
+            COALESCE(SUM(user_engagements), 0) as engaged_sessions,
             COALESCE(SUM(form_starts), 0) as form_starts,
             COALESCE(SUM(form_submits), 0) as form_submits,
             COALESCE(SUM(key_events), 0) as key_events
         FROM {bq.table('fact_ga4_daily')}
-        WHERE project_code = @project_code
-          AND date BETWEEN @flight_start AND @eval_date
+        WHERE date BETWEEN @flight_start AND @eval_date
+          AND ({where_urls})
     """
-    params = [
-        bq.string_param("project_code", project_code),
-        bq.date_param("flight_start", flight_start),
-        bq.date_param("eval_date", eval_date),
-    ]
-    rows = bq.run_query(sql, params)
+    try:
+        rows = bq.run_query(sql, params)
+    except Exception:
+        logger.debug("GA4 query failed for %s", project_code, exc_info=True)
+        return GA4Metrics()
 
     if rows:
         r = rows[0]
