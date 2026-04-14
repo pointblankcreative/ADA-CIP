@@ -156,7 +156,7 @@ WITH platform_data AS (
     FROM
       `point-blank-ada.core_funnel_export.funnel_data`
     WHERE
-      AND Campaign_ID__Google_Ads IS NOT NULL
+      Campaign_ID__Google_Ads IS NOT NULL
       AND Campaign__Google_Ads IS NOT NULL
       AND Ad_ID__Google_Ads IS NOT NULL
   )
