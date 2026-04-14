@@ -76,6 +76,28 @@ def _sum_tab_budgets(all_data: list[list[str]]) -> float:
     return total
 
 
+_NON_CANONICAL_TAB_PATTERNS = {"[client]", "only", "draft", "old", "archive", "backup", "copy"}
+
+
+def _filter_canonical_tabs(tab_titles: list[str]) -> list[str]:
+    """Return only canonical media plan tab titles, filtering out copies/subsets.
+
+    When a sheet has multiple tabs matching "media plan" (e.g. "Media Plan V2",
+    "[CLIENT] Media Plan V2", "Media Plan V2 F1 Only"), this filters out
+    non-canonical variants to avoid merging lines from duplicates or subsets.
+
+    If ALL tabs match a non-canonical pattern, returns all of them unchanged
+    (let downstream filtering decide).
+    """
+    if len(tab_titles) <= 1:
+        return tab_titles
+    canonical = [
+        t for t in tab_titles
+        if not any(p in t.lower() for p in _NON_CANONICAL_TAB_PATTERNS)
+    ]
+    return canonical if canonical else tab_titles
+
+
 def _tab_belongs_to_project(
     title: str,
     all_data: list[list[str]],
@@ -745,6 +767,15 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         except gspread.exceptions.APIError as e:
             logger.error("Sheets API error listing tabs: %s", e)
             raise ValueError(f"Failed to list spreadsheet tabs: {str(e)}")
+
+        # ── Disambiguate media plan tabs: prefer canonical over copies/subsets ──
+        if len(media_plan_tabs) > 1:
+            all_titles = [ws.title for ws in media_plan_tabs]
+            canonical_titles = set(_filter_canonical_tabs(all_titles))
+            if len(canonical_titles) < len(all_titles):
+                removed = [ws.title for ws in media_plan_tabs if ws.title not in canonical_titles]
+                logger.info("  Filtered non-canonical media plan tabs: %s", removed)
+                media_plan_tabs = [ws for ws in media_plan_tabs if ws.title in canonical_titles]
 
         if not blocking_ws:
             sheets = ss.worksheets()
