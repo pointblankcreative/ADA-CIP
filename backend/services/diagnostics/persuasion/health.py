@@ -21,32 +21,29 @@ from backend.services.diagnostics.models import (
 )
 from backend.services.diagnostics.shared.normalization import clamp, safe_div
 
-# Placeholder pillar builders — Attention and Resonance are Phase 2.
-# For now they return empty pillars so the engine can run with
-# Distribution only.
 from backend.services.diagnostics.persuasion.distribution import (
     compute_distribution_pillar,
 )
 from backend.services.diagnostics.persuasion.attention import (
     compute_attention_pillar,
 )
-
-
-def _placeholder_pillar(name: str, weight: float) -> PillarScore:
-    """Return an empty pillar for signals not yet implemented."""
-    return PillarScore(name=name, score=None, status=None, weight=weight)
+from backend.services.diagnostics.persuasion.resonance import (
+    compute_resonance_pillar,
+)
 
 
 def compute_persuasion_health(data: CampaignData) -> DiagnosticOutput:
     """Full persuasion diagnostic: pillars → health score → output.
 
-    Phase 1: Only Distribution is active.
-    Phase 2 will add Attention and Resonance.
+    All three pillars are active: Distribution (D1-D4), Attention (A1-A5),
+    and Resonance (R1-R3). Individual signals within each pillar may
+    guard-fail when data is insufficient — their weight redistributes
+    to active signals within the same pillar.
     """
     # Compute pillars
     distribution = compute_distribution_pillar(data)
     attention = compute_attention_pillar(data)
-    resonance = _placeholder_pillar("resonance", weight=0.25)
+    resonance = compute_resonance_pillar(data)
 
     pillars = [distribution, attention, resonance]
 

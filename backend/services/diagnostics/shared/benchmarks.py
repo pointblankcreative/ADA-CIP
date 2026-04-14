@@ -206,6 +206,19 @@ A5_FATIGUE_THRESHOLDS = {
 }
 
 
+# ── Resonance Signal Weights ──────────────────────────────────────
+
+# R1 carries most weight as it's the most actionable signal with full
+# data coverage. R2 is included at 0.25 but will guard-fail until Phase 3
+# (earned data), redistributing its share to R1 and R3 pro rata.
+# R3 depends on GA4 configuration — guard-fails if no GA4 URLs mapped.
+RESONANCE_SIGNAL_WEIGHTS = {
+    "R1": 0.45,    # Engagement quality ratio
+    "R2": 0.25,    # Earned amplification (Phase 3)
+    "R3": 0.30,    # Landing page engagement depth
+}
+
+
 # ── Conversion Pillar Weights (for reference) ──────────────────────
 
 CONVERSION_PILLAR_WEIGHTS = {
