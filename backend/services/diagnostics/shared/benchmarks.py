@@ -219,12 +219,19 @@ RESONANCE_SIGNAL_WEIGHTS = {
 }
 
 
-# ── Conversion Pillar Weights (for reference) ──────────────────────
+# ── Conversion Pillar Weights ──────────────────────────────────────
 
 CONVERSION_PILLAR_WEIGHTS = {
     "acquisition": 0.30,
     "funnel": 0.40,
     "quality": 0.30,
+}
+
+# Signal weights within Acquisition pillar
+ACQUISITION_SIGNAL_WEIGHTS = {
+    "C1": 0.45,    # CPA vs friction-adjusted target
+    "C2": 0.35,    # Volume trajectory
+    "C3": 0.20,    # CPA trend (deterioration detection)
 }
 
 

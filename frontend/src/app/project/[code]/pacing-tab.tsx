@@ -133,6 +133,7 @@ function LineRow({
   line: PacingLine;
   onNameUpdate: (lineId: string, newName: string) => void;
 }) {
+  const isCompleted = line.line_status === "completed";
   const status = pacingStatus(line.pacing_percentage);
   const budgetPct =
     line.planned_budget > 0
@@ -191,7 +192,7 @@ function LineRow({
   };
 
   return (
-    <Card className="!p-3 sm:!p-4">
+    <Card className={cn("!p-3 sm:!p-4", isCompleted && "opacity-60")}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3 min-w-0">
           <PlatformIcon platformId={line.platform_id} />
@@ -253,15 +254,23 @@ function LineRow({
               <span>{formatCurrency(line.actual_spend_to_date)} spent</span>
               <span>of {formatCurrency(line.planned_budget)} budget</span>
               {dateRange && <span>{dateRange}</span>}
-              {line.remaining_days > 0 && (
-                <span>{line.remaining_days}d remaining</span>
+              {isCompleted ? (
+                <span className="text-slate-400">
+                  Final: {formatPercent(budgetPct)} utilized
+                </span>
+              ) : (
+                <>
+                  {line.remaining_days > 0 && (
+                    <span>{line.remaining_days}d remaining</span>
+                  )}
+                  {line.daily_budget_required != null &&
+                    line.daily_budget_required > 0 && (
+                      <span>
+                        {formatCurrency(line.daily_budget_required)}/day needed
+                      </span>
+                    )}
+                </>
               )}
-              {line.daily_budget_required != null &&
-                line.daily_budget_required > 0 && (
-                  <span>
-                    {formatCurrency(line.daily_budget_required)}/day needed
-                  </span>
-                )}
               <span
                 className="font-mono text-[10px] text-slate-600 cursor-help"
                 title={line.line_id}
@@ -293,7 +302,7 @@ function LineRow({
           <div
             className={cn(
               "h-full rounded-full transition-all duration-700",
-              pacingBarColor(status)
+              isCompleted ? "bg-slate-600" : pacingBarColor(status)
             )}
             style={{ width: `${Math.min(budgetPct, 100)}%` }}
           />

@@ -171,20 +171,32 @@ def run_pacing_for_project(project_code: str) -> dict:
     today = date.today()
 
     # ── 1. Fetch media plan lines for this project ──────────────────
+    # Deduplicate: if old sync versions weren't cleaned up, multiple rows
+    # per line_id can exist.  Keep only the latest sync_version per line_id
+    # to prevent doubled lines and halved spend in proportional splits.
     lines_sql = f"""
-        SELECT
-            l.line_id,
-            l.line_code,
-            l.platform_id,
-            l.channel_category,
-            l.site_network,
-            l.budget,
-            l.flight_start,
-            l.flight_end
-        FROM {bq.table('media_plan_lines')} l
-        JOIN {bq.table('media_plans')} p ON l.plan_id = p.plan_id AND p.is_current = TRUE
-        WHERE l.project_code = @project_code
-            AND l.is_traditional = FALSE
+        SELECT line_id, line_code, platform_id, channel_category,
+               site_network, budget, flight_start, flight_end
+        FROM (
+            SELECT
+                l.line_id,
+                l.line_code,
+                l.platform_id,
+                l.channel_category,
+                l.site_network,
+                l.budget,
+                l.flight_start,
+                l.flight_end,
+                ROW_NUMBER() OVER (
+                    PARTITION BY l.line_id
+                    ORDER BY l.sync_version DESC
+                ) AS _rn
+            FROM {bq.table('media_plan_lines')} l
+            JOIN {bq.table('media_plans')} p ON l.plan_id = p.plan_id AND p.is_current = TRUE
+            WHERE l.project_code = @project_code
+                AND l.is_traditional = FALSE
+        )
+        WHERE _rn = 1
     """
     lines = bq.run_query(lines_sql, [bq.string_param("project_code", project_code)])
 

@@ -1172,7 +1172,13 @@ def _delete_old_versions(mtl: bigquery.Client, project_code: str, current_sync_v
 
     This ensures that deletes are atomic and no window of missing data occurs
     between write and delete of concurrent syncs.
+
+    Retries up to 3 times on failure. If all retries fail, raises the exception
+    so the caller knows cleanup didn't happen — silently swallowing this error
+    causes duplicate media_plan_lines, which halves spend in pacing calculations.
     """
+    import time
+
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
 
     # Use a scripting block to wrap all deletes atomically
@@ -1193,17 +1199,32 @@ def _delete_old_versions(mtl: bigquery.Client, project_code: str, current_sync_v
     END;
     """
 
-    try:
-        mtl.query(
-            script,
-            job_config=bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
-                bigquery.ScalarQueryParameter("sv", "STRING", current_sync_version),
-            ]),
-        ).result()
-        logger.info("  Deleted old sync versions for %s", project_code)
-    except Exception as e:
-        logger.warning("  Failed to delete old versions (safe to continue): %s", e)
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            mtl.query(
+                script,
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+                    bigquery.ScalarQueryParameter("sv", "STRING", current_sync_version),
+                ]),
+            ).result()
+            logger.info("  Deleted old sync versions for %s", project_code)
+            return
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(
+                    "  Failed to delete old versions for %s (attempt %d/%d): %s",
+                    project_code, attempt, max_retries, e,
+                )
+                time.sleep(1 * attempt)  # brief backoff
+            else:
+                logger.error(
+                    "  CRITICAL: Failed to delete old sync versions for %s after %d attempts. "
+                    "Duplicate media_plan_lines will exist until next successful sync. Error: %s",
+                    project_code, max_retries, e,
+                )
+                raise
 
 
 def _write_records(mtl: bigquery.Client, table_name: str, records: list[dict]) -> None:

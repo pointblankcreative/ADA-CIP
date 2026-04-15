@@ -38,6 +38,7 @@ from backend.services.diagnostics.models import (
     PlatformMetrics,
 )
 from backend.services.diagnostics.persuasion.health import compute_persuasion_health
+from backend.services.diagnostics.conversion.health import compute_conversion_health
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,7 @@ def run_diagnostics_for_project(
     if campaign_type == CampaignType.PERSUASION:
         output = compute_persuasion_health(data)
     else:
-        # Conversion health — Phase 2
-        logger.info("Conversion diagnostics not yet implemented for %s", project_code)
-        return results
+        output = compute_conversion_health(data)
 
     results.append(output)
 

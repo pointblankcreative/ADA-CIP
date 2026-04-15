@@ -10,6 +10,7 @@ interface PacingBadgeProps {
 export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md" }: PacingBadgeProps) {
   const status = pacingStatus(percentage);
   const isPending = lineStatus === "pending" || lineStatus === "not_started" || (percentage == null && totalSpend > 0);
+  const isCompleted = lineStatus === "completed";
 
   const labels: Record<string, string> = {
     "critical-over": "Critical Over",
@@ -20,24 +21,32 @@ export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md
     unknown: "No Data",
   };
 
-  const label = isPending
-    ? lineStatus === "not_started"
-      ? "Not Started"
-      : "Pending"
-    : percentage != null
-      ? formatPercent(percentage)
-      : labels[status];
+  const label = isCompleted
+    ? "Completed"
+    : isPending
+      ? lineStatus === "not_started"
+        ? "Not Started"
+        : "Pending"
+      : percentage != null
+        ? formatPercent(percentage)
+        : labels[status];
 
-  const dotColor = isPending
-    ? "bg-blue-400"
-    : status === "on-track"
-      ? "bg-emerald-400"
-      : status.includes("over") || status.includes("under")
-        ? status.includes("critical") ? "bg-red-400" : "bg-amber-400"
-        : "bg-slate-500";
+  const dotColor = isCompleted
+    ? "bg-slate-400"
+    : isPending
+      ? "bg-blue-400"
+      : status === "on-track"
+        ? "bg-emerald-400"
+        : status.includes("over") || status.includes("under")
+          ? status.includes("critical") ? "bg-red-400" : "bg-amber-400"
+          : "bg-slate-500";
 
-  const badgeBg = isPending ? "bg-blue-500/20 border-blue-500/30" : pacingBg(status);
-  const badgeColor = isPending ? "text-blue-400" : pacingColor(status);
+  const badgeBg = isCompleted
+    ? "bg-slate-500/20 border-slate-500/30"
+    : isPending ? "bg-blue-500/20 border-blue-500/30" : pacingBg(status);
+  const badgeColor = isCompleted
+    ? "text-slate-400"
+    : isPending ? "text-blue-400" : pacingColor(status);
 
   return (
     <span

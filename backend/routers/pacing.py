@@ -29,6 +29,21 @@ async def get_pacing(project_code: str):
     net_budget = _float(projects[0].get("net_budget"))
 
     tracking_sql = f"""
+        WITH mpl_dedup AS (
+            SELECT * EXCEPT(_rn) FROM (
+                SELECT
+                    line_id,
+                    audience_name,
+                    flight_start,
+                    flight_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY line_id
+                        ORDER BY sync_version DESC
+                    ) AS _rn
+                FROM {bq.table('media_plan_lines')}
+                WHERE project_code = @project_code
+            ) WHERE _rn = 1
+        )
         SELECT
             bt.date,
             bt.line_id,
@@ -49,7 +64,7 @@ async def get_pacing(project_code: str):
             mpl.flight_start,
             mpl.flight_end
         FROM {bq.table('budget_tracking')} bt
-        LEFT JOIN {bq.table('media_plan_lines')} mpl ON bt.line_id = mpl.line_id
+        LEFT JOIN mpl_dedup mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
             AND bt.date = (
                 SELECT MAX(date) FROM {bq.table('budget_tracking')}
