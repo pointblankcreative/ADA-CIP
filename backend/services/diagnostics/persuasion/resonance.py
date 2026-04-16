@@ -37,7 +37,6 @@ from backend.services.diagnostics.shared.guards import (
     guard_resonance,
 )
 from backend.services.diagnostics.shared.normalization import (
-    clamp,
     format_pct,
     normalize_linear,
     safe_div,
@@ -274,7 +273,6 @@ def compute_r3_landing_page_depth(data: CampaignData) -> SignalResult:
             "sessions": sessions,
             "engaged_sessions": engaged,
             "scrolls": scrolls,
-            "page_views": data.ga4.form_starts,  # Note: not used in scoring
             "weights": {"engaged_rate": 0.65, "scroll_rate": 0.35},
         },
     )
@@ -303,12 +301,18 @@ def compute_resonance_pillar(data: CampaignData) -> PillarScore:
     active = [s for s in pillar.signals if s.guard_passed and s.score is not None]
     if active:
         weights = RESONANCE_SIGNAL_WEIGHTS
-        weighted_sum = sum(
-            s.score * weights.get(s.id, 0.30) for s in active
-        )
-        total_weight = sum(
-            weights.get(s.id, 0.30) for s in active
-        )
+        # Fail loudly if a signal ID isn't in the weights table — adding a new
+        # signal to compute_resonance_pillar without also updating
+        # RESONANCE_SIGNAL_WEIGHTS would otherwise silently default to an
+        # arbitrary weight and distort the pillar score.
+        missing = [s.id for s in active if s.id not in weights]
+        if missing:
+            raise KeyError(
+                f"RESONANCE_SIGNAL_WEIGHTS is missing entries for: {missing}. "
+                f"Add them to shared.benchmarks before scoring."
+            )
+        weighted_sum = sum(s.score * weights[s.id] for s in active)
+        total_weight = sum(weights[s.id] for s in active)
         pillar.score = round(weighted_sum / total_weight, 1) if total_weight > 0 else None
         pillar.status = status_band(pillar.score) if pillar.score is not None else None
     else:
