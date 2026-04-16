@@ -1,36 +1,42 @@
-"""Diagnostic engine orchestrator.
-
-Classify → Query → Compute → Store → Alert.
+"""Diagnostic engine orchestrator — mixed-campaign aware.
 
 For each active project:
-    1. Determine campaign type (persuasion / conversion) from media plan
-    2. Query 5 BQ tables to assemble CampaignData
-    3. Route to the right health computation
-    4. Store results in fact_diagnostic_signals
-    5. Fire critical alerts through existing Slack pipeline
+    1. Query the media plan and partition lines by campaign type (per line).
+    2. Query platform / daily / GA4 / budget data, partitioning metric rows
+       by their campaign_objective (or campaign_name fallback).
+    3. Build one CampaignData subset per campaign type present.
+    4. Run the matching health computation for each subset (persuasion /
+       conversion). Projects with both kinds of lines produce TWO
+       DiagnosticOutput objects — one per type.
+    5. Store all outputs in fact_diagnostic_signals (already keyed on
+       campaign_type, so two rows per project-date is natural).
+    6. Fire critical alerts per output through the existing alerts pipeline.
 
-Designed to be called from daily_job.py after pacing stage, or
-manually via /api/diagnostics/{code}/run.
+Designed to be called from daily_job.py after the pacing stage, or manually
+via /api/diagnostics/{code}/run. See Build Plan §12 for the mixed-campaign
+design rationale.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
+from collections import defaultdict
 from datetime import date, datetime, timezone
-from typing import Any
 
 from google.cloud import bigquery as bqmod
 
 from backend.config import settings
 from backend.services import bigquery_client as bq
+from backend.services.diagnostics.line_classifier import (
+    classify_campaign_name,
+    classify_objective_string,
+    partition_lines,
+)
 from backend.services.diagnostics.models import (
     AudienceType,
     CampaignData,
     CampaignType,
     DailyMetrics,
-    DiagnosticAlert,
     DiagnosticOutput,
     FlightContext,
     GA4Metrics,
@@ -43,6 +49,18 @@ from backend.services.diagnostics.conversion.health import compute_conversion_he
 logger = logging.getLogger(__name__)
 
 
+def _health_computer_for(campaign_type: CampaignType):
+    """Resolve the health-computation function for a campaign type at CALL time.
+
+    Deliberately NOT cached into a module-level dict — doing so would capture
+    the original function references at import and make the health computers
+    unpatchable in unit tests. The per-call lookup cost is negligible.
+    """
+    if campaign_type == CampaignType.PERSUASION:
+        return compute_persuasion_health
+    return compute_conversion_health
+
+
 # ── Public API ──────────────────────────────────────────────────────
 
 
@@ -52,70 +70,84 @@ def run_diagnostics_for_project(
 ) -> list[DiagnosticOutput]:
     """Run diagnostic evaluation for a single project.
 
-    Returns one DiagnosticOutput per campaign type found.
+    Returns a list of DiagnosticOutput objects — one per campaign type present
+    in the project's media plan. Pure projects return a single-element list;
+    mixed projects return two elements (persuasion + conversion).
+    Returns an empty list if the project has no media plan or no derivable flight.
     """
     eval_date = evaluation_date or date.today()
     results: list[DiagnosticOutput] = []
 
-    # Step 1: Get project metadata + campaign type
-    campaign_type = _classify_campaign(project_code)
-    if campaign_type is None:
-        logger.warning("Could not classify campaign type for %s", project_code)
-        return results
-
-    # Step 2: Get flight dates from media plan
+    # Step 1: Query the media plan and partition lines by campaign type.
     media_plan = _query_media_plan(project_code)
     if not media_plan:
         logger.warning("No media plan lines for %s", project_code)
         return results
 
-    flight = _derive_flight(media_plan, eval_date)
-    if flight is None:
-        logger.warning("Could not derive flight dates for %s", project_code)
+    lines_by_type = partition_lines(media_plan)
+
+    # Step 2: Query all data sources ONCE. Queries return per-type partitions
+    # (dict[CampaignType, ...]) for platform_metrics and daily_metrics.
+    # GA4 goes to both subsets unchanged (per Build Plan §12). Budget pacing
+    # is re-queried per subset using the line_ids of that subset.
+    overall_flight = _derive_flight(media_plan, eval_date)
+    if overall_flight is None:
+        logger.warning("Could not derive any flight dates for %s", project_code)
         return results
 
-    # Step 3: Query all data sources
-    platform_metrics = _query_platform_metrics(
-        project_code, flight.flight_start, eval_date
+    platform_by_type = _query_platform_metrics_by_type(
+        project_code, overall_flight.flight_start, eval_date
     )
-    daily_metrics = _query_daily_metrics(
-        project_code, flight.flight_start, eval_date
+    daily_by_type = _query_daily_metrics_by_type(
+        project_code, overall_flight.flight_start, eval_date
     )
-    ga4 = _query_ga4(project_code, flight.flight_start, eval_date)
-    pacing_pct = _query_budget_pacing(project_code, eval_date)
+    ga4 = _query_ga4(project_code, overall_flight.flight_start, eval_date)
 
-    # Step 4: Assemble CampaignData
-    data = CampaignData(
-        project_code=project_code,
-        campaign_type=campaign_type,
-        flight=flight,
-        platform_metrics=platform_metrics,
-        daily_metrics=daily_metrics,
-        media_plan=media_plan,
-        ga4=ga4,
-        budget_pacing_pct=pacing_pct,
-    )
+    # Step 3–4: For each campaign type with lines, build CampaignData + compute.
+    for campaign_type, lines in lines_by_type.items():
+        if not lines:
+            continue
 
-    # Step 5: Compute diagnostics based on campaign type
-    if campaign_type == CampaignType.PERSUASION:
-        output = compute_persuasion_health(data)
-    else:
-        output = compute_conversion_health(data)
+        flight = _derive_flight(lines, eval_date) or overall_flight
+        platform_metrics = platform_by_type.get(campaign_type, [])
+        daily_metrics = daily_by_type.get(campaign_type, [])
+        line_ids = {l.line_id for l in lines}
+        pacing_pct = _query_budget_pacing(project_code, eval_date, line_ids=line_ids)
 
-    results.append(output)
+        data = CampaignData(
+            project_code=project_code,
+            campaign_type=campaign_type,
+            flight=flight,
+            platform_metrics=platform_metrics,
+            daily_metrics=daily_metrics,
+            media_plan=lines,
+            ga4=ga4,
+            budget_pacing_pct=pacing_pct,
+        )
 
-    # Step 6: Store results
+        compute = _health_computer_for(campaign_type)
+        output = compute(data)
+        results.append(output)
+
+    if not results:
+        logger.warning("No classifiable media plan lines for %s", project_code)
+        return results
+
+    # Step 5: Store all outputs in a single load job.
     _store_results(results)
 
-    # Step 7: Fire alerts
-    _fire_alerts(output)
+    # Step 6: Fire alerts per output.
+    for output in results:
+        _fire_alerts(output)
 
-    logger.info(
-        "Diagnostics complete for %s: health=%s status=%s",
-        project_code,
-        output.health_score,
-        output.health_status,
-    )
+    for output in results:
+        logger.info(
+            "Diagnostics complete for %s [%s]: health=%s status=%s",
+            project_code,
+            output.campaign_type.value,
+            output.health_score,
+            output.health_status,
+        )
 
     return results
 
@@ -123,14 +155,14 @@ def run_diagnostics_for_project(
 def run_all_diagnostics(evaluation_date: date | None = None) -> dict:
     """Run diagnostics for all active projects.
 
-    Called from daily_job.py.
-    Returns a summary dict.
+    Called from daily_job.py. Returns a summary dict.
     """
     eval_date = evaluation_date or date.today()
     projects = _get_active_projects()
     summary = {
         "projects_processed": 0,
         "projects_skipped": 0,
+        "total_outputs": 0,
         "total_alerts": 0,
         "errors": [],
     }
@@ -140,9 +172,8 @@ def run_all_diagnostics(evaluation_date: date | None = None) -> dict:
             outputs = run_diagnostics_for_project(project_code, eval_date)
             if outputs:
                 summary["projects_processed"] += 1
-                summary["total_alerts"] += sum(
-                    len(o.alerts) for o in outputs
-                )
+                summary["total_outputs"] += len(outputs)
+                summary["total_alerts"] += sum(len(o.alerts) for o in outputs)
             else:
                 summary["projects_skipped"] += 1
         except Exception as e:
@@ -165,74 +196,6 @@ def _get_active_projects() -> list[str]:
     """
     rows = bq.run_query(sql)
     return [r["project_code"] for r in rows]
-
-
-def _classify_campaign(project_code: str) -> CampaignType | None:
-    """Determine campaign type from the objective classifier or media plan.
-
-    Uses the objective_classifier service logic: if the dominant
-    campaign_objective is awareness/reach-oriented → persuasion,
-    if conversion-oriented → conversion.
-    """
-    sql = f"""
-        SELECT campaign_objective, SUM(impressions) as total_impressions
-        FROM {bq.table('fact_digital_daily')}
-        WHERE project_code = @project_code
-          AND campaign_objective IS NOT NULL
-        GROUP BY campaign_objective
-        ORDER BY total_impressions DESC
-        LIMIT 1
-    """
-    rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
-
-    if not rows:
-        # Fallback: check media plan for objective hints
-        return _classify_from_media_plan(project_code)
-
-    objective = (rows[0].get("campaign_objective") or "").upper()
-
-    # Meta objectives that map to persuasion
-    persuasion_objectives = {
-        "OUTCOME_AWARENESS", "BRAND_AWARENESS", "REACH", "VIDEO_VIEWS",
-        "POST_ENGAGEMENT", "OUTCOME_ENGAGEMENT", "OUTCOME_TRAFFIC",
-    }
-    # Conversion objectives
-    conversion_objectives = {
-        "CONVERSIONS", "OUTCOME_SALES", "OUTCOME_LEADS",
-        "LEAD_GENERATION", "WEBSITE_CONVERSIONS", "APP_INSTALLS",
-    }
-
-    if objective in persuasion_objectives:
-        return CampaignType.PERSUASION
-    if objective in conversion_objectives:
-        return CampaignType.CONVERSION
-
-    # Default to persuasion for ambiguous objectives
-    return CampaignType.PERSUASION
-
-
-def _classify_from_media_plan(project_code: str) -> CampaignType | None:
-    """Fallback classification from media plan line objectives."""
-    sql = f"""
-        SELECT objective
-        FROM (
-            SELECT objective,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY line_id ORDER BY sync_version DESC
-                   ) AS _rn
-            FROM {bq.table('media_plan_lines')}
-            WHERE project_code = @project_code
-        ) WHERE _rn = 1
-        LIMIT 5
-    """
-    rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
-    if not rows:
-        return None
-
-    objectives = [r.get("objective", "").lower() for r in rows]
-    if any("conversion" in o or "lead" in o for o in objectives):
-        return CampaignType.CONVERSION
-    return CampaignType.PERSUASION
 
 
 def _parse_frequency_cap(value) -> float:
@@ -321,7 +284,11 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
 def _derive_flight(
     media_plan: list[MediaPlanLine], eval_date: date
 ) -> FlightContext | None:
-    """Derive flight start/end from media plan lines."""
+    """Derive flight start/end from media plan lines.
+
+    For partitioned subsets, call this with the subset's lines only so each
+    campaign-type diagnostic runs against its own flight calendar.
+    """
     starts = [l.flight_start for l in media_plan if l.flight_start]
     ends = [l.flight_end for l in media_plan if l.flight_end]
 
@@ -344,126 +311,264 @@ def _derive_flight(
     )
 
 
-def _query_platform_metrics(
+def _query_platform_metrics_by_type(
     project_code: str, flight_start: date, eval_date: date
-) -> list[PlatformMetrics]:
-    """Query aggregated metrics per platform from fact_digital_daily.
+) -> dict[CampaignType, list[PlatformMetrics]]:
+    """Aggregate platform metrics per (platform_id, campaign_type) and return
+    a dict keyed by CampaignType.
 
-    Uses MAX for reach (Phase 0 finding) and SUM for everything else.
-    Also JOINs fact_adset_daily for reach/frequency data.
+    We pull fact_digital_daily grouped by (platform_id, campaign_objective) —
+    `campaign_objective` is a first-class column there. Each resulting row is
+    classified (persuasion/conversion) and merged into the matching bucket.
+
+    Reach / frequency live in fact_adset_daily, which does NOT carry
+    campaign_objective. We classify those rows by `campaign_name` via the
+    shared keyword classifier and bucket them the same way.
+
+    When a platform contributes to both buckets (e.g. Meta runs awareness +
+    retargeting in the same project), each bucket gets its own PlatformMetrics
+    row for that platform, with the correct subset of spend/impressions/reach.
     """
-    sql = f"""
-        WITH daily_agg AS (
-            SELECT
-                platform_id,
-                SUM(spend) as spend,
-                SUM(impressions) as impressions,
-                SUM(clicks) as clicks,
-                SUM(conversions) as conversions,
-                SUM(video_views_3s) as video_views_3s,
-                SUM(thruplay) as thruplay,
-                SUM(video_q25) as video_q25,
-                SUM(video_q50) as video_q50,
-                SUM(video_q75) as video_q75,
-                SUM(video_q100) as video_q100,
-                SUM(post_engagement) as post_engagement,
-                SUM(post_reactions) as post_reactions,
-                SUM(post_comments) as post_comments,
-                SUM(outbound_clicks) as outbound_clicks,
-                SUM(landing_page_views) as landing_page_views,
-                SUM(registrations) as registrations,
-                SUM(leads) as leads,
-                SUM(on_platform_leads) as on_platform_leads,
-                SUM(contacts) as contacts,
-                SUM(donations) as donations,
-                MAX(campaign_objective) as campaign_objective,
-                SUM(viewability_measured) as viewability_measured,
-                SUM(viewability_viewed) as viewability_viewed
-            FROM {bq.table('fact_digital_daily')}
-            WHERE project_code = @project_code
-              AND date BETWEEN @flight_start AND @eval_date
-            GROUP BY platform_id
-        ),
-        adset_agg AS (
-            -- fact_adset_daily stores reach/frequency per ad set per day
-            -- with a reach_window label ('7d', '1d', etc). Platforms like
-            -- StackAdapt only expose 1-day unique metrics, so we include
-            -- 1d alongside 7d; MAX(reach) across the flight is a
-            -- conservative floor (true unique reach requires platform-side
-            -- de-dup that we don't get at this grain).
-            --
-            -- Frequency: some sources (StackAdapt in particular) report
-            -- the frequency column as 0 even when impressions/reach > 1.
-            -- Fall back to impressions/reach when the reported frequency
-            -- is missing or zero.
-            SELECT
-                platform_id,
-                MAX(reach) as reach,
-                COALESCE(
-                    NULLIF(AVG(frequency), 0),
-                    SAFE_DIVIDE(SUM(impressions), NULLIF(SUM(reach), 0))
-                ) as frequency
-            FROM {bq.table('fact_adset_daily')}
-            WHERE project_code = @project_code
-              AND date BETWEEN @flight_start AND @eval_date
-              AND (reach_window IS NULL OR reach_window IN ('7d','7day','7_day','1d','1day','1_day'))
-            GROUP BY platform_id
-        )
+    # ── daily (digital) rows — grouped by (platform_id, campaign_objective) ──
+    daily_sql = f"""
         SELECT
-            d.*,
-            COALESCE(a.reach, 0) as reach,
-            COALESCE(a.frequency, 0) as frequency
-        FROM daily_agg d
-        LEFT JOIN adset_agg a USING (platform_id)
+            platform_id,
+            campaign_objective,
+            SUM(spend) as spend,
+            SUM(impressions) as impressions,
+            SUM(clicks) as clicks,
+            SUM(conversions) as conversions,
+            SUM(video_views_3s) as video_views_3s,
+            SUM(thruplay) as thruplay,
+            SUM(video_q25) as video_q25,
+            SUM(video_q50) as video_q50,
+            SUM(video_q75) as video_q75,
+            SUM(video_q100) as video_q100,
+            SUM(post_engagement) as post_engagement,
+            SUM(post_reactions) as post_reactions,
+            SUM(post_comments) as post_comments,
+            SUM(outbound_clicks) as outbound_clicks,
+            SUM(landing_page_views) as landing_page_views,
+            SUM(registrations) as registrations,
+            SUM(leads) as leads,
+            SUM(on_platform_leads) as on_platform_leads,
+            SUM(contacts) as contacts,
+            SUM(donations) as donations,
+            SUM(viewability_measured) as viewability_measured,
+            SUM(viewability_viewed) as viewability_viewed
+        FROM {bq.table('fact_digital_daily')}
+        WHERE project_code = @project_code
+          AND date BETWEEN @flight_start AND @eval_date
+        GROUP BY platform_id, campaign_objective
     """
     params = [
         bq.string_param("project_code", project_code),
         bq.date_param("flight_start", flight_start),
         bq.date_param("eval_date", eval_date),
     ]
-    rows = bq.run_query(sql, params)
+    daily_rows = bq.run_query(daily_sql, params)
 
-    return [
-        PlatformMetrics(
-            platform_id=r["platform_id"],
-            spend=float(r.get("spend") or 0),
-            impressions=int(r.get("impressions") or 0),
-            clicks=int(r.get("clicks") or 0),
-            conversions=float(r.get("conversions") or 0),
-            reach=int(r.get("reach") or 0),
-            frequency=float(r.get("frequency") or 0),
-            video_views_3s=int(r.get("video_views_3s") or 0),
-            thruplay=int(r.get("thruplay") or 0),
-            video_q25=int(r.get("video_q25") or 0),
-            video_q50=int(r.get("video_q50") or 0),
-            video_q75=int(r.get("video_q75") or 0),
-            video_q100=int(r.get("video_q100") or 0),
-            post_engagement=int(r.get("post_engagement") or 0),
-            post_reactions=int(r.get("post_reactions") or 0),
-            post_comments=int(r.get("post_comments") or 0),
-            outbound_clicks=int(r.get("outbound_clicks") or 0),
-            landing_page_views=int(r.get("landing_page_views") or 0),
-            registrations=float(r.get("registrations") or 0),
-            leads=float(r.get("leads") or 0),
-            on_platform_leads=float(r.get("on_platform_leads") or 0),
-            contacts=float(r.get("contacts") or 0),
-            donations=float(r.get("donations") or 0),
-            campaign_objective=r.get("campaign_objective"),
-            viewability_measured=int(r.get("viewability_measured") or 0),
-            viewability_viewed=int(r.get("viewability_viewed") or 0),
+    # ── adset rows — grouped by (platform_id, campaign_name, reach_window) ──
+    # fact_adset_daily has no campaign_objective, so we group by campaign_name
+    # and classify each campaign_name in Python.
+    #
+    # Reach-window handling: platforms report reach/frequency against different
+    # lookback windows (1d vs 7d) and those numbers are NOT comparable — a 7d
+    # reach is almost always larger than a 1d reach for the same audience, and
+    # mixing them in an average produces meaningless frequency. We therefore
+    # GROUP BY reach_window as well and pick one window per (platform, campaign)
+    # in Python: prefer 7d (more complete coverage), fall back to 1d, then to
+    # null/unspecified. This is the conservative default most platforms already
+    # report natively.
+    #
+    # MAX(reach) across the flight is a conservative floor for true unique
+    # reach within a single window — a daily MAX will understate true unique
+    # reach across the flight, but it is strictly a lower bound and never
+    # double-counts.
+    adset_sql = f"""
+        SELECT
+            platform_id,
+            campaign_name,
+            reach_window,
+            MAX(reach) as reach,
+            COALESCE(
+                NULLIF(AVG(frequency), 0),
+                SAFE_DIVIDE(SUM(impressions), NULLIF(SUM(reach), 0))
+            ) as frequency,
+            SUM(impressions) as adset_impressions
+        FROM {bq.table('fact_adset_daily')}
+        WHERE project_code = @project_code
+          AND date BETWEEN @flight_start AND @eval_date
+          AND (reach_window IS NULL OR reach_window IN ('7d','7day','7_day','1d','1day','1_day'))
+        GROUP BY platform_id, campaign_name, reach_window
+    """
+    adset_rows = bq.run_query(adset_sql, params)
+
+    # ── pick one reach_window per (platform_id, campaign_name): 7d > 1d > null
+    # Doing this BEFORE bucketing by campaign type ensures each campaign
+    # contributes exactly one reach/frequency pair, measured against a
+    # consistent lookback window.
+    _SEVEN_D = {"7d", "7day", "7_day"}
+    _ONE_D = {"1d", "1day", "1_day"}
+
+    def _window_priority(rw) -> int:
+        """Higher wins. 7d=2, 1d=1, other/NULL=0."""
+        if rw in _SEVEN_D:
+            return 2
+        if rw in _ONE_D:
+            return 1
+        return 0
+
+    preferred: dict[tuple[str, str | None], dict] = {}
+    for r in adset_rows:
+        key = (r["platform_id"], r.get("campaign_name"))
+        existing = preferred.get(key)
+        if existing is None or _window_priority(r.get("reach_window")) > _window_priority(
+            existing.get("reach_window")
+        ):
+            preferred[key] = r
+
+    # ── bucket chosen adset rows by (type, platform_id) — aggregate reach (MAX)
+    # and frequency (impression-weighted average across distinct campaign_names
+    # within the same type/platform, all now measured on a single window per
+    # campaign).
+    adset_bucket: dict[
+        tuple[CampaignType, str],
+        dict[str, float],
+    ] = defaultdict(lambda: {"reach": 0.0, "freq_num": 0.0, "freq_den": 0.0})
+    for (platform_id, campaign_name), r in preferred.items():
+        ctype = classify_campaign_name(campaign_name)
+        key = (ctype, platform_id)
+        entry = adset_bucket[key]
+        reach = float(r.get("reach") or 0)
+        freq = float(r.get("frequency") or 0)
+        impr = float(r.get("adset_impressions") or 0)
+        # NOTE: MAX across campaigns understates reach when audiences overlap
+        # across multiple campaigns of the same type on the same platform (e.g.
+        # two awareness campaigns targeting overlapping lookalikes). SUM would
+        # overstate it. MAX is the conservative floor and matches prior
+        # single-campaign-per-platform behaviour; revisit once we have a
+        # dedupe-across-campaigns reach source.
+        entry["reach"] = max(entry["reach"], reach)
+        # impression-weighted frequency avg across campaign_names for same type/platform
+        if freq > 0 and impr > 0:
+            entry["freq_num"] += freq * impr
+            entry["freq_den"] += impr
+
+    # ── bucket daily rows by (type, platform_id) — classify campaign_objective ──
+    daily_bucket: dict[tuple[CampaignType, str], dict] = {}
+    for r in daily_rows:
+        platform_id = r["platform_id"]
+        campaign_objective = r.get("campaign_objective")
+        ctype = classify_objective_string(campaign_objective)
+        key = (ctype, platform_id)
+
+        if key not in daily_bucket:
+            daily_bucket[key] = {
+                "spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0,
+                "video_views_3s": 0, "thruplay": 0,
+                "video_q25": 0, "video_q50": 0, "video_q75": 0, "video_q100": 0,
+                "post_engagement": 0, "post_reactions": 0, "post_comments": 0,
+                "outbound_clicks": 0, "landing_page_views": 0,
+                "registrations": 0.0, "leads": 0.0, "on_platform_leads": 0.0,
+                "contacts": 0.0, "donations": 0.0,
+                "viewability_measured": 0, "viewability_viewed": 0,
+                "campaign_objective": campaign_objective,  # keep first seen
+            }
+        b = daily_bucket[key]
+        b["spend"] += float(r.get("spend") or 0)
+        b["impressions"] += int(r.get("impressions") or 0)
+        b["clicks"] += int(r.get("clicks") or 0)
+        b["conversions"] += float(r.get("conversions") or 0)
+        b["video_views_3s"] += int(r.get("video_views_3s") or 0)
+        b["thruplay"] += int(r.get("thruplay") or 0)
+        b["video_q25"] += int(r.get("video_q25") or 0)
+        b["video_q50"] += int(r.get("video_q50") or 0)
+        b["video_q75"] += int(r.get("video_q75") or 0)
+        b["video_q100"] += int(r.get("video_q100") or 0)
+        b["post_engagement"] += int(r.get("post_engagement") or 0)
+        b["post_reactions"] += int(r.get("post_reactions") or 0)
+        b["post_comments"] += int(r.get("post_comments") or 0)
+        b["outbound_clicks"] += int(r.get("outbound_clicks") or 0)
+        b["landing_page_views"] += int(r.get("landing_page_views") or 0)
+        b["registrations"] += float(r.get("registrations") or 0)
+        b["leads"] += float(r.get("leads") or 0)
+        b["on_platform_leads"] += float(r.get("on_platform_leads") or 0)
+        b["contacts"] += float(r.get("contacts") or 0)
+        b["donations"] += float(r.get("donations") or 0)
+        b["viewability_measured"] += int(r.get("viewability_measured") or 0)
+        b["viewability_viewed"] += int(r.get("viewability_viewed") or 0)
+
+    # ── merge daily + adset buckets into PlatformMetrics per type/platform ──
+    # A platform can appear in the daily bucket but not the adset bucket
+    # (no reach data for that type on that platform) — we still emit it with
+    # reach=0. The reverse case (adset data but no daily data) is also
+    # possible, though rare; we emit a near-empty PlatformMetrics for it.
+    all_keys = set(daily_bucket.keys()) | set(adset_bucket.keys())
+
+    result: dict[CampaignType, list[PlatformMetrics]] = {
+        CampaignType.PERSUASION: [],
+        CampaignType.CONVERSION: [],
+    }
+    for ctype, platform_id in all_keys:
+        daily_b = daily_bucket.get((ctype, platform_id), {})
+        adset_b = adset_bucket.get((ctype, platform_id), {})
+        freq_num = adset_b.get("freq_num", 0.0)
+        freq_den = adset_b.get("freq_den", 0.0)
+        if freq_den > 0:
+            frequency = freq_num / freq_den
+        elif daily_b.get("impressions") and adset_b.get("reach"):
+            frequency = daily_b["impressions"] / adset_b["reach"] if adset_b["reach"] else 0
+        else:
+            frequency = 0.0
+
+        pm = PlatformMetrics(
+            platform_id=platform_id,
+            spend=daily_b.get("spend", 0.0),
+            impressions=daily_b.get("impressions", 0),
+            clicks=daily_b.get("clicks", 0),
+            conversions=daily_b.get("conversions", 0.0),
+            reach=int(adset_b.get("reach", 0)),
+            frequency=float(frequency),
+            video_views_3s=daily_b.get("video_views_3s", 0),
+            thruplay=daily_b.get("thruplay", 0),
+            video_q25=daily_b.get("video_q25", 0),
+            video_q50=daily_b.get("video_q50", 0),
+            video_q75=daily_b.get("video_q75", 0),
+            video_q100=daily_b.get("video_q100", 0),
+            post_engagement=daily_b.get("post_engagement", 0),
+            post_reactions=daily_b.get("post_reactions", 0),
+            post_comments=daily_b.get("post_comments", 0),
+            outbound_clicks=daily_b.get("outbound_clicks", 0),
+            landing_page_views=daily_b.get("landing_page_views", 0),
+            registrations=daily_b.get("registrations", 0.0),
+            leads=daily_b.get("leads", 0.0),
+            on_platform_leads=daily_b.get("on_platform_leads", 0.0),
+            contacts=daily_b.get("contacts", 0.0),
+            donations=daily_b.get("donations", 0.0),
+            campaign_objective=daily_b.get("campaign_objective"),
+            viewability_measured=daily_b.get("viewability_measured", 0),
+            viewability_viewed=daily_b.get("viewability_viewed", 0),
         )
-        for r in rows
-    ]
+        result[ctype].append(pm)
+
+    return result
 
 
-def _query_daily_metrics(
+def _query_daily_metrics_by_type(
     project_code: str, flight_start: date, eval_date: date
-) -> list[DailyMetrics]:
-    """Query daily breakdown for trend signals."""
+) -> dict[CampaignType, list[DailyMetrics]]:
+    """Query per-day, per-platform, per-type daily rows for trend signals.
+
+    Returns {campaign_type: [DailyMetrics, ...]}. Each input row is classified
+    by its `campaign_objective` and aggregated into the matching bucket keyed
+    on (type, date, platform_id).
+    """
     sql = f"""
         SELECT
             date,
             platform_id,
+            campaign_objective,
             SUM(spend) as spend,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
@@ -474,7 +579,7 @@ def _query_daily_metrics(
         FROM {bq.table('fact_digital_daily')}
         WHERE project_code = @project_code
           AND date BETWEEN @flight_start AND @eval_date
-        GROUP BY date, platform_id
+        GROUP BY date, platform_id, campaign_objective
         ORDER BY date
     """
     params = [
@@ -484,20 +589,47 @@ def _query_daily_metrics(
     ]
     rows = bq.run_query(sql, params)
 
-    return [
-        DailyMetrics(
-            date=r["date"],
-            platform_id=r["platform_id"],
-            spend=float(r.get("spend") or 0),
-            impressions=int(r.get("impressions") or 0),
-            clicks=int(r.get("clicks") or 0),
-            conversions=float(r.get("conversions") or 0),
-            video_views_3s=int(r.get("video_views_3s") or 0),
-            thruplay=int(r.get("thruplay") or 0),
-            post_engagement=int(r.get("post_engagement") or 0),
-        )
-        for r in rows
-    ]
+    # Bucket by (type, date, platform_id) — collapse multiple campaign_objectives
+    # that classify to the same CampaignType onto a single row per day/platform.
+    buckets: dict[tuple[CampaignType, date, str], dict] = {}
+    for r in rows:
+        ctype = classify_objective_string(r.get("campaign_objective"))
+        key = (ctype, r["date"], r["platform_id"])
+        if key not in buckets:
+            buckets[key] = {
+                "spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0,
+                "video_views_3s": 0, "thruplay": 0, "post_engagement": 0,
+            }
+        b = buckets[key]
+        b["spend"] += float(r.get("spend") or 0)
+        b["impressions"] += int(r.get("impressions") or 0)
+        b["clicks"] += int(r.get("clicks") or 0)
+        b["conversions"] += float(r.get("conversions") or 0)
+        b["video_views_3s"] += int(r.get("video_views_3s") or 0)
+        b["thruplay"] += int(r.get("thruplay") or 0)
+        b["post_engagement"] += int(r.get("post_engagement") or 0)
+
+    result: dict[CampaignType, list[DailyMetrics]] = {
+        CampaignType.PERSUASION: [],
+        CampaignType.CONVERSION: [],
+    }
+    for (ctype, d, platform_id), b in buckets.items():
+        result[ctype].append(DailyMetrics(
+            date=d,
+            platform_id=platform_id,
+            spend=b["spend"],
+            impressions=b["impressions"],
+            clicks=b["clicks"],
+            conversions=b["conversions"],
+            video_views_3s=b["video_views_3s"],
+            thruplay=b["thruplay"],
+            post_engagement=b["post_engagement"],
+        ))
+
+    # Preserve the prior ordering: daily lists sorted by date.
+    for ctype in result:
+        result[ctype].sort(key=lambda dm: (dm.date, dm.platform_id))
+    return result
 
 
 def _query_ga4(
@@ -509,6 +641,11 @@ def _query_ga4(
     `project_ga4_urls` mapping table (project_code ↔ ga4_property_id +
     url_pattern). If the project has no GA4 URLs configured, we return
     empty metrics — this is expected and must not break Distribution signals.
+
+    Note: GA4 data is NOT partitioned by campaign type (session data isn't
+    objective-tagged). Per Build Plan §12, the same GA4Metrics feeds both the
+    persuasion subset (for R3 landing page depth) and the conversion subset
+    (for F3–F5 funnel signals).
     """
     try:
         url_rows = bq.run_query(
@@ -575,14 +712,31 @@ def _query_ga4(
     return GA4Metrics()
 
 
-def _query_budget_pacing(project_code: str, eval_date: date) -> float | None:
+def _query_budget_pacing(
+    project_code: str,
+    eval_date: date,
+    line_ids: set[str] | None = None,
+) -> float | None:
     """Get project-level budget pacing percentage from budget_tracking.
 
-    budget_tracking is stored per-line, so we roll it up to a single
-    project-level pacing figure: SUM(actual_spend_to_date) / SUM(planned_spend_to_date) * 100.
+    budget_tracking is stored per-line, so we roll it up to a single pacing
+    figure: SUM(actual_spend_to_date) / SUM(planned_spend_to_date) * 100.
     Falls back to the latest prior date if the target date has no rows yet
     (e.g. the daily budget_tracking refresh hasn't run for today).
+
+    When `line_ids` is provided, the rollup is restricted to those lines only
+    — used by the mixed-campaign engine to compute pacing per subset.
     """
+    line_filter = ""
+    params = [
+        bq.string_param("project_code", project_code),
+        bq.date_param("eval_date", eval_date),
+    ]
+    if line_ids:
+        # BigQuery parameterised IN-clause via UNNEST
+        line_filter = "AND bt.line_id IN UNNEST(@line_ids)"
+        params.append(bq.array_param("line_ids", "STRING", sorted(line_ids)))
+
     sql = f"""
         WITH target AS (
           SELECT MAX(date) AS d
@@ -599,11 +753,8 @@ def _query_budget_pacing(project_code: str, eval_date: date) -> float | None:
         CROSS JOIN target
         WHERE bt.project_code = @project_code
           AND bt.date = target.d
+          {line_filter}
     """
-    params = [
-        bq.string_param("project_code", project_code),
-        bq.date_param("eval_date", eval_date),
-    ]
     try:
         rows = bq.run_query(sql, params)
         if rows and rows[0].get("pacing_percentage") is not None:
@@ -617,7 +768,12 @@ def _query_budget_pacing(project_code: str, eval_date: date) -> float | None:
 
 
 def _store_results(outputs: list[DiagnosticOutput]) -> None:
-    """Write diagnostic results to fact_diagnostic_signals."""
+    """Write diagnostic results to fact_diagnostic_signals.
+
+    Accepts one or more outputs (typically 1 for pure projects, 2 for mixed).
+    fact_diagnostic_signals is clustered by (project_code, campaign_type),
+    so multiple outputs per project-date is the intended shape.
+    """
     if not outputs:
         return
 
@@ -649,7 +805,8 @@ def _store_results(outputs: list[DiagnosticOutput]) -> None:
 def _fire_alerts(output: DiagnosticOutput) -> None:
     """Write diagnostic alerts to the alerts table for Slack dispatch.
 
-    Uses the existing alerts table + slack_alerts.py pipeline.
+    Alert IDs are namespaced by campaign_type so that persuasion and conversion
+    diagnostics for the same project-date don't collide on shared alert types.
     """
     if not output.alerts:
         return
@@ -659,7 +816,10 @@ def _fire_alerts(output: DiagnosticOutput) -> None:
 
     for alert in output.alerts:
         records.append({
-            "alert_id": f"diag-{output.project_code}-{alert.type}-{output.evaluation_date}",
+            "alert_id": (
+                f"diag-{output.project_code}-{output.campaign_type.value}"
+                f"-{alert.type}-{output.evaluation_date}"
+            ),
             "project_code": output.project_code,
             "alert_type": f"diagnostic_{alert.type}",
             "severity": alert.severity.value,
@@ -685,8 +845,8 @@ def _fire_alerts(output: DiagnosticOutput) -> None:
             write_disposition=bqmod.WriteDisposition.WRITE_APPEND,
         )
         client.load_table_from_json(records, target, job_config=cfg).result()
-        logger.info("Fired %d diagnostic alerts for %s",
-                     len(records), output.project_code)
+        logger.info("Fired %d diagnostic alerts for %s [%s]",
+                     len(records), output.project_code, output.campaign_type.value)
     except Exception:
         logger.error("Failed to fire diagnostic alerts", exc_info=True)
     finally:
