@@ -40,8 +40,14 @@ def _detect_project_objective(project_code: str) -> str:
     try:
         mp_sql = f"""
             SELECT platform_id, objective
-            FROM {bq.table('media_plan_lines')}
-            WHERE project_code = @pc AND objective IS NOT NULL
+            FROM (
+                SELECT platform_id, objective,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY line_id ORDER BY sync_version DESC
+                       ) AS _rn
+                FROM {bq.table('media_plan_lines')}
+                WHERE project_code = @pc AND objective IS NOT NULL
+            ) WHERE _rn = 1
         """
         mp_rows = bq.run_query(mp_sql, [bq.string_param("pc", project_code)])
         mp_objectives = {r["platform_id"]: r["objective"] for r in mp_rows if r.get("platform_id")}

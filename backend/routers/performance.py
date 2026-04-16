@@ -72,9 +72,15 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, list[str]]:
     try:
         sql = f"""
             SELECT platform_id, objective
-            FROM {bq.table('media_plan_lines')}
-            WHERE project_code = @project_code
-              AND objective IS NOT NULL
+            FROM (
+                SELECT platform_id, objective,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY line_id ORDER BY sync_version DESC
+                       ) AS _rn
+                FROM {bq.table('media_plan_lines')}
+                WHERE project_code = @project_code
+                  AND objective IS NOT NULL
+            ) WHERE _rn = 1
         """
         rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
         result: dict[str, list[str]] = {}

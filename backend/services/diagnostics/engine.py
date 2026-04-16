@@ -215,8 +215,14 @@ def _classify_from_media_plan(project_code: str) -> CampaignType | None:
     """Fallback classification from media plan line objectives."""
     sql = f"""
         SELECT objective
-        FROM {bq.table('media_plan_lines')}
-        WHERE project_code = @project_code
+        FROM (
+            SELECT objective,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY line_id ORDER BY sync_version DESC
+                   ) AS _rn
+            FROM {bq.table('media_plan_lines')}
+            WHERE project_code = @project_code
+        ) WHERE _rn = 1
         LIMIT 5
     """
     rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
@@ -268,8 +274,14 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
             flight_end,
             ffs_score,
             objective
-        FROM {bq.table('media_plan_lines')}
-        WHERE project_code = @project_code
+        FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY line_id ORDER BY sync_version DESC
+                   ) AS _rn
+            FROM {bq.table('media_plan_lines')}
+            WHERE project_code = @project_code
+        ) WHERE _rn = 1
     """
     rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
 

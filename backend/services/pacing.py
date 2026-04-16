@@ -450,11 +450,13 @@ def run_pacing_for_project(project_code: str) -> dict:
 
 
 def _write_budget_tracking(project_code: str, as_of: date, rows: list[dict]) -> None:
-    """Delete today's rows for this project and insert fresh ones."""
+    """Delete today's rows for this project, purge orphans, and insert fresh ones."""
     mtl = bigquery.Client(project=settings.gcp_project_id, location=settings.gcp_region)
     try:
         target = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.budget_tracking"
+        mpl_table = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.media_plan_lines"
 
+        # Delete today's rows (existing behavior)
         mtl.query(
             f"DELETE FROM `{target}` WHERE project_code = @pc AND date = @d",
             job_config=bigquery.QueryJobConfig(query_parameters=[
@@ -462,6 +464,27 @@ def _write_budget_tracking(project_code: str, as_of: date, rows: list[dict]) -> 
                 bigquery.ScalarQueryParameter("d", "DATE", as_of.isoformat()),
             ]),
         ).result()
+
+        # Purge orphaned rows whose line_id no longer exists in media_plan_lines.
+        # This prevents stale data from accumulating after plan resyncs where
+        # line_ids change (new plan_id = new line_id prefix).
+        orphan_result = mtl.query(
+            f"""DELETE FROM `{target}`
+            WHERE project_code = @pc
+              AND line_id NOT IN (
+                SELECT line_id FROM `{mpl_table}`
+                WHERE project_code = @pc
+              )""",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            ]),
+        ).result()
+        orphans_deleted = orphan_result.num_dml_affected_rows or 0
+        if orphans_deleted > 0:
+            logger.info(
+                "  Purged %d orphaned budget_tracking rows for %s",
+                orphans_deleted, project_code,
+            )
 
         load_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
