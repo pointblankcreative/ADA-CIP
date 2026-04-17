@@ -4,11 +4,11 @@
 
 Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Looker. Centralises campaign monitoring, budget pacing, automated reporting, and client-facing dashboards for a political advertising agency running 5-15 concurrent campaigns across Meta, Google Ads, LinkedIn, StackAdapt, TikTok, Snapchat, and Perion/Hivestack (DOOH).
 
-## Section 2: Current Status (Updated 2026-04-10)
+## Section 2: Current Status (Updated 2026-04-16)
 
 **Phase:** Phase 2 (Brightwater) — building out features to make CIP compelling for team adoption.
 
-### Deployed to Production & Staging (in sync as of 2026-04-10)
+### Deployed to Staging (as of 2026-04-16)
 - Core data pipeline: Funnel.io → BigQuery transformation for all 8 platforms
 - GA4 sessions/conversions ingestion and URL management
 - Admin panel: project management, pipeline controls, media plan sync
@@ -16,21 +16,35 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 - Industry benchmarks (political advertising baselines)
 - Reach/frequency ingestion from ad-set-level Funnel.io data
 - Creative variant aliases with nullable platform_id
-- Media plan sync: budget-based tab filtering, non-destructive matching, dedup fix, audience_name override persistence across re-syncs, per-line flight date parsing
-- Pacing engine: per-line flight date spend attribution, 2-day grace period for new flights, completed flight pacing, NULL line_status handling
+- Media plan sync: budget-based tab filtering, non-destructive matching, dedup fix, audience_name override persistence across re-syncs, per-line flight date parsing, retry on _delete_old_versions (3× with backoff)
+- Pacing engine: per-line flight date spend attribution, 2-day grace period for new flights, completed flight UI treatment, stale line_id auto-purge on every pacing run
+- All media_plan_lines queries protected with ROW_NUMBER dedup CTE (pacing router, pacing service, performance router, benchmarks router, diagnostic engine)
 - Oscilloscope pacing health visualization with pending-line handling
 - Overview page: recently ended section, budget bar uses utilization color
 - Objective-based KPI classification (awareness/conversion/mixed) with reach/freq endpoint
 - Cross-region BigQuery fix for adset transform
 - Dual-URL CORS fix for Cloud Run new URL format
 - Google Drive sharing instructions for media plan setup
+- **Diagnostic Signal Engine — Persuasion:** Distribution (D1-D4) + Attention (A1-A5) + Resonance (R1-R3) all live. R2 guard-fails pending Phase 3 earned-impression connectors.
+- **Diagnostic Signal Engine — Conversion:** Acquisition (C1-C3) + Funnel (F1-F5) live. Quality (Q1-Q3) **deferred** pending per-client CRM integration — weight redistributed to Acq 0.43 / Funnel 0.57. See `docs/diagnostics/quality-pillar-deferred.md`.
+- **Diagnostic Signal Engine — Mixed campaigns:** Engine + queries + tests live on `feat/engine-mixed-campaigns` (Build Plan §12). Per-line classification, dual DiagnosticOutput, per-subset pacing. Frontend diagnostics tab still needs dual-health-card treatment before merge to main.
 
 ### What Needs Doing Next
-Check the Asana backlog (see Section 7) for the prioritised list. Remaining open items:
 
-1. **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
-2. **Blurred creative underlay** — campaign-specific visual backgrounds
-3. **Auto-display client logo** in campaign UI
+**Diagnostic Engine (priority):**
+1. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
+
+**Recently landed (this branch):**
+- `daily_job.py` alert integration — signal-level ACTION + health regression with 24h dedup matching `services/pacing` pattern. See `docs/diagnostics/alert-rules.md`.
+- Phase 2.5 design note — within-a-line ad-set arch mixing limitation documented in `docs/diagnostics/phase-2-5-arch-mixing.md`. Deferred pending ad-set-grain FFS.
+
+**Future / Blocked on CRM:**
+- **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md` for unblocking requirements and candidate signal definitions.
+
+**Other Features (Asana backlog):**
+4. **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
+5. **Blurred creative underlay** — campaign-specific visual backgrounds
+6. **Auto-display client logo** in campaign UI
 
 ### Current Users
 Only Frazer so far. Goal is to make it good enough that the whole team adopts it immediately on rollout.

@@ -2,8 +2,13 @@
 
 Four-layer pyramid:
     Level 1: DiagnosticOutput (health score)
-    Level 2: PillarScore (distribution, attention, resonance / acquisition, funnel, quality)
-    Level 3: SignalResult (D1, D2, ... R3 / C1, C2, ... Q3)
+    Level 2: PillarScore
+        - Persuasion: distribution, attention, resonance
+        - Conversion: acquisition, funnel
+          (A Quality pillar was originally scoped but is deferred
+          pending per-client CRM integration — see
+          docs/diagnostics/quality-pillar-deferred.md.)
+    Level 3: SignalResult (D1-D4, A1-A5, R1-R3 / C1-C3, F1-F5)
     Level 4: EfficiencyMetrics (CPM, CPC, CPA, CPCV, pacing %)
 
 Plus: typed wrappers for BQ query results so signal functions

@@ -178,7 +178,7 @@ async def run_diagnostics(project_code: str):
         return {
             "project_code": project_code,
             "status": "skipped",
-            "message": "No diagnostic produced (missing media plan, unclassifiable campaign, or conversion campaign — Phase 2 pending).",
+            "message": "No diagnostic produced (missing media plan or no derivable flight dates).",
             "results": [],
         }
 

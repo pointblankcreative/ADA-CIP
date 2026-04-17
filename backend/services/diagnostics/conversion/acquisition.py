@@ -484,7 +484,7 @@ def compute_acquisition_pillar(data: CampaignData) -> PillarScore:
     pillar = PillarScore(
         name="acquisition",
         signals=[c1, c2, c3],
-        weight=0.30,  # Conversion pillar weight (from benchmarks)
+        weight=0.43,  # Conversion pillar weight (Quality deferred; see benchmarks)
     )
 
     # Weighted average of active signals
