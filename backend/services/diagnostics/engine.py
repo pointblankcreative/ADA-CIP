@@ -42,9 +42,11 @@ from backend.services.diagnostics.models import (
     GA4Metrics,
     MediaPlanLine,
     PlatformMetrics,
+    StatusBand,
 )
 from backend.services.diagnostics.persuasion.health import compute_persuasion_health
 from backend.services.diagnostics.conversion.health import compute_conversion_health
+from backend.services.diagnostics.shared.alerts import build_regression_alert
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,13 @@ def run_diagnostics_for_project(
     if not results:
         logger.warning("No classifiable media plan lines for %s", project_code)
         return results
+
+    # Step 4.5: Health-regression alerts require the prior evaluation,
+    # so they're added here — after per-signal alerts (populated inside
+    # the health modules) but before storage, so the stored row reflects
+    # the full alert set. See docs/diagnostics/alert-rules.md.
+    for output in results:
+        _populate_regression_alert(output)
 
     # Step 5: Store all outputs in a single load job.
     _store_results(results)
@@ -767,6 +776,85 @@ def _query_budget_pacing(
 # ── Storage ─────────────────────────────────────────────────────────
 
 
+# ── Regression alert ────────────────────────────────────────────────
+
+
+def _populate_regression_alert(output: DiagnosticOutput) -> None:
+    """Append a health-regression alert if the campaign just entered ACTION.
+
+    Queries fact_diagnostic_signals for the prior evaluation on the same
+    (project_code, campaign_type) and delegates the firing decision to
+    shared.alerts.build_regression_alert.
+
+    Failures to query prior history are logged and silently skip the alert
+    — a missing regression alert is a non-critical degradation; nothing
+    else depends on it.
+    """
+    if output.health_status != StatusBand.ACTION:
+        return
+
+    try:
+        prev_status, prev_score = _query_prior_health(
+            output.project_code,
+            output.campaign_type,
+            output.evaluation_date,
+        )
+    except Exception:
+        logger.warning(
+            "Could not query prior health for %s [%s]; skipping regression alert",
+            output.project_code,
+            output.campaign_type.value,
+            exc_info=True,
+        )
+        return
+
+    alert = build_regression_alert(output, prev_status, prev_score)
+    if alert is not None:
+        output.alerts.append(alert)
+
+
+def _query_prior_health(
+    project_code: str,
+    campaign_type: CampaignType,
+    evaluation_date: date,
+) -> tuple[StatusBand | None, float | None]:
+    """Return (status, score) of the most recent evaluation before today.
+
+    Returns (None, None) if no prior row exists. The table is clustered
+    on (project_code, campaign_type) so this is a cheap lookup.
+    """
+    sql = f"""
+        SELECT health_status, health_score
+        FROM {bq.table('fact_diagnostic_signals')}
+        WHERE project_code = @project_code
+          AND campaign_type = @campaign_type
+          AND evaluation_date < @evaluation_date
+        ORDER BY evaluation_date DESC
+        LIMIT 1
+    """
+    rows = bq.run_query(
+        sql,
+        [
+            bq.string_param("project_code", project_code),
+            bq.string_param("campaign_type", campaign_type.value),
+            bq.date_param("evaluation_date", evaluation_date),
+        ],
+    )
+    if not rows:
+        return None, None
+
+    row = rows[0]
+    raw_status = row.get("health_status")
+    try:
+        status = StatusBand(raw_status) if raw_status else None
+    except ValueError:
+        status = None
+
+    raw_score = row.get("health_score")
+    score = float(raw_score) if raw_score is not None else None
+    return status, score
+
+
 def _store_results(outputs: list[DiagnosticOutput]) -> None:
     """Write diagnostic results to fact_diagnostic_signals.
 
@@ -805,8 +893,10 @@ def _store_results(outputs: list[DiagnosticOutput]) -> None:
 def _fire_alerts(output: DiagnosticOutput) -> None:
     """Write diagnostic alerts to the alerts table for Slack dispatch.
 
-    Alert IDs are namespaced by campaign_type so that persuasion and conversion
-    diagnostics for the same project-date don't collide on shared alert types.
+    Alert IDs are namespaced by campaign_type so persuasion and conversion
+    diagnostics for the same project-date don't collide. Before inserting,
+    a 24h dedup pass matches the pattern used by services/pacing — keyed on
+    (project_code, alert_type, severity). See docs/diagnostics/alert-rules.md.
     """
     if not output.alerts:
         return
@@ -815,15 +905,17 @@ def _fire_alerts(output: DiagnosticOutput) -> None:
     records = []
 
     for alert in output.alerts:
+        alert_type = f"diagnostic_{alert.type}"
+        title = _alert_title(output, alert)
         records.append({
             "alert_id": (
                 f"diag-{output.project_code}-{output.campaign_type.value}"
                 f"-{alert.type}-{output.evaluation_date}"
             ),
             "project_code": output.project_code,
-            "alert_type": f"diagnostic_{alert.type}",
+            "alert_type": alert_type,
             "severity": alert.severity.value,
-            "title": f"Diagnostic: {alert.type.replace('_', ' ').title()}",
+            "title": title,
             "message": alert.message,
             "metric_value": None,
             "threshold_value": None,
@@ -831,7 +923,16 @@ def _fire_alerts(output: DiagnosticOutput) -> None:
             "created_at": now,
         })
 
+    # 24h dedup — suppress alerts already fired for the same
+    # (project, type, severity) within the last day. Mirrors
+    # services/pacing._deduplicate_alerts.
+    records = _deduplicate_diagnostic_alerts(records)
     if not records:
+        logger.info(
+            "No new diagnostic alerts for %s [%s] after dedup",
+            output.project_code,
+            output.campaign_type.value,
+        )
         return
 
     target = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.alerts"
@@ -851,3 +952,108 @@ def _fire_alerts(output: DiagnosticOutput) -> None:
         logger.error("Failed to fire diagnostic alerts", exc_info=True)
     finally:
         client.close()
+
+
+def _alert_title(output: DiagnosticOutput, alert) -> str:
+    """Human-readable title per docs/diagnostics/alert-rules.md."""
+    prefix = f"{output.project_code} [{output.campaign_type.value}]"
+    score_fmt = _format_alert_score(output.health_score)
+
+    if alert.type == "health_regression":
+        return f"{prefix} \u00b7 Health dropped to ACTION ({score_fmt})"
+
+    if alert.type.startswith("signal_") and alert.signal_id:
+        signal = _find_signal(output, alert.signal_id)
+        sig_score = _format_alert_score(signal.score if signal else None)
+        sig_name = signal.name if signal else alert.signal_id
+        return (
+            f"{prefix} \u00b7 {alert.signal_id} {sig_name} "
+            f"\u2014 ACTION ({sig_score})"
+        )
+
+    # Fallback — should not happen given current alert types, but keep
+    # the old shape so nothing downstream breaks silently.
+    return f"Diagnostic: {alert.type.replace('_', ' ').title()}"
+
+
+def _find_signal(output: DiagnosticOutput, signal_id: str):
+    for pillar in output.pillars:
+        for signal in pillar.signals:
+            if signal.id == signal_id:
+                return signal
+    return None
+
+
+def _format_alert_score(score) -> str:
+    if score is None:
+        return "\u2014"
+    try:
+        score_f = float(score)
+    except (TypeError, ValueError):
+        return str(score)
+    if abs(score_f - round(score_f)) < 0.05:
+        return f"{int(round(score_f))}"
+    return f"{score_f:.1f}"
+
+
+def _deduplicate_diagnostic_alerts(records: list[dict]) -> list[dict]:
+    """Suppress alerts that already exist in the last 24h.
+
+    Mirrors services/pacing._deduplicate_alerts — keyed on
+    (project_code, alert_type, severity), 24h window, ignoring
+    already-resolved rows.
+    """
+    if not records:
+        return []
+
+    project_codes = list({r["project_code"] for r in records if r.get("project_code")})
+    if not project_codes:
+        return records
+
+    params = []
+    conditions = []
+    for i, pc in enumerate(project_codes):
+        pname = f"pc_{i}"
+        conditions.append(f"@{pname}")
+        params.append(bq.string_param(pname, pc))
+
+    sql = f"""
+        SELECT project_code, alert_type, severity
+        FROM {bq.table('alerts')}
+        WHERE project_code IN ({", ".join(conditions)})
+          AND created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+          AND resolved_at IS NULL
+    """
+    try:
+        existing_rows = bq.run_query(sql, params)
+    except Exception:
+        # If the dedup query fails (e.g. resolved_at column missing on a
+        # fresh table), fall back to inserting everything. A duplicate
+        # beats a silent miss.
+        logger.warning(
+            "Diagnostic alert dedup query failed; inserting without dedup",
+            exc_info=True,
+        )
+        return records
+
+    existing_keys = {
+        (r["project_code"], r["alert_type"], r["severity"])
+        for r in existing_rows
+    }
+
+    deduped = []
+    for r in records:
+        key = (r["project_code"], r["alert_type"], r["severity"])
+        if key in existing_keys:
+            logger.debug("Skipping duplicate diagnostic alert: %s", key)
+            continue
+        deduped.append(r)
+
+    skipped = len(records) - len(deduped)
+    if skipped:
+        logger.info(
+            "  Diagnostic dedup: skipped %d duplicate alerts out of %d",
+            skipped,
+            len(records),
+        )
+    return deduped

@@ -247,8 +247,18 @@ def run_daily_pipeline() -> dict:
 
     # ── Stage 2b: Diagnostics ───────────────────────────────────────
     # Runs after pacing so budget_tracking is fresh (used by efficiency layer).
-    # Phase 1: persuasion Distribution pillar only. Failures are non-critical —
-    # the rest of the pipeline (staleness, Slack) still runs.
+    #
+    # Current scope:
+    #   - Persuasion: Distribution (D1-D4), Attention (A1-A5), Resonance (R1-R3)
+    #   - Conversion: Acquisition (C1-C3), Funnel (F1-F5)
+    #     (Quality (Q1-Q3) deferred — see docs/diagnostics/quality-pillar-deferred.md)
+    #   - Mixed-campaign aware: partitions media plan lines by type and runs
+    #     persuasion + conversion independently on projects that carry both.
+    #   - Alerts: signal-level ACTION + health-regression (ACTION transition),
+    #     with 24h dedup — see docs/diagnostics/alert-rules.md.
+    #
+    # Failures are non-critical — the rest of the pipeline (staleness, Slack)
+    # still runs.
     logger.info("=== Daily Pipeline: Stage 2b — Diagnostics ===")
     try:
         from backend.services.diagnostics.engine import run_all_diagnostics

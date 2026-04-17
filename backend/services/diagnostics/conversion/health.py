@@ -32,6 +32,7 @@ from backend.services.diagnostics.models import (
     EfficiencyMetrics,
     status_band,
 )
+from backend.services.diagnostics.shared.alerts import populate_signal_alerts
 from backend.services.diagnostics.shared.normalization import clamp, safe_div
 
 from backend.services.diagnostics.conversion.acquisition import (
@@ -80,6 +81,11 @@ def compute_conversion_health(data: CampaignData) -> DiagnosticOutput:
 
     # Compute efficiency metrics
     output.efficiency = _compute_efficiency(data)
+
+    # Populate signal-level ACTION alerts. Health-regression alerts
+    # are added later in the engine after querying the prior
+    # evaluation — see docs/diagnostics/alert-rules.md.
+    populate_signal_alerts(output)
 
     return output
 
