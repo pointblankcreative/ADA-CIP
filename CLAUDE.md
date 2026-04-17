@@ -32,9 +32,11 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 ### What Needs Doing Next
 
 **Diagnostic Engine (priority):**
-1. **Wire into `daily_job.py`** + alert integration
-2. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
-3. **Phase 2.5 design note** — within-a-line ad-set arch mixing limitation (Arch A / Arch B classification is currently per-line, not per-ad-set)
+1. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
+
+**Recently landed (this branch):**
+- `daily_job.py` alert integration — signal-level ACTION + health regression with 24h dedup matching `services/pacing` pattern. See `docs/diagnostics/alert-rules.md`.
+- Phase 2.5 design note — within-a-line ad-set arch mixing limitation documented in `docs/diagnostics/phase-2-5-arch-mixing.md`. Deferred pending ad-set-grain FFS.
 
 **Future / Blocked on CRM:**
 - **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md` for unblocking requirements and candidate signal definitions.

@@ -27,7 +27,9 @@ line mixes LP-flow ad sets with in-platform-form ad sets, they'll all
 score under whichever architecture the line is tagged with. Closing
 that gap requires preserving ad-set grain for form metrics in
 ``engine.py`` (currently aggregated to platform-level before reaching
-the diagnostic pillars). Tracked as a Phase 2.5 follow-up.
+the diagnostic pillars) and moving FFS collection to ad-set grain.
+See ``docs/diagnostics/phase-2-5-arch-mixing.md`` for the full design
+note and revisit criteria.
 
 Data sources:
     fact_digital_daily    — spend, clicks, impressions, leads,
