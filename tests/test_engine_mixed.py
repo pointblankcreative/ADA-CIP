@@ -55,13 +55,20 @@ def _media_plan_row(
     }
 
 
-def _fact_digital_row(platform_id: str, objective: str, spend: float = 1000,
+def _fact_digital_row(platform_id: str, objective: str | None, spend: float = 1000,
                      impressions: int = 100_000, clicks: int = 500,
-                     conversions: float = 0) -> dict:
-    """Shape matching fact_digital_daily SELECT in _query_platform_metrics_by_type."""
+                     conversions: float = 0,
+                     campaign_name: str | None = None) -> dict:
+    """Shape matching fact_digital_daily SELECT in _query_platform_metrics_by_type.
+
+    `campaign_name` is optional — added so tests can exercise the NULL-objective
+    fallback path where classify_objective_string falls back to campaign_name
+    keyword matching.
+    """
     row = {
         "platform_id": platform_id,
         "campaign_objective": objective,
+        "campaign_name": campaign_name,
         "spend": spend,
         "impressions": impressions,
         "clicks": clicks,
@@ -433,6 +440,59 @@ class TestEdgeCases:
 
         assert len(outputs) == 1
         assert outputs[0].campaign_type == CampaignType.PERSUASION
+
+    def test_null_campaign_objective_falls_back_to_campaign_name(self):
+        """Daily rows with NULL campaign_objective must classify via campaign_name.
+
+        Regression: the OSSTF 25042 Meta conversion card went blank starting
+        2026-04-07 because the upstream transformation stopped writing
+        campaign_objective, and the engine's daily path classified every row
+        as PERSUASION (the conservative default for NULL). With the fallback
+        in place, a NULL-objective row whose campaign_name contains a
+        conversion keyword ("Retargeting", "Leads", etc.) routes into the
+        conversion bucket."""
+        from backend.services.diagnostics.engine import run_diagnostics_for_project
+        media_plan = [
+            _media_plan_row("awareness", "Awareness (Video Views)"),
+            _media_plan_row("retarget", "Retargeting", platform_id="facebook"),
+        ]
+        # Both rows have campaign_objective=None — simulating the regression.
+        # They should classify from campaign_name: the retargeting name must
+        # route to CONVERSION, not lump back in with PERSUASION.
+        digital = [
+            _fact_digital_row(
+                "facebook", None,
+                spend=5000, impressions=500_000, clicks=400,
+                campaign_name="25042 F1 Awareness Video Views",
+            ),
+            _fact_digital_row(
+                "facebook", None,
+                spend=2000, impressions=100_000, clicks=300, conversions=30,
+                campaign_name="25042 Retargeting Conversions",
+            ),
+        ]
+        adset = [
+            _fact_adset_row("facebook", "25042 F1 Awareness Video Views",
+                            reach=120_000, frequency=3.0),
+            _fact_adset_row("facebook", "25042 Retargeting Conversions",
+                            reach=20_000, frequency=5.0),
+        ]
+        with _EngineContext(media_plan, digital, adset) as ctx:
+            outputs = run_diagnostics_for_project("25042", date(2026, 4, 15))
+
+        # Must produce BOTH outputs — the conversion card must not be blank.
+        types = {o.campaign_type for o in outputs}
+        assert types == {CampaignType.PERSUASION, CampaignType.CONVERSION}
+
+        # Persuasion bucket sees the awareness spend, not the retargeting spend.
+        persuasion_data = ctx.captured_data[CampaignType.PERSUASION]
+        assert persuasion_data.total_spend == 5000
+
+        # Conversion bucket sees the retargeting spend + conversions — proof
+        # the fallback routed the NULL-objective row correctly.
+        conversion_data = ctx.captured_data[CampaignType.CONVERSION]
+        assert conversion_data.total_spend == 2000
+        assert conversion_data.total_conversions == 30
 
     def test_per_subset_flight_derivation(self):
         """Persuasion and conversion subsets derive their own flight dates.

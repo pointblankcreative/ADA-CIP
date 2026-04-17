@@ -326,9 +326,13 @@ def _query_platform_metrics_by_type(
     """Aggregate platform metrics per (platform_id, campaign_type) and return
     a dict keyed by CampaignType.
 
-    We pull fact_digital_daily grouped by (platform_id, campaign_objective) —
-    `campaign_objective` is a first-class column there. Each resulting row is
-    classified (persuasion/conversion) and merged into the matching bucket.
+    We pull fact_digital_daily grouped by (platform_id, campaign_objective,
+    campaign_name). `campaign_objective` is a first-class column there; the
+    additional `campaign_name` grain lets the classifier fall back to
+    campaign-name keyword matching when `campaign_objective` is NULL (e.g. an
+    upstream transformation regression, or platforms that don't report
+    objective). Each resulting row is classified (persuasion/conversion) and
+    merged into the matching bucket.
 
     Reach / frequency live in fact_adset_daily, which does NOT carry
     campaign_objective. We classify those rows by `campaign_name` via the
@@ -338,11 +342,18 @@ def _query_platform_metrics_by_type(
     retargeting in the same project), each bucket gets its own PlatformMetrics
     row for that platform, with the correct subset of spend/impressions/reach.
     """
-    # ── daily (digital) rows — grouped by (platform_id, campaign_objective) ──
+    # ── daily (digital) rows — grouped by (platform_id, campaign_objective, campaign_name) ──
+    # We also group by campaign_name so the Python classifier can fall back to
+    # campaign_name keyword matching when campaign_objective is NULL (e.g.
+    # during a transformation regression or for platforms that don't report
+    # objective). Python-side bucketing re-aggregates by (ctype, platform_id),
+    # so the extra grain is harmless — cardinality stays bounded by the
+    # campaign count for the project.
     daily_sql = f"""
         SELECT
             platform_id,
             campaign_objective,
+            campaign_name,
             SUM(spend) as spend,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
@@ -368,7 +379,7 @@ def _query_platform_metrics_by_type(
         FROM {bq.table('fact_digital_daily')}
         WHERE project_code = @project_code
           AND date BETWEEN @flight_start AND @eval_date
-        GROUP BY platform_id, campaign_objective
+        GROUP BY platform_id, campaign_objective, campaign_name
     """
     params = [
         bq.string_param("project_code", project_code),
@@ -464,12 +475,17 @@ def _query_platform_metrics_by_type(
             entry["freq_num"] += freq * impr
             entry["freq_den"] += impr
 
-    # ── bucket daily rows by (type, platform_id) — classify campaign_objective ──
+    # ── bucket daily rows by (type, platform_id) — classify by campaign_objective,
+    # falling back to campaign_name when objective is NULL. classify_objective_string
+    # already knows to treat the second argument as a fallback, so there's no
+    # separate branch here — the NULL-objective case is just the same call with a
+    # second argument filled in.
     daily_bucket: dict[tuple[CampaignType, str], dict] = {}
     for r in daily_rows:
         platform_id = r["platform_id"]
         campaign_objective = r.get("campaign_objective")
-        ctype = classify_objective_string(campaign_objective)
+        campaign_name = r.get("campaign_name")
+        ctype = classify_objective_string(campaign_objective, campaign_name)
         key = (ctype, platform_id)
 
         if key not in daily_bucket:
@@ -573,11 +589,16 @@ def _query_daily_metrics_by_type(
     by its `campaign_objective` and aggregated into the matching bucket keyed
     on (type, date, platform_id).
     """
+    # Group by campaign_name alongside campaign_objective so the classifier can
+    # fall back to campaign_name when objective is NULL (mirrors the fallback in
+    # _query_platform_metrics_by_type). The extra grain collapses back to
+    # (ctype, date, platform_id) in the Python bucketing loop below.
     sql = f"""
         SELECT
             date,
             platform_id,
             campaign_objective,
+            campaign_name,
             SUM(spend) as spend,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
@@ -588,7 +609,7 @@ def _query_daily_metrics_by_type(
         FROM {bq.table('fact_digital_daily')}
         WHERE project_code = @project_code
           AND date BETWEEN @flight_start AND @eval_date
-        GROUP BY date, platform_id, campaign_objective
+        GROUP BY date, platform_id, campaign_objective, campaign_name
         ORDER BY date
     """
     params = [
@@ -599,10 +620,14 @@ def _query_daily_metrics_by_type(
     rows = bq.run_query(sql, params)
 
     # Bucket by (type, date, platform_id) — collapse multiple campaign_objectives
-    # that classify to the same CampaignType onto a single row per day/platform.
+    # (and campaign_names, now that we group by both) that classify to the same
+    # CampaignType onto a single row per day/platform.
     buckets: dict[tuple[CampaignType, date, str], dict] = {}
     for r in rows:
-        ctype = classify_objective_string(r.get("campaign_objective"))
+        ctype = classify_objective_string(
+            r.get("campaign_objective"),
+            r.get("campaign_name"),
+        )
         key = (ctype, r["date"], r["platform_id"])
         if key not in buckets:
             buckets[key] = {
