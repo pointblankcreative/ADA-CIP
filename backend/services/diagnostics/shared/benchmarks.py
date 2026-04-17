@@ -235,6 +235,131 @@ ACQUISITION_SIGNAL_WEIGHTS = {
 }
 
 
+# ── F1: Click-Through Rate (CTR) ────────────────────────────────────
+#
+# Platform-specific CTR benchmarks calibrated for political-advertising
+# campaigns (conservative — PB's Phase 0 data informs these baselines).
+# Non-clickable placements (CTV, DOOH, audio where applicable) return
+# None and F1 guard-fails for spend on those platforms.
+#
+# Benchmark = "good but achievable" CTR; floor = critically underperforming.
+
+F1_CTR_BENCHMARKS: dict[str, dict[str, float] | None] = {
+    "meta":               {"benchmark": 0.009, "floor": 0.0035},   # 0.90% / 0.35%
+    "facebook":           {"benchmark": 0.009, "floor": 0.0035},
+    "instagram":          {"benchmark": 0.009, "floor": 0.0035},
+    "linkedin":           {"benchmark": 0.006, "floor": 0.0025},
+    "tiktok":             {"benchmark": 0.012, "floor": 0.005},
+    "snapchat":           {"benchmark": 0.008, "floor": 0.003},
+    "google_ads":         {"benchmark": 0.025, "floor": 0.010},
+    "youtube":            {"benchmark": 0.004, "floor": 0.0015},
+    "reddit":             {"benchmark": 0.003, "floor": 0.0012},
+    "pinterest":          {"benchmark": 0.004, "floor": 0.0015},
+    "stackadapt":         {"benchmark": 0.0012, "floor": 0.0005},
+    "stackadapt_display": {"benchmark": 0.0012, "floor": 0.0005},
+    "stackadapt_ctv":     None,   # Non-clickable
+    "perion":             None,   # DOOH — no CTR
+    "hivestack":          None,
+}
+
+F1_DEFAULT_BENCHMARK = {"benchmark": 0.006, "floor": 0.002}
+
+
+def get_f1_benchmark(platform_id: str | None) -> dict[str, float] | None:
+    """Look up CTR benchmark for a platform. Returns None for non-clickable
+    placements (CTV, DOOH) so F1 can guard-fail that platform's share."""
+    if not platform_id:
+        return F1_DEFAULT_BENCHMARK
+    key = platform_id.lower().replace(" ", "_")
+    if key in F1_CTR_BENCHMARKS:
+        return F1_CTR_BENCHMARKS[key]
+    return F1_DEFAULT_BENCHMARK
+
+
+# ── F2: Landing Page Load Rate ──────────────────────────────────────
+#
+# Fraction of clicks that register a landing_page_view. Captures
+# bounce-before-load, slow LP load times, tracking mis-implementation,
+# and mobile app intercepts (e.g. Meta's in-app browser quirks).
+# Only applies to Arch A (landing page) traffic.
+
+F2_BENCHMARK = 0.85      # 85% of clicks land on the page
+F2_FLOOR = 0.50
+
+
+# ── F3: Scroll / Form Discovery Rate ────────────────────────────────
+#
+# Composite of GA4 scroll_rate (scrolls/sessions) and form-discovery
+# inferred from form position relative to the fold on mobile (from
+# FFS inputs: below_fold_mobile flag).
+#
+# F3 = 0.70 * scroll_rate_score + 0.30 * form_discovery_score
+
+F3_SCROLL_BENCHMARK = 0.50      # 50% of sessions register a scroll event
+F3_SCROLL_FLOOR = 0.15
+F3_SCROLL_WEIGHT = 0.70          # Weight of scroll_rate within F3
+F3_DISCOVERY_WEIGHT = 0.30       # Weight of form-position discovery within F3
+
+# Expected form-discovery rate (fraction of sessions that will reach the
+# form) given its position on the page. Used as the normalization target
+# for the discovery component.
+F3_FORM_DISCOVERY_BY_POSITION = {
+    "above_fold": 0.80,          # Form visible without scrolling
+    "mid_page":   0.50,          # Form mid-page — typical
+    "below_fold": 0.30,          # Form requires scroll to reach
+    "unknown":    0.50,          # Default when FFS inputs missing
+}
+
+
+# ── F4: Form Completion Rate ────────────────────────────────────────
+#
+# Fraction of form_starts that become form_submits. FFS adjusts the
+# expected completion rate — high-friction forms get a lower benchmark.
+#
+# Landing-page forms:
+#   expected_completion = F4_BASE_COMPLETION_BENCHMARK * exp(-0.012 * ffs)
+# In-platform forms (Meta Lead, LinkedIn Lead Gen, TikTok Instant):
+#   expected_completion = min(base * F4_PLATFORM_FORM_BOOST, F4_PLATFORM_FORM_CAP)
+
+F4_BASE_COMPLETION_BENCHMARK = 0.65   # 65% baseline for a zero-friction LP form
+F4_PLATFORM_FORM_BOOST = 1.4           # In-platform forms convert ~40% better
+F4_PLATFORM_FORM_CAP = 0.85            # Ceiling on in-platform form expectation
+F4_COMPLETION_FLOOR = 0.20             # Below 20% completion = critical
+
+
+# ── F5: Post-Conversion Activation ──────────────────────────────────
+#
+# Fraction of conversions that trigger a "secondary event" (key_event in
+# GA4 terms — email open, account activation, second page view, etc.).
+# High activation = the lead was engaged, not a drive-by form fill.
+
+F5_ACTIVATION_BENCHMARK = 0.20   # 20% of conversions take a second meaningful action
+F5_ACTIVATION_FLOOR = 0.0         # Any activation is positive
+
+
+# ── Funnel Pillar Signal Weights (architecture-conditional) ─────────
+#
+# Arch A: Landing page flow. F3 (scroll/form discovery) and F4 (form
+# completion) carry most weight — those are where LP-driven campaigns
+# live or die.
+FUNNEL_SIGNAL_WEIGHTS_ARCH_A = {
+    "F1": 0.15,    # CTR
+    "F2": 0.15,    # LP load rate
+    "F3": 0.25,    # Scroll / form discovery
+    "F4": 0.35,    # Form completion
+    "F5": 0.10,    # Post-conversion activation
+}
+
+# Arch B: In-platform form flow (Meta Lead Ads, LinkedIn Lead Gen,
+# TikTok Instant Forms). No landing page, so F2/F3 don't apply.
+# F4 dominates — platform forms live and die on completion rate.
+FUNNEL_SIGNAL_WEIGHTS_ARCH_B = {
+    "F1": 0.30,    # CTR
+    "F4": 0.55,    # Form completion (pre-filled, but still the core)
+    "F5": 0.15,    # Post-conversion activation
+}
+
+
 # ── Audience Temperature Adjustments ────────────────────────────────
 
 AUDIENCE_TEMP_MULTIPLIERS = {

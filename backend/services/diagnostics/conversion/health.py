@@ -3,10 +3,9 @@
 Assembles all pillar scores into the final health score with
 flight-stage adjustment (early flight dampening, late flight urgency).
 
-Currently only the Acquisition pillar (C1-C3) is implemented.
-Funnel (F1-F5) and Quality (Q1-Q3) pillars will be added in
-subsequent phases and their weights will redistribute to active
-pillars until then.
+Acquisition (C1-C3) and Funnel (F1-F5) pillars are live. Quality
+(Q1-Q3) is still a placeholder and its weight redistributes to the
+active pillars until it ships.
 
 Pillar weights (conversion):
     Acquisition: 0.30
@@ -29,21 +28,25 @@ from backend.services.diagnostics.shared.normalization import clamp, safe_div
 from backend.services.diagnostics.conversion.acquisition import (
     compute_acquisition_pillar,
 )
+from backend.services.diagnostics.conversion.funnel import (
+    compute_funnel_pillar,
+)
 
 
 def compute_conversion_health(data: CampaignData) -> DiagnosticOutput:
     """Full conversion diagnostic: pillars → health score → output.
 
-    Phase 1: Only the Acquisition pillar (C1-C3) is active.
-    When Funnel and Quality pillars are added, they'll slot in and the
-    health score will rebalance automatically via compute_health_score().
+    Acquisition (C1-C3) and Funnel (F1-F5) are active. Quality (Q1-Q3)
+    is a placeholder until it ships; its weight redistributes to the
+    scored pillars automatically via compute_health_score().
     """
     # Compute pillars
     acquisition = compute_acquisition_pillar(data)
+    funnel = compute_funnel_pillar(data)
 
-    # Future pillars — placeholder PillarScores with no signals
-    # so the output structure is consistent and ready for extension.
-    funnel = PillarScore(name="funnel", weight=0.40)
+    # Quality pillar not yet implemented — placeholder so the output
+    # structure is consistent and the Q1-Q3 frontend shell has something
+    # to render.
     quality = PillarScore(name="quality", weight=0.30)
 
     pillars = [acquisition, funnel, quality]
