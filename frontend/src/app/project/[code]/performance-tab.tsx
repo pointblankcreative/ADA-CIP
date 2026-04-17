@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -29,6 +29,9 @@ import {
   type CreativeVariantRow,
 } from "@/lib/api";
 import { Card, KpiCard, type BenchmarkIndicator } from "@/components/card";
+import { CampaignTable } from "@/components/campaign-table";
+import { AdSetDrillDown } from "@/components/adset-drilldown";
+import { AdDrillDown } from "@/components/ad-drilldown";
 import {
   formatCurrency,
   formatNumber,
@@ -97,9 +100,9 @@ function toBenchmark(
   };
 }
 
-const fmtPct = (v: number | null) => v != null ? `${(v * 100).toFixed(1)}%` : "—";
-const fmtCad = (v: number | null) => v != null ? `$${v.toFixed(2)}` : "—";
-const safeFix = (v: number | null, d = 0) => v != null ? v.toFixed(d) : "0";
+const fmtPct = (v: number | null): string | null => v != null ? `${(v * 100).toFixed(1)}%` : null;
+const fmtCad = (v: number | null): string | null => v != null ? `$${v.toFixed(2)}` : null;
+const safeFix = (v: number | null, d = 0): string | null => v != null ? v.toFixed(d) : null;
 
 function freqHealthDot(f: number | null | undefined): string | null {
   if (f == null || f <= 0) return null;
@@ -118,7 +121,37 @@ export function PerformanceTab({ code }: { code: string }) {
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(0);
 
+  // Simple request cache: keyed by `${code}-${days}`
+  const cacheRef = useRef<Record<string, {
+    perf: PerformanceResponse | null;
+    ga4: GA4PerformanceResponse | null;
+    bench: BenchmarkResponse | null;
+    adsets: AdSetPerformanceResponse | null;
+    ads: AdPerformanceResponse | null;
+    creatives: CreativeVariantResponse | null;
+  }>>({});
+
   useEffect(() => {
+    // Clear cache when project changes
+    cacheRef.current = {};
+  }, [code]);
+
+  useEffect(() => {
+    const cacheKey = `${code}-${days}`;
+    const cached = cacheRef.current[cacheKey];
+
+    if (cached) {
+      // Use cached data
+      setData(cached.perf);
+      setGa4Data(cached.ga4);
+      setBenchData(cached.bench);
+      setAdsetsData(cached.adsets);
+      setAdsData(cached.ads);
+      setCreativesData(cached.creatives);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     Promise.all([
       api.performance.get(code, days).catch(() => null),
@@ -128,6 +161,9 @@ export function PerformanceTab({ code }: { code: string }) {
       api.performance.ads(code, days).catch(() => null),
       api.performance.creatives(code, days).catch(() => null),
     ]).then(([perf, ga4, bench, adsets, ads, creatives]) => {
+      // Cache the results
+      cacheRef.current[cacheKey] = { perf, ga4, bench, adsets, ads, creatives };
+
       setData(perf);
       setGa4Data(ga4);
       setBenchData(bench);
@@ -281,7 +317,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <KpiCard
                 label="CPM"
                 value={`$${avgCPM.toFixed(2)}`}
-                benchmark={toBenchmark(bm.cpm, avgCPM, { lowerIsBetter: true, format: fmtCad })}
+                benchmark={toBenchmark(bm.cpm, avgCPM, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
               />
             )}
             {has(data, "vcr") && data.total_vcr != null ? (
@@ -289,13 +325,13 @@ export function PerformanceTab({ code }: { code: string }) {
                 label="Video Completion Rate"
                 value={formatPercent(data.total_vcr * 100)}
                 sub={metricNote(data, "video_views")}
-                benchmark={toBenchmark(bm.vcr, data.total_vcr, { format: fmtPct })}
+                benchmark={toBenchmark(bm.vcr, data.total_vcr, { format: (v) => fmtPct(v) ?? "—" })}
               />
             ) : (
               <KpiCard
                 label="CTR"
                 value={formatPercent(avgCTR)}
-                benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: fmtPct })}
+                benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
               />
             )}
             {engagementRate != null ? (
@@ -337,25 +373,25 @@ export function PerformanceTab({ code }: { code: string }) {
                 label="CPA"
                 value={formatCurrency(data.total_cpa)}
                 sub="Cost per acquisition"
-                benchmark={toBenchmark(bm.cpa, data.total_cpa, { lowerIsBetter: true, format: fmtCad })}
+                benchmark={toBenchmark(bm.cpa, data.total_cpa, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
               />
             ) : null}
             <KpiCard
               label="CTR"
               value={formatPercent(avgCTR)}
-              benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: fmtPct })}
+              benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
             />
             {has(data, "conversion_rate") && data.total_conversion_rate != null ? (
               <KpiCard
                 label="Conv. Rate"
                 value={formatPercent(data.total_conversion_rate * 100)}
-                benchmark={toBenchmark(bm.conversion_rate, data.total_conversion_rate, { format: fmtPct })}
+                benchmark={toBenchmark(bm.conversion_rate, data.total_conversion_rate, { format: (v) => fmtPct(v) ?? "—" })}
               />
             ) : (
               <KpiCard
                 label="CPC"
                 value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
-                benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: fmtCad })}
+                benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
               />
             )}
           </div>
@@ -424,7 +460,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v)}%`} domain={[0, 100]} />
+                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, 100]} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${(v ?? 0).toFixed(1)}%`, "VCR"]} />
                 <Line type="monotone" dataKey="vcrPct" stroke="#a855f7" strokeWidth={2} dot={false} name="VCR" />
               </LineChart>
@@ -442,7 +478,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v)}`} />
+                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v) ?? "0"}`} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "CPA"]} />
                 <Line type="monotone" dataKey="cpa" stroke="#22c55e" strokeWidth={2} dot={false} name="CPA" />
               </LineChart>
@@ -460,7 +496,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
                 <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v)}%`} />
+                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Bar yAxisId="left" dataKey="conversions" fill="#22c55e" opacity={0.5} radius={[2, 2, 0, 0]} name="Conversions" />
                 {has(data, "conversion_rate") && (
@@ -501,159 +537,14 @@ export function PerformanceTab({ code }: { code: string }) {
       )}
 
       {/* ── Campaign Table ────────────────────────────────────────── */}
-      {data.campaigns && data.campaigns.length > 0 && (
-        <Card className="overflow-hidden !p-0">
-          <div className="px-5 py-4">
-            <h4 className="text-sm font-medium text-slate-400">Campaigns</h4>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                  <th className="px-5 py-3 font-medium">Campaign</th>
-                  <th className="px-5 py-3 font-medium">Platform</th>
-                  <th className="px-5 py-3 font-medium">Objective</th>
-                  <th className="px-5 py-3 font-medium text-right">Spend</th>
-                  <th className="px-5 py-3 font-medium text-right">Impr.</th>
-                  <th className="px-5 py-3 font-medium text-right">Clicks</th>
-                  <th className="px-5 py-3 font-medium text-right">CTR</th>
-                  {showAwareness && has(data, "reach") && (
-                    <th className="px-5 py-3 font-medium text-right">Reach</th>
-                  )}
-                  {showAwareness && has(data, "vcr") && (
-                    <th className="px-5 py-3 font-medium text-right">VCR</th>
-                  )}
-                  {showConversion && has(data, "conversions") && (
-                    <>
-                      <th className="px-5 py-3 font-medium text-right">Conv.</th>
-                      <th className="px-5 py-3 font-medium text-right">CPA</th>
-                    </>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {data.campaigns.map((c, i) => {
-                  const objBadge = c.objective ? OBJECTIVE_BADGE[c.objective as ObjectiveType] : null;
-                  return (
-                    <tr
-                      key={`${c.campaign_id}-${i}`}
-                      className="border-t border-slate-800/50 transition-colors hover:bg-slate-800/30"
-                    >
-                      <td className="max-w-[260px] truncate px-5 py-3 text-slate-200">
-                        {c.campaign_name}
-                      </td>
-                      <td className="px-5 py-3 text-slate-400">
-                        {platformLabel(c.platform_id)}
-                      </td>
-                      <td className="px-5 py-3">
-                        {objBadge ? (
-                          <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-medium", objBadge.cls)}>
-                            {objBadge.label}
-                          </span>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-200">
-                        {formatCurrency(c.spend)}
-                      </td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                        {formatNumber(c.impressions)}
-                      </td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                        {formatNumber(c.clicks)}
-                      </td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                        {c.ctr != null ? formatPercent(c.ctr * 100) : "—"}
-                      </td>
-                      {showAwareness && has(data, "reach") && (
-                        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                          {c.reach ? formatNumber(c.reach) : "—"}
-                        </td>
-                      )}
-                      {showAwareness && has(data, "vcr") && (
-                        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                          {c.vcr != null ? formatPercent(c.vcr * 100) : "—"}
-                        </td>
-                      )}
-                      {showConversion && has(data, "conversions") && (
-                        <>
-                          <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                            {c.conversions ? formatNumber(Math.round(c.conversions)) : "—"}
-                          </td>
-                          <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                            {c.cpa != null ? formatCurrency(c.cpa) : "—"}
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      <CampaignTable
+        data={data}
+        showAwareness={showAwareness}
+        showConversion={showConversion}
+      />
 
       {/* ── Audience (ad set) drill-down ─────────────────────────── */}
-      {adsetsData && adsetsData.ad_sets.length > 0 && (
-        <Card className="overflow-hidden !p-0">
-          <div className="px-5 py-4 border-b border-slate-800">
-            <h4 className="text-sm font-medium text-slate-400">Audience performance</h4>
-            {adsetsData.total_reach_note && (
-              <p className="mt-1 text-xs text-slate-500">{adsetsData.total_reach_note}</p>
-            )}
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                  <th className="px-5 py-3 font-medium">Audience</th>
-                  <th className="px-5 py-3 font-medium">Platform</th>
-                  <th className="px-5 py-3 font-medium text-right">Reach</th>
-                  <th className="px-5 py-3 font-medium text-right">Freq.</th>
-                  <th className="px-5 py-3 font-medium text-right">Spend</th>
-                  <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
-                  <th className="px-5 py-3 font-medium text-right">Ads</th>
-                </tr>
-              </thead>
-              <tbody>
-                {adsetsData.ad_sets.map((row, i) => (
-                  <tr
-                    key={`${row.ad_set_id}-${row.platform_id}-${i}`}
-                    className="border-t border-slate-800/50 hover:bg-slate-800/30"
-                  >
-                    <td className="max-w-[220px] truncate px-5 py-3 text-slate-200">
-                      {row.ad_set_name ?? "—"}
-                    </td>
-                    <td className="px-5 py-3 text-slate-400">{platformLabel(row.platform_id)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
-                      {row.reach != null ? formatNumber(row.reach) : "—"}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
-                      <span className="inline-flex items-center justify-end gap-1.5">
-                        {row.frequency != null ? row.frequency.toFixed(1) : "—"}
-                        {freqHealthDot(row.frequency) && (
-                          <span className={`inline-block h-2 w-2 rounded-full ${freqHealthDot(row.frequency)}`} />
-                        )}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
-                      {formatCurrency(row.spend)}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                      {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                      {row.ad_count}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      {adsetsData && <AdSetDrillDown data={adsetsData} />}
 
       {/* ── Creative variants (cross-platform) ───────────────────── */}
       {creativesData && creativesData.creatives.length > 0 && (
@@ -677,56 +568,7 @@ export function PerformanceTab({ code }: { code: string }) {
       )}
 
       {/* ── Creative (ad) drill-down ──────────────────────────────── */}
-      {adsData && adsData.ads.length > 0 && (
-        <Card className="overflow-hidden !p-0">
-          <div className="px-5 py-4 border-b border-slate-800">
-            <h4 className="text-sm font-medium text-slate-400">Creative performance</h4>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                  <th className="px-5 py-3 font-medium">Ad</th>
-                  <th className="px-5 py-3 font-medium">Audience</th>
-                  <th className="px-5 py-3 font-medium">Platform</th>
-                  <th className="px-5 py-3 font-medium text-right">Spend</th>
-                  <th className="px-5 py-3 font-medium text-right">CTR</th>
-                  <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
-                  <th className="px-5 py-3 font-medium text-right">VCR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {adsData.ads.map((row, i) => (
-                  <tr
-                    key={`${row.ad_id}-${row.platform_id}-${i}`}
-                    className="border-t border-slate-800/50 hover:bg-slate-800/30"
-                  >
-                    <td className="max-w-[200px] truncate px-5 py-3 text-slate-200">
-                      {row.ad_name ?? "—"}
-                    </td>
-                    <td className="max-w-[160px] truncate px-5 py-3 text-slate-500">
-                      {row.ad_set_name ?? "—"}
-                    </td>
-                    <td className="px-5 py-3 text-slate-400">{platformLabel(row.platform_id)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-300">
-                      {formatCurrency(row.spend)}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                      {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                      {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                      {row.vcr != null ? formatPercent(row.vcr * 100) : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      {adsData && <AdDrillDown data={adsData} />}
 
       {/* ── GA4 Web Analytics Section ─────────────────────────────── */}
       {ga4Data?.has_ga4 && ga4Data.daily.length > 0 && (

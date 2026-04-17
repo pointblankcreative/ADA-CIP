@@ -29,6 +29,21 @@ async def get_pacing(project_code: str):
     net_budget = _float(projects[0].get("net_budget"))
 
     tracking_sql = f"""
+        WITH mpl_dedup AS (
+            SELECT * EXCEPT(_rn) FROM (
+                SELECT
+                    line_id,
+                    audience_name,
+                    flight_start,
+                    flight_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY line_id
+                        ORDER BY sync_version DESC
+                    ) AS _rn
+                FROM {bq.table('media_plan_lines')}
+                WHERE project_code = @project_code
+            ) WHERE _rn = 1
+        )
         SELECT
             bt.date,
             bt.line_id,
@@ -49,7 +64,7 @@ async def get_pacing(project_code: str):
             mpl.flight_start,
             mpl.flight_end
         FROM {bq.table('budget_tracking')} bt
-        LEFT JOIN {bq.table('media_plan_lines')} mpl ON bt.line_id = mpl.line_id
+        LEFT JOIN mpl_dedup mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
             AND bt.date = (
                 SELECT MAX(date) FROM {bq.table('budget_tracking')}
@@ -67,8 +82,14 @@ async def get_pacing(project_code: str):
         )
 
     as_of = rows[0]["date"]
-    total_planned = sum(_float(r.get("planned_spend_to_date")) for r in rows)
-    total_actual = sum(_float(r.get("actual_spend_to_date")) for r in rows)
+
+    # C2: Conservative approach — exclude pending lines from BOTH numerator and denominator
+    # to avoid inflating overall_pacing_percentage (aligns with conservative-estimate ethos)
+    active_rows = [r for r in rows if r.get("line_status") not in ("pending", "not_started")]
+    pending_count = len(rows) - len(active_rows)
+
+    total_planned = sum(_float(r.get("planned_spend_to_date")) for r in active_rows)
+    total_actual = sum(_float(r.get("actual_spend_to_date")) for r in active_rows)
 
     return PacingResponse(
         project_code=project_code,
@@ -77,6 +98,7 @@ async def get_pacing(project_code: str):
         total_planned_to_date=total_planned,
         total_actual_to_date=total_actual,
         overall_pacing_percentage=round(total_actual / total_planned * 100, 1) if total_planned else 0,
+        pending_line_count=pending_count,
         lines=[
             LinePacing(
                 line_id=r["line_id"],
@@ -86,7 +108,7 @@ async def get_pacing(project_code: str):
                 audience_name=r.get("audience_name"),
                 flight_start=str(r["flight_start"]) if r.get("flight_start") else None,
                 flight_end=str(r["flight_end"]) if r.get("flight_end") else None,
-                line_status=r.get("line_status", "active"),
+                line_status=r.get("line_status") or "unknown",  # C3: changed to "unknown"
                 planned_budget=_float(r.get("planned_budget")),
                 planned_spend_to_date=_float(r.get("planned_spend_to_date")),
                 actual_spend_to_date=_float(r.get("actual_spend_to_date")),

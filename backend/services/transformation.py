@@ -15,6 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from google.cloud import bigquery
+from google.cloud import exceptions as gcp_exceptions
 
 from backend.config import settings
 
@@ -90,6 +91,26 @@ SELECT * EXCEPT(rn) FROM (
       cpm,
       cpc,
       ctr,
+      -- Diagnostic signal columns
+      video_views_3s,
+      thruplay,
+      video_q25,
+      video_q50,
+      video_q75,
+      video_q100,
+      post_engagement,
+      post_reactions,
+      post_comments,
+      outbound_clicks,
+      landing_page_views,
+      CAST(registrations AS NUMERIC) AS registrations,
+      CAST(leads AS NUMERIC) AS leads,
+      CAST(on_platform_leads AS NUMERIC) AS on_platform_leads,
+      CAST(contacts AS NUMERIC) AS contacts,
+      CAST(donations AS NUMERIC) AS donations,
+      campaign_objective,
+      viewability_measured,
+      viewability_viewed,
       ingestion_source,
       loaded_at,
       ROW_NUMBER() OVER (
@@ -168,8 +189,8 @@ def _apply_mapping_fallback(mtl: bigquery.Client) -> None:
     try:
         result = mtl.query(sql).result()
         logger.info("  Mapping fallback applied (updated rows with campaign_project_mapping)")
-    except Exception:
-        logger.warning("  Mapping fallback query failed (non-fatal)", exc_info=True)
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+        logger.warning("  Mapping fallback query failed (non-fatal): %s", e, exc_info=True)
 
 
 def run_transformation(mode: str = "daily") -> dict:

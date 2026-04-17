@@ -38,7 +38,7 @@ def table(name: str) -> str:
 
 def run_query(
     sql: str,
-    params: list[bigquery.ScalarQueryParameter] | None = None,
+    params: list[bigquery.ScalarQueryParameter | bigquery.ArrayQueryParameter] | None = None,
 ) -> list[dict]:
     """Execute a SQL query and return rows as dicts."""
     client = get_client()
@@ -64,6 +64,18 @@ def string_param(name: str, value: str) -> bigquery.ScalarQueryParameter:
 
 def date_param(name: str, value: date) -> bigquery.ScalarQueryParameter:
     return bigquery.ScalarQueryParameter(name, "DATE", value)
+
+
+def array_param(
+    name: str, type_: str, values: list | tuple | set | frozenset
+) -> bigquery.ArrayQueryParameter:
+    """Convenience wrapper for creating an ArrayQueryParameter.
+
+    Example:
+        >>> array_param("line_ids", "STRING", ["line-a", "line-b"])
+    Use with BigQuery `IN UNNEST(@name)` clauses.
+    """
+    return bigquery.ArrayQueryParameter(name, type_, list(values))
 
 
 def ping() -> bool:

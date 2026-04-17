@@ -4,40 +4,53 @@
 
 Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Looker. Centralises campaign monitoring, budget pacing, automated reporting, and client-facing dashboards for a political advertising agency running 5-15 concurrent campaigns across Meta, Google Ads, LinkedIn, StackAdapt, TikTok, Snapchat, and Perion/Hivestack (DOOH).
 
-## Section 2: Current Status (Updated 2026-04-08)
+## Section 2: Current Status (Updated 2026-04-16)
 
 **Phase:** Phase 2 (Brightwater) — building out features to make CIP compelling for team adoption.
 
-### Deployed to Staging (`main` → Cloud Run auto-deploy, ~7 min)
+### Deployed to Staging (as of 2026-04-16)
 - Core data pipeline: Funnel.io → BigQuery transformation for all 8 platforms
-- GA4 sessions/conversions ingestion
+- GA4 sessions/conversions ingestion and URL management
 - Admin panel: project management, pipeline controls, media plan sync
-- Performance dashboard: daily metrics, budget pacing, platform breakdown
+- Performance dashboard: daily metrics, budget pacing, platform breakdown, ad set & ad drill-downs
 - Industry benchmarks (political advertising baselines)
 - Reach/frequency ingestion from ad-set-level Funnel.io data
-- Ad set and ad/creative drill-down endpoints and UI
-- Media plan sync with budget-based tab filtering (PR #9), non-destructive matching, dedup fix
-- Pacing history (oscilloscope) endpoint with project existence check
-- Creative variant aliases table + nullable platform_id fix
-
-### CRITICAL — Active Regression (Fix First)
-**PR #9 introduced a regression:** When the blocking chart has metadata but 0 platform line items, the sync produces 0 lines.
-
-**The fix is a 6-line change** — add `if bc["lines"]:` / `else:` branch inside the audience-data check in `media_plan_sync.py` around line 693. See the hotfix prompt in the repo owner's notes. **This MUST be fixed before any other media plan sync work.**
+- Creative variant aliases with nullable platform_id
+- Media plan sync: budget-based tab filtering, non-destructive matching, dedup fix, audience_name override persistence across re-syncs, per-line flight date parsing, retry on _delete_old_versions (3× with backoff)
+- Pacing engine: per-line flight date spend attribution, 2-day grace period for new flights, completed flight UI treatment, stale line_id auto-purge on every pacing run
+- All media_plan_lines queries protected with ROW_NUMBER dedup CTE (pacing router, pacing service, performance router, benchmarks router, diagnostic engine)
+- Oscilloscope pacing health visualization with pending-line handling
+- Overview page: recently ended section, budget bar uses utilization color
+- Objective-based KPI classification (awareness/conversion/mixed) with reach/freq endpoint
+- Cross-region BigQuery fix for adset transform
+- Dual-URL CORS fix for Cloud Run new URL format
+- Google Drive sharing instructions for media plan setup
+- **Diagnostic Signal Engine — Persuasion:** Distribution (D1-D4) + Attention (A1-A5) + Resonance (R1-R3) all live. R2 guard-fails pending Phase 3 earned-impression connectors.
+- **Diagnostic Signal Engine — Conversion:** Acquisition (C1-C3) + Funnel (F1-F5) live. Quality (Q1-Q3) **deferred** pending per-client CRM integration — weight redistributed to Acq 0.43 / Funnel 0.57. See `docs/diagnostics/quality-pillar-deferred.md`.
+- **Diagnostic Signal Engine — Mixed campaigns:** Engine + queries + tests live on `feat/engine-mixed-campaigns` (Build Plan §12). Per-line classification, dual DiagnosticOutput, per-subset pacing. Frontend diagnostics tab still needs dual-health-card treatment before merge to main.
 
 ### What Needs Doing Next
-Check the Asana backlog (see Section 7) for the prioritised list. Key open issues:
 
-1. **HOTFIX:** Empty blocking chart regression (0 lines on sync) — fix first
-2. **Re-sync OSSTF** (25042) once hotfix is deployed — verify Quantcast line gone
-3. **Inline audience_name edits** destroyed on re-sync (needs override table)
-4. Remaining feature backlog in Asana
+**Diagnostic Engine (priority):**
+1. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
+
+**Recently landed (this branch):**
+- `daily_job.py` alert integration — signal-level ACTION + health regression with 24h dedup matching `services/pacing` pattern. See `docs/diagnostics/alert-rules.md`.
+- Phase 2.5 design note — within-a-line ad-set arch mixing limitation documented in `docs/diagnostics/phase-2-5-arch-mixing.md`. Deferred pending ad-set-grain FFS.
+
+**Future / Blocked on CRM:**
+- **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md` for unblocking requirements and candidate signal definitions.
+
+**Other Features (Asana backlog):**
+4. **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
+5. **Blurred creative underlay** — campaign-specific visual backgrounds
+6. **Auto-display client logo** in campaign UI
 
 ### Current Users
 Only Frazer so far. Goal is to make it good enough that the whole team adopts it immediately on rollout.
 
 ### Branch Model
-`main` → staging (auto-deploy via GitHub Actions, ~7 min). `production` branch → production. No one else is committing right now. Create a new branch per PR, merge to main.
+`main` → staging, `production` → production (both auto-deploy via GitHub Actions, ~7 min). Branches are in sync as of 2026-04-10. Create a new branch per PR, merge to main, then merge main → production when ready.
 
 ## Section 3: Architecture
 
@@ -48,9 +61,11 @@ Only Frazer so far. Goal is to make it good enough that the whole team adopts it
 - **Hosting:** Google Cloud Run (containers), auto-deployed from main branch
 - **Region:** northamerica-northeast1 (Montreal) — Canadian data residency
 
-### Staging URLs
-- **Backend:** `https://cip-backend-staging-807520113440.northamerica-northeast1.run.app`
-- **Frontend:** `https://cip-frontend-staging-807520113440.northamerica-northeast1.run.app`
+### URLs
+- **Production Backend:** `https://cip-backend-807520113440.northamerica-northeast1.run.app`
+- **Production Frontend:** `https://cip-frontend-807520113440.northamerica-northeast1.run.app`
+- **Staging Backend:** `https://cip-backend-staging-807520113440.northamerica-northeast1.run.app`
+- **Staging Frontend:** `https://cip-frontend-staging-807520113440.northamerica-northeast1.run.app`
 
 ## Section 4: Critical Deployment & Development Gotchas
 
@@ -129,20 +144,17 @@ All bugs and features are tracked in Asana. When working on a task, update the A
 - **Build Phase custom field GID:** `1213906940579551`, Brightwater option GID: `1213906940579553`
 - **URL:** https://app.asana.com/1/9281551468324/project/1213881933598770/list
 
-### Current Open Tickets (as of 2026-04-08)
-- `1213987843487110` — [BUG] Tab filter too permissive (HIGH) — PR #9 added budget-based filtering, but needs hotfix for empty blocking chart case
-- `1213987835182249` — [BUG] _synthesise_lines_from_mp() overwrites blocking chart (HIGH) — PR #9 addressed this, but needs hotfix
-- `1213987843417243` — [BUG] _match_mp_line() mutates input list (MEDIUM) — PR #9 fixed with used_indices set
-- `1213987952314577` — [BUG] Re-sync OSSTF to clear stale Quantcast data (CRITICAL) — blocked until hotfix deployed
-- `1213987952596805` — [BUG] Inline edits destroyed on re-sync (MEDIUM) — needs override table design
-- `1213987835213358` — [BUG] Frontend api.ts type drift (LOW) — local repo issue, not blocking
-- **Feature backlog:** GA4 URL selection, Google Drive sharing instructions, recently ended section, blurred creative underlay, auto client logo, objective-based KPI views
+### Open Tickets (as of 2026-04-10)
+- `1213988918905284` — [FEATURE] Interactive tab confirmation UI for media plan sync — two-step preview/confirm flow
+- `1213891599887233` — [FEATURE] Blurred creative underlay for campaign UI
+- `1213891489614027` — [FEATURE] Auto-display client logo in campaign UI
 
-### Completed Tickets
-- `1213987937216606` — Dedup key missing audience_name — FIXED in PR #8
-- `1213987920099864` — Pacing history missing project check — FIXED in PR #8
-- `1213987834871471` — Creative alias NULL platform_id — FIXED in PR #8
-- `1213987937211599` — Verify scalar_param exists — CONFIRMED in PR #8
+### Recently Completed (selected)
+- All media plan sync bugs (tab filter, matching, overwrite, dedup, flight dates) — FIXED
+- All pacing bugs (grace period, flight-date spend attribution, NULL line_status) — FIXED
+- GA4 URL selection, Google Drive sharing, recently ended section, objective KPIs — SHIPPED
+- OSSTF re-sync, Quantcast cleanup, inline edit persistence — RESOLVED
+- Frontend type drift, scalar_param, creative alias NULL — FIXED
 
 ## Section 8: Testing Endpoints
 

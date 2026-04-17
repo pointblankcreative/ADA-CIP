@@ -22,6 +22,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from google.cloud import bigquery
+from google.cloud import exceptions as gcp_exceptions
 
 from backend.config import settings
 from backend.services import bigquery_client as bq
@@ -170,20 +171,32 @@ def run_pacing_for_project(project_code: str) -> dict:
     today = date.today()
 
     # ── 1. Fetch media plan lines for this project ──────────────────
+    # Deduplicate: if old sync versions weren't cleaned up, multiple rows
+    # per line_id can exist.  Keep only the latest sync_version per line_id
+    # to prevent doubled lines and halved spend in proportional splits.
     lines_sql = f"""
-        SELECT
-            l.line_id,
-            l.line_code,
-            l.platform_id,
-            l.channel_category,
-            l.site_network,
-            l.budget,
-            l.flight_start,
-            l.flight_end
-        FROM {bq.table('media_plan_lines')} l
-        JOIN {bq.table('media_plans')} p ON l.plan_id = p.plan_id AND p.is_current = TRUE
-        WHERE l.project_code = @project_code
-            AND l.is_traditional = FALSE
+        SELECT line_id, line_code, platform_id, channel_category,
+               site_network, budget, flight_start, flight_end
+        FROM (
+            SELECT
+                l.line_id,
+                l.line_code,
+                l.platform_id,
+                l.channel_category,
+                l.site_network,
+                l.budget,
+                l.flight_start,
+                l.flight_end,
+                ROW_NUMBER() OVER (
+                    PARTITION BY l.line_id
+                    ORDER BY l.sync_version DESC
+                ) AS _rn
+            FROM {bq.table('media_plan_lines')} l
+            JOIN {bq.table('media_plans')} p ON l.plan_id = p.plan_id AND p.is_current = TRUE
+            WHERE l.project_code = @project_code
+                AND l.is_traditional = FALSE
+        )
+        WHERE _rn = 1
     """
     lines = bq.run_query(lines_sql, [bq.string_param("project_code", project_code)])
 
@@ -211,6 +224,7 @@ def run_pacing_for_project(project_code: str) -> dict:
     # query spend once per unique flight window instead of once per line.
     spend_by_group: dict[tuple, float] = {}          # (platform_id, fs, fe) → total_spend
     spend_by_line_code: dict[str, float] = {}        # line_code → total_spend
+    first_spend_date_by_line: dict[str, date] = {}   # line_code → first_spend_date (C1 fix)
 
     flight_groups: dict[tuple, list[dict]] = {}
     for line in lines:
@@ -265,24 +279,32 @@ def run_pacing_for_project(project_code: str) -> dict:
             ]
             if fs is not None and fe is not None:
                 lc_sql = f"""
-                    SELECT SUM(spend) AS total_spend
+                    SELECT SUM(spend) AS total_spend, MIN(date) AS first_spend_date
                     FROM {bq.table('fact_digital_daily')}
                     WHERE project_code = @project_code
                         AND line_code = @line_code
                         AND date >= @flight_start
                         AND date <= @flight_end
+                        AND spend > 0
                 """
                 lc_params.append(bq.date_param("flight_start", fs))
                 lc_params.append(bq.date_param("flight_end", fe))
             else:
                 lc_sql = f"""
-                    SELECT SUM(spend) AS total_spend
+                    SELECT SUM(spend) AS total_spend, MIN(date) AS first_spend_date
                     FROM {bq.table('fact_digital_daily')}
                     WHERE project_code = @project_code
                         AND line_code = @line_code
+                        AND spend > 0
                 """
             lc_rows = bq.run_query(lc_sql, lc_params)
             spend_by_line_code[lc] = _float(lc_rows[0]["total_spend"]) if lc_rows else 0.0
+            # C1: Track first_spend_date for grace period calculation
+            if lc_rows and lc_rows[0].get("first_spend_date"):
+                fsd = lc_rows[0]["first_spend_date"]
+                if isinstance(fsd, str):
+                    fsd = date.fromisoformat(fsd)
+                first_spend_date_by_line[lc] = fsd
 
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
@@ -320,15 +342,33 @@ def run_pacing_for_project(project_code: str) -> dict:
         # Determine line status based on flight timing
         # Data lag: ad platforms report with ~1-day delay through Funnel,
         # and the server runs in UTC which can be a day ahead of Eastern.
-        # We use a 2-day grace period to cover both factors.
+        # C1: Grace period is now spend-history-aware: only apply grace if
+        # the line has zero historical spend AND flight_start is within 2 days.
         if today < flight_start:
             line_status = "not_started"
         elif today > flight_end:
             line_status = "completed"
-        elif elapsed_active_days <= 2:
-            line_status = "pending"  # just started — no data expected yet
         else:
-            line_status = "active"
+            # Check if line has any historical spend
+            # Conservative approach: only apply grace period if we can definitively
+            # identify THIS line's spend history via line_code. If no line_code,
+            # don't assume grace period — require historical spend to NOT apply it.
+            has_historical_spend = (
+                (line_code and line_code in first_spend_date_by_line) or
+                (platform_id and any(
+                    lc in first_spend_date_by_line
+                    for lc in spend_by_line_code.keys()
+                ))
+            )
+            # Grace period: no spend yet AND flight started within 2 days
+            in_grace_period = (
+                not has_historical_spend and
+                (today - flight_start).days <= 2
+            )
+            if in_grace_period:
+                line_status = "pending"  # just started — no data expected yet
+            else:
+                line_status = "active"
 
         # Even pacing calculation
         if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
@@ -410,11 +450,13 @@ def run_pacing_for_project(project_code: str) -> dict:
 
 
 def _write_budget_tracking(project_code: str, as_of: date, rows: list[dict]) -> None:
-    """Delete today's rows for this project and insert fresh ones."""
+    """Delete today's rows for this project, purge orphans, and insert fresh ones."""
     mtl = bigquery.Client(project=settings.gcp_project_id, location=settings.gcp_region)
     try:
         target = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.budget_tracking"
+        mpl_table = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.media_plan_lines"
 
+        # Delete today's rows (existing behavior)
         mtl.query(
             f"DELETE FROM `{target}` WHERE project_code = @pc AND date = @d",
             job_config=bigquery.QueryJobConfig(query_parameters=[
@@ -422,6 +464,27 @@ def _write_budget_tracking(project_code: str, as_of: date, rows: list[dict]) -> 
                 bigquery.ScalarQueryParameter("d", "DATE", as_of.isoformat()),
             ]),
         ).result()
+
+        # Purge orphaned rows whose line_id no longer exists in media_plan_lines.
+        # This prevents stale data from accumulating after plan resyncs where
+        # line_ids change (new plan_id = new line_id prefix).
+        orphan_result = mtl.query(
+            f"""DELETE FROM `{target}`
+            WHERE project_code = @pc
+              AND line_id NOT IN (
+                SELECT line_id FROM `{mpl_table}`
+                WHERE project_code = @pc
+              )""",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            ]),
+        ).result()
+        orphans_deleted = orphan_result.num_dml_affected_rows or 0
+        if orphans_deleted > 0:
+            logger.info(
+                "  Purged %d orphaned budget_tracking rows for %s",
+                orphans_deleted, project_code,
+            )
 
         load_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
@@ -511,8 +574,8 @@ def run_all_active() -> dict:
         try:
             r = run_pacing_for_project(code)
             results.append(r)
-        except Exception:
-            logger.exception("Pacing failed for project %s", code)
+        except (gcp_exceptions.GoogleCloudError, ValueError, KeyError) as e:
+            logger.error("Pacing failed for project %s (continuing to process remaining projects): %s", code, e, exc_info=True)
             results.append({"project_code": code, "status": "failed"})
 
     total_lines = sum(r.get("lines_processed", 0) for r in results)

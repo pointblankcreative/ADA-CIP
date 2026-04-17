@@ -9,6 +9,7 @@ import {
   BarChart3,
   AlertTriangle,
   Settings2,
+  Activity,
 } from "lucide-react";
 import { api, type Project } from "@/lib/api";
 import { PacingBadge } from "@/components/pacing-badge";
@@ -17,10 +18,12 @@ import { PacingTab } from "./pacing-tab";
 import { PerformanceTab } from "./performance-tab";
 import { AlertsTab } from "./alerts-tab";
 import { SettingsTab } from "./settings-tab";
+import { DiagnosticsTab } from "./diagnostics-tab";
 
 const TABS = [
   { id: "pacing", label: "Pacing", icon: Gauge },
   { id: "performance", label: "Performance", icon: BarChart3 },
+  { id: "diagnostics", label: "Diagnostics", icon: Activity },
   { id: "alerts", label: "Alerts", icon: AlertTriangle },
   { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
@@ -134,6 +137,7 @@ export default function ProjectDetailPage() {
       <div className="flex-1 p-4 sm:p-6 lg:p-8">
         {activeTab === "pacing" && <PacingTab code={code} />}
         {activeTab === "performance" && <PerformanceTab code={code} />}
+        {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
         {activeTab === "alerts" && <AlertsTab code={code} />}
         {activeTab === "settings" && <SettingsTab code={code} />}
       </div>

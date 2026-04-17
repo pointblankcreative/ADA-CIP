@@ -190,6 +190,24 @@ def run_daily_pipeline() -> dict:
         # GA4 transform is non-critical — don't mark pipeline as partial_failure
 
     # ── Stage 1c: Ad-set reach / frequency ─────────────────────────
+    # E4: Dependency Documentation
+    #
+    # The ad-set transformation (run_adset_transformation) loads reach/frequency metrics
+    # from Funnel.io into fact_adset_daily. These metrics are used by:
+    #   - Dashboard reach/frequency displays (fact-based UI metrics)
+    #   - Diagnostic signals (audience reach attainment calculations)
+    #   - Performance reporting (reach vs. impressions ratios)
+    #
+    # If this stage fails (error status):
+    #   - fact_adset_daily remains stale (no new rows loaded)
+    #   - Reach metrics in UI will be out of date
+    #   - Diagnostic signals may report lower-confidence reaches
+    #   - Pacing does NOT depend on adset data — stage 2 proceeds independently
+    #
+    # This is NON-CRITICAL for pacing calculations, but CRITICAL for reach-aware
+    # diagnostics. Mark at WARNING level if it fails so stakeholders can investigate
+    # but the pipeline continues.
+    #
     logger.info("=== Daily Pipeline: Stage 1c — Ad Set Reach/Frequency ===")
     try:
         from ingestion.transformation.adset_transform import run_adset_transformation
@@ -202,7 +220,7 @@ def run_daily_pipeline() -> dict:
             "elapsed_seconds": round(time.time() - t1c, 1),
         }
     except Exception as e:
-        logger.error("Ad-set Transformation failed: %s", e, exc_info=True)
+        logger.warning("Ad-set Transformation failed (non-critical): %s — pacing continues, reach metrics may be stale", e, exc_info=True)
         results["stages"]["adset_transformation"] = {
             "status": "error",
             "error": str(e),
@@ -226,6 +244,41 @@ def run_daily_pipeline() -> dict:
             "error": str(e),
         }
         results["status"] = "partial_failure"
+
+    # ── Stage 2b: Diagnostics ───────────────────────────────────────
+    # Runs after pacing so budget_tracking is fresh (used by efficiency layer).
+    #
+    # Current scope:
+    #   - Persuasion: Distribution (D1-D4), Attention (A1-A5), Resonance (R1-R3)
+    #   - Conversion: Acquisition (C1-C3), Funnel (F1-F5)
+    #     (Quality (Q1-Q3) deferred — see docs/diagnostics/quality-pillar-deferred.md)
+    #   - Mixed-campaign aware: partitions media plan lines by type and runs
+    #     persuasion + conversion independently on projects that carry both.
+    #   - Alerts: signal-level ACTION + health-regression (ACTION transition),
+    #     with 24h dedup — see docs/diagnostics/alert-rules.md.
+    #
+    # Failures are non-critical — the rest of the pipeline (staleness, Slack)
+    # still runs.
+    logger.info("=== Daily Pipeline: Stage 2b — Diagnostics ===")
+    try:
+        from backend.services.diagnostics.engine import run_all_diagnostics
+
+        t2b = time.time()
+        diag_result = run_all_diagnostics()
+        results["stages"]["diagnostics"] = {
+            "status": "success",
+            "projects_processed": diag_result.get("projects_processed", 0),
+            "projects_skipped": diag_result.get("projects_skipped", 0),
+            "total_alerts": diag_result.get("total_alerts", 0),
+            "errors": diag_result.get("errors", []),
+            "elapsed_seconds": round(time.time() - t2b, 1),
+        }
+    except Exception as e:
+        logger.error("Diagnostics failed (non-critical): %s", e, exc_info=True)
+        results["stages"]["diagnostics"] = {
+            "status": "error",
+            "error": str(e),
+        }
 
     # ── Stage 3: Staleness Check ────────────────────────────────────
     logger.info("=== Daily Pipeline: Stage 3 — Staleness Check ===")

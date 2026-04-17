@@ -12,11 +12,57 @@ from datetime import date
 import pytest
 
 from backend.services.media_plan_sync import (
+    _filter_canonical_tabs,
     _match_all_mp_lines,
     _mp_lines_have_audience_data,
     _synthesise_lines_from_mp,
 )
 from backend.routers.admin import MediaPlanLineUpdate
+
+
+# ── ADAC-50: Tab disambiguation ──────────────────────────────────
+
+
+class TestFilterCanonicalTabs:
+    """Verify that non-canonical media plan tabs are filtered out."""
+
+    def test_filters_client_copy(self):
+        tabs = ["Media Plan V2", "[CLIENT] Media Plan V2"]
+        assert _filter_canonical_tabs(tabs) == ["Media Plan V2"]
+
+    def test_filters_only_subset(self):
+        tabs = ["Media Plan V2", "Media Plan V2 F1 Only"]
+        assert _filter_canonical_tabs(tabs) == ["Media Plan V2"]
+
+    def test_filters_multiple_non_canonical(self):
+        """The exact OSSTF scenario: three tabs, only one canonical."""
+        tabs = ["Media Plan V2", "[CLIENT] Media Plan V2", "Media Plan V2 F1 Only"]
+        assert _filter_canonical_tabs(tabs) == ["Media Plan V2"]
+
+    def test_keeps_all_when_all_non_canonical(self):
+        """If every tab matches a non-canonical pattern, keep them all."""
+        tabs = ["[CLIENT] Media Plan V2 Only", "[CLIENT] Old Plan"]
+        result = _filter_canonical_tabs(tabs)
+        assert set(result) == set(tabs)
+
+    def test_single_tab_unchanged(self):
+        assert _filter_canonical_tabs(["Media Plan"]) == ["Media Plan"]
+
+    def test_empty_list(self):
+        assert _filter_canonical_tabs([]) == []
+
+    def test_filters_draft_and_backup(self):
+        tabs = ["Media Plan V2", "Media Plan Draft", "Media Plan Backup"]
+        assert _filter_canonical_tabs(tabs) == ["Media Plan V2"]
+
+    def test_case_insensitive(self):
+        tabs = ["Media Plan V2", "Media Plan V2 ONLY"]
+        assert _filter_canonical_tabs(tabs) == ["Media Plan V2"]
+
+    def test_preserves_multiple_canonical(self):
+        """Two legitimate tabs (e.g. different flights) should both be kept."""
+        tabs = ["Media Plan V2 F1", "Media Plan V2 F2"]
+        assert _filter_canonical_tabs(tabs) == ["Media Plan V2 F1", "Media Plan V2 F2"]
 
 
 # ── Bug 2: _match_all_mp_lines optimal matching ───────────────────

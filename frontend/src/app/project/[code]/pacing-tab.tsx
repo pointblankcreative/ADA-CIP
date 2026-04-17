@@ -133,6 +133,7 @@ function LineRow({
   line: PacingLine;
   onNameUpdate: (lineId: string, newName: string) => void;
 }) {
+  const isCompleted = line.line_status === "completed";
   const status = pacingStatus(line.pacing_percentage);
   const budgetPct =
     line.planned_budget > 0
@@ -142,6 +143,7 @@ function LineRow({
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(line.audience_name || "");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -162,18 +164,20 @@ function LineRow({
     if (!trimmed || trimmed === line.audience_name) {
       setEditing(false);
       setEditValue(line.audience_name || "");
+      setError(null);
       return;
     }
     setSaving(true);
+    setError(null);
     try {
       await api.admin.updateMediaPlanLine(line.line_id, {
         audience_name: trimmed,
       });
       onNameUpdate(line.line_id, trimmed);
       setEditing(false);
-    } catch {
+    } catch (err) {
+      setError("Failed to update line name. Please try again.");
       setEditValue(line.audience_name || "");
-      setEditing(false);
     } finally {
       setSaving(false);
     }
@@ -188,7 +192,7 @@ function LineRow({
   };
 
   return (
-    <Card className="!p-3 sm:!p-4">
+    <Card className={cn("!p-3 sm:!p-4", isCompleted && "opacity-60")}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3 min-w-0">
           <PlatformIcon platformId={line.platform_id} />
@@ -198,16 +202,21 @@ function LineRow({
                 {platformLabel(line.platform_id)}
               </span>
               {editing ? (
-                <input
-                  ref={inputRef}
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  onBlur={handleSave}
-                  onKeyDown={handleKeyDown}
-                  disabled={saving}
-                  className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-blue-300 outline-none focus:border-blue-500 w-48"
-                  placeholder="Line name..."
-                />
+                <div className="flex flex-col gap-1">
+                  <input
+                    ref={inputRef}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={handleSave}
+                    onKeyDown={handleKeyDown}
+                    disabled={saving}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-blue-300 outline-none focus:border-blue-500 w-48 disabled:opacity-60"
+                    placeholder="Line name..."
+                  />
+                  {error && (
+                    <span className="text-xs text-red-400">{error}</span>
+                  )}
+                </div>
               ) : (
                 <>
                   {displayName && (
@@ -221,6 +230,7 @@ function LineRow({
                       setEditing(true);
                     }}
                     className="text-slate-600 hover:text-slate-400 transition-colors"
+                    aria-label="Edit line name"
                     title="Edit line name"
                   >
                     <svg
@@ -244,15 +254,23 @@ function LineRow({
               <span>{formatCurrency(line.actual_spend_to_date)} spent</span>
               <span>of {formatCurrency(line.planned_budget)} budget</span>
               {dateRange && <span>{dateRange}</span>}
-              {line.remaining_days > 0 && (
-                <span>{line.remaining_days}d remaining</span>
+              {isCompleted ? (
+                <span className="text-slate-400">
+                  Final: {formatPercent(budgetPct)} utilized
+                </span>
+              ) : (
+                <>
+                  {line.remaining_days > 0 && (
+                    <span>{line.remaining_days}d remaining</span>
+                  )}
+                  {line.daily_budget_required != null &&
+                    line.daily_budget_required > 0 && (
+                      <span>
+                        {formatCurrency(line.daily_budget_required)}/day needed
+                      </span>
+                    )}
+                </>
               )}
-              {line.daily_budget_required != null &&
-                line.daily_budget_required > 0 && (
-                  <span>
-                    {formatCurrency(line.daily_budget_required)}/day needed
-                  </span>
-                )}
               <span
                 className="font-mono text-[10px] text-slate-600 cursor-help"
                 title={line.line_id}
@@ -284,7 +302,7 @@ function LineRow({
           <div
             className={cn(
               "h-full rounded-full transition-all duration-700",
-              pacingBarColor(status)
+              isCompleted ? "bg-slate-600" : pacingBarColor(status)
             )}
             style={{ width: `${Math.min(budgetPct, 100)}%` }}
           />

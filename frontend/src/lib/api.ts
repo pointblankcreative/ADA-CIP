@@ -378,6 +378,84 @@ export interface BenchmarkResponse {
 
 /* ── API functions ── */
 
+/* ── Diagnostics ── */
+
+export type DiagnosticStatus = "STRONG" | "WATCH" | "ACTION" | null;
+
+export interface DiagnosticSignal {
+  id: string;
+  name: string;
+  score: number | null;
+  status: DiagnosticStatus;
+  raw_value: number | null;
+  benchmark: number | null;
+  floor: number | null;
+  diagnostic: string;
+  guard_passed: boolean;
+  guard_reason: string | null;
+  inputs: Record<string, unknown>;
+}
+
+export interface DiagnosticPillar {
+  score: number | null;
+  status: DiagnosticStatus;
+}
+
+export interface DiagnosticEfficiency {
+  cpm: number | null;
+  cpc: number | null;
+  cpa: number | null;
+  cpcv: number | null;
+  pacing_pct: number | null;
+}
+
+export interface DiagnosticAlert {
+  type: string;
+  severity: "critical" | "warning" | "info";
+  message: string;
+  signal_id: string | null;
+}
+
+export interface DiagnosticOutput {
+  id: string;
+  project_code: string;
+  campaign_type: "persuasion" | "conversion";
+  evaluation_date: string;
+  flight_day: number;
+  flight_total_days: number;
+  health_score: number | null;
+  health_status: DiagnosticStatus;
+  pillars: Record<string, DiagnosticPillar>;
+  signals: DiagnosticSignal[];
+  efficiency: DiagnosticEfficiency;
+  alerts: DiagnosticAlert[];
+  platforms: string[];
+  line_ids: string[];
+  computed_at: string;
+  spec_version: string;
+}
+
+export interface DiagnosticHistoryPoint {
+  evaluation_date: string;
+  campaign_type: string;
+  health_score: number | null;
+  health_status: DiagnosticStatus;
+  pillars: Record<string, DiagnosticPillar>;
+}
+
+export interface DiagnosticRunResponse {
+  project_code: string;
+  status: "success" | "skipped";
+  message?: string;
+  results: Array<{
+    campaign_type: string;
+    evaluation_date: string;
+    health_score: number | null;
+    health_status: string | null;
+    alerts: number;
+  }>;
+}
+
 export const api = {
   projects: {
     list: () => apiFetch<Project[]>("/api/projects/"),
@@ -422,6 +500,23 @@ export const api = {
   },
   benchmarks: {
     get: (code: string) => apiFetch<BenchmarkResponse>(`/api/benchmarks/${code}`),
+  },
+  diagnostics: {
+    get: (code: string, date?: string) =>
+      apiFetch<DiagnosticOutput[]>(
+        `/api/diagnostics/${code}${date ? `?date=${date}` : ""}`
+      ),
+    history: (code: string, days = 30, campaignType?: string) => {
+      const qs = new URLSearchParams({ days: String(days) });
+      if (campaignType) qs.set("campaign_type", campaignType);
+      return apiFetch<DiagnosticHistoryPoint[]>(
+        `/api/diagnostics/${code}/history?${qs}`
+      );
+    },
+    run: (code: string) =>
+      apiFetch<DiagnosticRunResponse>(`/api/diagnostics/${code}/run`, {
+        method: "POST",
+      }),
   },
   ga4: {
     properties: () => apiFetch<GA4Property[]>("/api/ga4/properties"),

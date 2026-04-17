@@ -1,6 +1,8 @@
+import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
+from google.cloud import exceptions as gcp_exceptions
 
 from backend.models.performance import (
     AdPerformanceResponse,
@@ -16,6 +18,8 @@ from backend.models.performance import (
 )
 from backend.services import bigquery_client as bq
 from backend.services.objective_classifier import classify_objective, classify_project
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
@@ -68,9 +72,15 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, list[str]]:
     try:
         sql = f"""
             SELECT platform_id, objective
-            FROM {bq.table('media_plan_lines')}
-            WHERE project_code = @project_code
-              AND objective IS NOT NULL
+            FROM (
+                SELECT platform_id, objective,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY line_id ORDER BY sync_version DESC
+                       ) AS _rn
+                FROM {bq.table('media_plan_lines')}
+                WHERE project_code = @project_code
+                  AND objective IS NOT NULL
+            ) WHERE _rn = 1
         """
         rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
         result: dict[str, list[str]] = {}
@@ -80,7 +90,8 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, list[str]]:
             if pid and obj:
                 result.setdefault(pid, []).append(obj)
         return result
-    except Exception:
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+        logger.warning("Failed to fetch objectives for project %s: %s", project_code, e, exc_info=True)
         return {}
 
 
@@ -239,7 +250,8 @@ async def get_creative_performance(
                 AND (cva.platform_id IS NULL OR cva.platform_id = '' OR cva.platform_id = ad_agg.platform_id)
         """
         alias_col = "cva.creative_variant"
-    except Exception:
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+        logger.warning("Creative aliases table not found or query failed; proceeding with ads without aliases: %s", e, exc_info=True)
         alias_join = ""
         alias_col = "NULL"
 
@@ -523,8 +535,8 @@ async def get_performance(
             high_frequency_warning = (
                 f"{nm} on {pn} reached {float(w['frequency']):.1f} frequency — consider refreshing creative."
             )
-    except Exception:
-        pass
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound, ValueError) as e:
+        logger.warning("Failed to fetch high frequency data: %s", e, exc_info=True)
 
     # ── platform breakdown ──────────────────────────────────────────
     platform_sql = f"""

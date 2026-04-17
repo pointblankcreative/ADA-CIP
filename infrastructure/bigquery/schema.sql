@@ -134,6 +134,10 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
   frequency_cap STRING,
   geo_targeting STRING,
   is_traditional BOOL DEFAULT FALSE,
+  -- Form Friction Score (FFS) — collected via dashboard wizard, used by diagnostic engine
+  ffs_score FLOAT64,                           -- Computed Form Friction Score (0-100)
+  ffs_inputs JSON,                             -- Raw wizard inputs: {field_count, required_count, field_types, clicks_to_submit, form_position, has_autofill, is_platform_form}
+  audience_type STRING,                        -- member_list | retargeting | lookalike_warm | lookalike_cold | prospecting (for audience temperature adjustment)
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 OPTIONS(
@@ -184,6 +188,26 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_digital_daily` (
   cpm FLOAT64,
   cpc FLOAT64,
   ctr FLOAT64,
+  -- Diagnostic signal columns (added for CIP diagnostic engine)
+  video_views_3s INT64 DEFAULT 0,              -- Facebook: n_3_Second_Video_Views; platform-adjusted "start" for video completion scoring
+  thruplay INT64 DEFAULT 0,                    -- Facebook: Video_thruplay (15s+ or completion); also maps to video_completions for backwards compat
+  video_q25 INT64 DEFAULT 0,                   -- Facebook: Video_Watches_at_25; StackAdapt: Video_completed_25
+  video_q50 INT64 DEFAULT 0,                   -- Facebook: Video_Watches_at_50; StackAdapt: Video_completed_50
+  video_q75 INT64 DEFAULT 0,                   -- Facebook: Video_Watches_at_75; StackAdapt: Video_completed_75
+  video_q100 INT64 DEFAULT 0,                  -- Facebook: Video_Watches_at_100; StackAdapt: same as video_completions (95%)
+  post_engagement INT64 DEFAULT 0,             -- Facebook: Post_Engagement (includes passive video views — diagnostic engine strips these)
+  post_reactions INT64 DEFAULT 0,              -- Facebook: Post_Reactions
+  post_comments INT64 DEFAULT 0,              -- Facebook: Post_Comments
+  outbound_clicks INT64 DEFAULT 0,             -- Facebook: Outbound_Clicks; Pinterest: Paid_Outbound_Clicks
+  landing_page_views INT64 DEFAULT 0,          -- Facebook: Landing_Page_Views
+  registrations NUMERIC DEFAULT 0,             -- Facebook: Website_Registrations_Completed (mobilization/petition campaigns)
+  leads NUMERIC DEFAULT 0,                     -- Facebook: Website_Leads (lead gen campaigns)
+  on_platform_leads NUMERIC DEFAULT 0,         -- Facebook: On_Facebook_Leads (in-platform lead forms)
+  contacts NUMERIC DEFAULT 0,                  -- Facebook: Website_Contacts
+  donations NUMERIC DEFAULT 0,                 -- Facebook: Website_Donations
+  campaign_objective STRING,                   -- Platform-reported objective (Facebook: Campaign_Objective; used by diagnostic for signal selection)
+  viewability_measured INT64 DEFAULT 0,        -- StackAdapt: Measured_impressions
+  viewability_viewed INT64 DEFAULT 0,          -- StackAdapt: Viewed_measured_impressions
   ingestion_source STRING DEFAULT 'funnel_transform',
   loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
@@ -489,6 +513,17 @@ OPTIONS(
 -- ==============================================================================
 -- TABLE: fact_adset_daily
 -- Reach / frequency at ad set or campaign grain (separate from fact_digital_daily ad rows).
+-- E3: Dedup Strategy Documentation
+--
+-- This table has no unique constraint. Duplicates are possible if adset_transform runs
+-- multiple times or if the transform logic encounters the same data in successive loads.
+--
+-- Dedup is enforced at QUERY time (not at table level) using a post-load DELETE with
+-- ROW_NUMBER() OVER (PARTITION BY date, project_code, platform_id, campaign_id, ad_set_id ORDER BY loaded_at DESC).
+-- This keeps only the most recent _load_timestamp row for each ad-set date combination.
+-- The dedup runs as part of adset_transform after load_table_from_json completes.
+--
+-- Consumers should query this table directly; dedup is automatic post-load.
 -- ==============================================================================
 
 CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_adset_daily` (
@@ -512,7 +547,7 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_adset_daily` (
 PARTITION BY date
 CLUSTER BY project_code, platform_id
 OPTIONS(
-  description='Daily reach/frequency from Funnel.io at ad-set or campaign grain. Not additive across rows.'
+  description='Daily reach/frequency from Funnel.io at ad-set or campaign grain. Not additive across rows. Dedup enforced post-load via ROW_NUMBER().'
 );
 
 
@@ -547,6 +582,56 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.creative_variant_aliases` (
 OPTIONS(
   description='Manual overrides for grouping ads by creative variant name. ad_name_pattern can be exact or SQL LIKE pattern.'
 );
+
+-- ==============================================================================
+-- DIAGNOSTIC ENGINE TABLES
+-- ==============================================================================
+
+-- Diagnostic signal results (daily per-campaign health scores)
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_diagnostic_signals` (
+  id STRING NOT NULL,                          -- UUID
+  project_code STRING NOT NULL,
+  campaign_type STRING NOT NULL,               -- 'persuasion' | 'conversion'
+  evaluation_date DATE NOT NULL,               -- date this diagnostic covers
+  flight_day INT64,                            -- day N of flight (1-indexed)
+  flight_total_days INT64,                     -- total flight length
+
+  -- Level 1: Health Score
+  health_score FLOAT64,                        -- 0-100 or NULL
+  health_status STRING,                        -- STRONG | WATCH | ACTION | NULL
+
+  -- Level 2: Pillar Scores (JSON for flexibility across campaign types)
+  -- Persuasion: {"distribution": {"score": 81, "status": "STRONG"}, "attention": {...}, "resonance": {...}}
+  -- Conversion: {"acquisition": {...}, "funnel": {...}, "quality": {...}}
+  pillars JSON,
+
+  -- Level 3: Individual Signals (JSON array)
+  -- [{"id": "D1", "name": "Reach Attainment", "score": 100, "status": "STRONG",
+  --   "raw_value": 2.22, "benchmark": 1.0, "floor": 0.5,
+  --   "diagnostic": "Reach at 2.2x pacing...", "guard_passed": true,
+  --   "guard_reason": null, "inputs": {"actual_reach": 39098, "pro_rated_reach": 17631}}]
+  signals JSON,
+
+  -- Level 4: Efficiency Layer
+  -- {"cpm": 11.74, "cpc": 8.91, "cpa": null, "cpcv": 0.29, "pacing_pct": 87}
+  efficiency JSON,
+
+  -- Critical Alerts fired this evaluation
+  -- [{"type": "zero_conversion_24h", "severity": "critical", "message": "..."}]
+  alerts JSON,
+
+  -- Metadata
+  platforms JSON,                              -- ["facebook", "stackadapt"]
+  line_ids JSON,                               -- media plan line IDs included
+  computed_at TIMESTAMP NOT NULL,
+  spec_version STRING NOT NULL                 -- "1.1"
+)
+PARTITION BY evaluation_date
+CLUSTER BY project_code, campaign_type
+OPTIONS(
+  description='Daily diagnostic signal results from the CIP diagnostic engine. One row per project/campaign_type/date.'
+);
+
 
 -- ==============================================================================
 -- END OF SCHEMA DEFINITION
