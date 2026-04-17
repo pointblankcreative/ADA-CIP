@@ -889,7 +889,7 @@ def compute_funnel_pillar(data: CampaignData) -> PillarScore:
     pillar = PillarScore(
         name="funnel",
         signals=[f1, f2, f3, f4, f5],
-        weight=0.40,  # Conversion pillar weight (from benchmarks)
+        weight=0.57,  # Conversion pillar weight (Quality deferred; see benchmarks)
     )
 
     active = [s for s in pillar.signals if s.guard_passed and s.score is not None]

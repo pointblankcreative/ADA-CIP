@@ -611,7 +611,7 @@ class TestFunnelPillar:
             )
         )
         assert pillar.name == "funnel"
-        assert pillar.weight == 0.40
+        assert pillar.weight == 0.57
         assert len(pillar.signals) == 5
         active = {s.id for s in pillar.signals if s.guard_passed}
         # All five should pass

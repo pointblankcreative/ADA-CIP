@@ -220,11 +220,21 @@ RESONANCE_SIGNAL_WEIGHTS = {
 
 
 # ── Conversion Pillar Weights ──────────────────────────────────────
+#
+# Quality (Q1-Q3) is deferred indefinitely pending per-client CRM
+# integration — without reliable disposition data, any "quality" score
+# would be built on proxies (GA4 key_events, etc.) that can't truthfully
+# answer "was this lead valuable?". Its original 0.30 weight has been
+# redistributed proportionally between Acquisition and Funnel so the
+# scored conversion health reflects actual measurement capability. When
+# CRM integration eventually ships, revisit these weights.
+#
+#   Original:  Acq 0.30 | Funnel 0.40 | Quality 0.30
+#   Now:       Acq 0.43 | Funnel 0.57   (proportional: 0.30/0.70, 0.40/0.70)
 
 CONVERSION_PILLAR_WEIGHTS = {
-    "acquisition": 0.30,
-    "funnel": 0.40,
-    "quality": 0.30,
+    "acquisition": 0.43,
+    "funnel": 0.57,
 }
 
 # Signal weights within Acquisition pillar

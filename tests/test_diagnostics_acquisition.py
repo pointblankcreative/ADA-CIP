@@ -374,7 +374,7 @@ class TestAcquisitionPillar:
         assert len(scored) > 0
 
     def test_pillar_weight(self):
-        """Pillar weight should be 0.30 (from spec)."""
+        """Pillar weight should be 0.43 (Quality deferred; proportional share of 0.30/0.70)."""
         pillar = compute_acquisition_pillar(
             _campaign(
                 platform_metrics=[_conversion_platform()],
@@ -382,7 +382,7 @@ class TestAcquisitionPillar:
                 media_plan=_media_plan(),
             )
         )
-        assert pillar.weight == 0.30
+        assert pillar.weight == 0.43
 
     def test_pillar_score_bounded(self):
         """Pillar score should be 0-100 when computed."""

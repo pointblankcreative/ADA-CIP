@@ -26,21 +26,23 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 - Dual-URL CORS fix for Cloud Run new URL format
 - Google Drive sharing instructions for media plan setup
 - **Diagnostic Signal Engine — Persuasion:** Distribution (D1-D4) + Attention (A1-A5) + Resonance (R1-R3) all live. R2 guard-fails pending Phase 3 earned-impression connectors.
-- **Diagnostic Signal Engine — Conversion:** Acquisition (C1-C3) live. Funnel (F1-F5) + Quality (Q1-Q3) pending
+- **Diagnostic Signal Engine — Conversion:** Acquisition (C1-C3) + Funnel (F1-F5) live. Quality (Q1-Q3) **deferred** pending per-client CRM integration — weight redistributed to Acq 0.43 / Funnel 0.57. See `docs/diagnostics/quality-pillar-deferred.md`.
 - **Diagnostic Signal Engine — Mixed campaigns:** Engine + queries + tests live on `feat/engine-mixed-campaigns` (Build Plan §12). Per-line classification, dual DiagnosticOutput, per-subset pacing. Frontend diagnostics tab still needs dual-health-card treatment before merge to main.
 
 ### What Needs Doing Next
 
 **Diagnostic Engine (priority):**
-1. **Build `conversion/funnel.py`** — F1-F5 signals (includes FFS computation)
-2. **Build `conversion/quality.py`** — Q1-Q3 signals
-3. **Wire into `daily_job.py`** + alert integration
-4. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
+1. **Wire into `daily_job.py`** + alert integration
+2. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
+3. **Phase 2.5 design note** — within-a-line ad-set arch mixing limitation (Arch A / Arch B classification is currently per-line, not per-ad-set)
+
+**Future / Blocked on CRM:**
+- **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md` for unblocking requirements and candidate signal definitions.
 
 **Other Features (Asana backlog):**
-5. **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
-6. **Blurred creative underlay** — campaign-specific visual backgrounds
-7. **Auto-display client logo** in campaign UI
+4. **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
+5. **Blurred creative underlay** — campaign-specific visual backgrounds
+6. **Auto-display client logo** in campaign UI
 
 ### Current Users
 Only Frazer so far. Goal is to make it good enough that the whole team adopts it immediately on rollout.

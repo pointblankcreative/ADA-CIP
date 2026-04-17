@@ -3,14 +3,24 @@
 Assembles all pillar scores into the final health score with
 flight-stage adjustment (early flight dampening, late flight urgency).
 
-Acquisition (C1-C3) and Funnel (F1-F5) pillars are live. Quality
-(Q1-Q3) is still a placeholder and its weight redistributes to the
-active pillars until it ships.
+Scored pillars:
+    Acquisition (C1-C3) — "Are we buying leads efficiently?"
+    Funnel      (F1-F5) — "Does the path from ad to submit work?"
+
+A Quality (Q1-Q3) pillar was originally scoped to answer "are the
+leads we got worth anything?" but has been deferred indefinitely. Any
+Quality score built from proxies (GA4 key_events, platform lead form
+counts, etc.) would be dishonest without real CRM disposition data,
+which PB's clients don't consistently expose. See
+docs/diagnostics/quality-pillar-deferred.md for the full reasoning
+and the data requirements that would unblock building it.
+
+Quality's original 0.30 weight has been redistributed proportionally
+between the two scored pillars:
 
 Pillar weights (conversion):
-    Acquisition: 0.30
-    Funnel:      0.40
-    Quality:     0.30
+    Acquisition: 0.43   (was 0.30, share of 0.70 active = 0.4286)
+    Funnel:      0.57   (was 0.40, share of 0.70 active = 0.5714)
 """
 
 from __future__ import annotations
@@ -20,7 +30,6 @@ from backend.services.diagnostics.models import (
     CampaignType,
     DiagnosticOutput,
     EfficiencyMetrics,
-    PillarScore,
     status_band,
 )
 from backend.services.diagnostics.shared.normalization import clamp, safe_div
@@ -36,20 +45,14 @@ from backend.services.diagnostics.conversion.funnel import (
 def compute_conversion_health(data: CampaignData) -> DiagnosticOutput:
     """Full conversion diagnostic: pillars → health score → output.
 
-    Acquisition (C1-C3) and Funnel (F1-F5) are active. Quality (Q1-Q3)
-    is a placeholder until it ships; its weight redistributes to the
-    scored pillars automatically via compute_health_score().
+    Runs Acquisition (C1-C3) and Funnel (F1-F5). A Quality pillar is
+    not emitted — see module docstring for deferral reasoning.
     """
     # Compute pillars
     acquisition = compute_acquisition_pillar(data)
     funnel = compute_funnel_pillar(data)
 
-    # Quality pillar not yet implemented — placeholder so the output
-    # structure is consistent and the Q1-Q3 frontend shell has something
-    # to render.
-    quality = PillarScore(name="quality", weight=0.30)
-
-    pillars = [acquisition, funnel, quality]
+    pillars = [acquisition, funnel]
 
     # Build output
     output = DiagnosticOutput(
