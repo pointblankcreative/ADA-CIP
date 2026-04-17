@@ -26,11 +26,13 @@ const PILLAR_LABELS: Record<string, string> = {
   resonance: "Resonance",
   acquisition: "Acquisition",
   funnel: "Funnel",
-  quality: "Quality",
 };
 
 const PILLAR_ORDER_PERSUASION = ["distribution", "attention", "resonance"];
-const PILLAR_ORDER_CONVERSION = ["acquisition", "funnel", "quality"];
+// Quality (Q1-Q3) is deferred pending per-client CRM integration —
+// see docs/diagnostics/quality-pillar-deferred.md. Conversion campaigns
+// now render only Acquisition + Funnel.
+const PILLAR_ORDER_CONVERSION = ["acquisition", "funnel"];
 
 function statusColor(status: DiagnosticStatus): string {
   if (status === "STRONG") return "text-emerald-400";
@@ -136,11 +138,7 @@ export function DiagnosticsTab({ code }: { code: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">
-          Phase 1 — persuasion Distribution pillar active. Attention, Resonance
-          and Conversion campaigns arrive in later phases.
-        </p>
+      <div className="flex items-center justify-end">
         <button
           onClick={handleRun}
           disabled={running}
@@ -212,8 +210,14 @@ function DiagnosticCard({ output }: { output: DiagnosticOutput }) {
         />
       </div>
 
-      {/* Pillars */}
-      <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+      {/* Pillars — column count matches pillar count (2 for conversion with
+          Quality deferred, 3 for persuasion). */}
+      <div
+        className={cn(
+          "mt-6 grid grid-cols-1 gap-3",
+          pillarOrder.length === 2 ? "sm:grid-cols-2" : "sm:grid-cols-3"
+        )}
+      >
         {pillarOrder.map((p) => (
           <PillarGauge
             key={p}
