@@ -42,13 +42,16 @@ def _daily_metrics(
     days: int = 7,
     daily_spend: float = 500,
     daily_conversions: float = 10,
-    start: date | None = None,
+    end: date | None = None,
 ) -> list[DailyMetrics]:
-    """Generate N days of daily metrics."""
-    s = start or date(2026, 4, 1)
+    """Generate N days of daily metrics, ending on ``end`` (default
+    2026-04-13, which is the day before the default campaign evaluation
+    date of 2026-04-14 — so data falls inside C2/C3's trailing window)."""
+    e = end or date(2026, 4, 13)
+    first = e - timedelta(days=days - 1)
     return [
         DailyMetrics(
-            date=s + timedelta(days=i),
+            date=first + timedelta(days=i),
             platform_id="facebook",
             spend=daily_spend,
             impressions=50_000,
@@ -64,15 +67,16 @@ def _daily_metrics_declining(
     base_spend: float = 500,
     start_conversions: float = 20,
     decline_rate: float = 0.15,
-    start: date | None = None,
+    end: date | None = None,
 ) -> list[DailyMetrics]:
     """Generate declining conversion data (for C3 deterioration)."""
-    s = start or date(2026, 4, 1)
+    e = end or date(2026, 4, 13)
+    first = e - timedelta(days=days - 1)
     result = []
     for i in range(days):
         conv = max(1, start_conversions * (1 - decline_rate * i))
         result.append(DailyMetrics(
-            date=s + timedelta(days=i),
+            date=first + timedelta(days=i),
             platform_id="facebook",
             spend=base_spend,
             impressions=50_000,
@@ -141,16 +145,49 @@ def _conversion_platform(
 
 class TestC1CpaVsTarget:
 
-    def test_guard_insufficient_conversions(self):
-        """C1 should guard-fail with < 5 conversions."""
+    def test_few_conversions_scores_action_not_guard_fail(self):
+        """Calibrated 2026-04-20: the old 5-conversion gate is gone.
+        A campaign with only 3 conversions is not hidden — instead it
+        surfaces an ACTION diagnostic reflecting its poor CPA."""
         result = compute_c1_cpa_vs_target(
             _campaign(
                 platform_metrics=[_conversion_platform(conversions=3)],
                 media_plan=_media_plan(),
             )
         )
-        assert not result.guard_passed
-        assert "min_conversions" in (result.guard_reason or "")
+        assert result.guard_passed is True
+        assert result.score is not None
+        # 3 conversions on $7,000 = $2,333 CPA vs ~$25 target → ACTION
+        assert result.status == StatusBand.ACTION
+
+    def test_zero_conversions_scores_action(self):
+        """Campaign that has spent money but produced no conversions
+        should surface ACTION with a zero-conversion diagnostic, not
+        guard-fail."""
+        result = compute_c1_cpa_vs_target(
+            _campaign(
+                platform_metrics=[_conversion_platform(conversions=0)],
+                media_plan=_media_plan(),
+            )
+        )
+        assert result.guard_passed is True
+        assert result.status == StatusBand.ACTION
+        assert result.inputs.get("zero_conversions") is True
+        assert "0 conversions" in result.diagnostic
+
+    def test_guard_fail_when_no_ffs(self):
+        """Without FFS data there is no target CPA — signal must guard-
+        fail with a wizard-pointing message rather than inventing a target
+        from actual CPA."""
+        result = compute_c1_cpa_vs_target(
+            _campaign(
+                platform_metrics=[_conversion_platform()],
+                media_plan=_media_plan(ffs=None),
+            )
+        )
+        assert result.guard_passed is False
+        assert result.guard_reason == "no_target_cpa"
+        assert "FFS wizard" in result.diagnostic
 
     def test_guard_insufficient_spend(self):
         """C1 should guard-fail with < $10 spend."""
@@ -250,8 +287,10 @@ class TestC2VolumeTrajectory:
         )
         assert not result.guard_passed
 
-    def test_guard_insufficient_conversions(self):
-        """C2 should guard-fail with < 5 total conversions."""
+    def test_low_conversions_scores_action_not_guard_fail(self):
+        """Calibrated 2026-04-20: the 5-conversion gate is gone. A
+        campaign with ~0.4 leads/day against an expected ~20/day should
+        surface as ACTION, not be hidden from the user."""
         result = compute_c2_volume_trajectory(
             _campaign(
                 platform_metrics=[_conversion_platform(conversions=3)],
@@ -259,7 +298,22 @@ class TestC2VolumeTrajectory:
                 media_plan=_media_plan(),
             )
         )
-        assert not result.guard_passed
+        assert result.guard_passed is True
+        assert result.score is not None
+        assert result.status == StatusBand.ACTION
+
+    def test_guard_fail_when_no_ffs(self):
+        """Without FFS, C2 can't compute expected volume — must guard-
+        fail rather than silently compare against a bogus target."""
+        result = compute_c2_volume_trajectory(
+            _campaign(
+                platform_metrics=[_conversion_platform()],
+                daily_metrics=_daily_metrics(days=7),
+                media_plan=_media_plan(ffs=None),
+            )
+        )
+        assert result.guard_passed is False
+        assert result.guard_reason == "no_target_cpa"
 
     def test_healthy_volume(self):
         """Meeting expected volume should score well."""
@@ -336,11 +390,14 @@ class TestC3CpaTrend:
 
     def test_learning_phase_floors_score(self):
         """During learning phase, C3 should floor at WATCH level."""
+        # elapsed=5 → evaluation_date = 2026-04-05, so daily data should
+        # end on 2026-04-04 to sit inside the last-7-days window.
         result = compute_c3_cpa_trend(
             _campaign(
                 platform_metrics=[_conversion_platform(conversions=15)],
                 daily_metrics=_daily_metrics_declining(
-                    days=5, base_spend=500, start_conversions=5, decline_rate=0.2,
+                    days=5, base_spend=500, start_conversions=5,
+                    decline_rate=0.2, end=date(2026, 4, 4),
                 ),
                 elapsed=5,
             )

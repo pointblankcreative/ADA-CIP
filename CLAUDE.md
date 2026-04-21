@@ -4,11 +4,11 @@
 
 Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Looker. Centralises campaign monitoring, budget pacing, automated reporting, and client-facing dashboards for a political advertising agency running 5-15 concurrent campaigns across Meta, Google Ads, LinkedIn, StackAdapt, TikTok, Snapchat, and Perion/Hivestack (DOOH).
 
-## Section 2: Current Status (Updated 2026-04-16)
+## Section 2: Current Status (Updated 2026-04-20)
 
 **Phase:** Phase 2 (Brightwater) — building out features to make CIP compelling for team adoption.
 
-### Deployed to Staging (as of 2026-04-16)
+### Deployed to Staging + Production (as of 2026-04-20)
 - Core data pipeline: Funnel.io → BigQuery transformation for all 8 platforms
 - GA4 sessions/conversions ingestion and URL management
 - Admin panel: project management, pipeline controls, media plan sync
@@ -27,24 +27,34 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 - Google Drive sharing instructions for media plan setup
 - **Diagnostic Signal Engine — Persuasion:** Distribution (D1-D4) + Attention (A1-A5) + Resonance (R1-R3) all live. R2 guard-fails pending Phase 3 earned-impression connectors.
 - **Diagnostic Signal Engine — Conversion:** Acquisition (C1-C3) + Funnel (F1-F5) live. Quality (Q1-Q3) **deferred** pending per-client CRM integration — weight redistributed to Acq 0.43 / Funnel 0.57. See `docs/diagnostics/quality-pillar-deferred.md`.
-- **Diagnostic Signal Engine — Mixed campaigns:** Engine + queries + tests live on `feat/engine-mixed-campaigns` (Build Plan §12). Per-line classification, dual DiagnosticOutput, per-subset pacing. Frontend diagnostics tab still needs dual-health-card treatment before merge to main.
+- **Diagnostic Signal Engine — Mixed campaigns:** Engine + queries + tests + frontend dual-health-card rendering **shipped to main + production** (Build Plan §12). Per-line classification, dual DiagnosticOutput, per-subset pacing.
+- **Engine resilience:** `_query_platform_metrics_by_type` / `_query_daily_metrics_by_type` now fall back to `campaign_name` when `campaign_objective` is NULL (mirrors adset path). Regression test `test_null_campaign_objective_falls_back_to_campaign_name` locks it in.
+- **Transformation regression fix (2026-04-20):** `campaign_objective` column was NULL for Meta rows from 2026-04-07+ due to a deploy gap (production branch predated commit `0a6cd71`). Fixed by merging `main → production` + running full-mode backfill. Verified `null_obj = 0` for Meta rows 2026-04-01 → 2026-04-16. See `05-Internal Projects--00002-ADA/meta-campaign-objective-regression-2026-04-17.md`.
 
 ### What Needs Doing Next
 
-**Diagnostic Engine (priority):**
-1. **Frontend diagnostics tab** — must handle mixed campaigns (dual health cards) before `feat/engine-mixed-campaigns` can merge to main
+**Active — scoring rules & threshold calibration (new priority 2026-04-20):**
+Diagnostic engine is functionally complete for persuasion + conversion (minus deferred Quality pillar). Next pass is tuning the rules, thresholds, and scoring weights against real-world campaign management judgment — not building new signals. Specific amendments to be scoped in a dedicated session.
 
-**Recently landed (this branch):**
-- `daily_job.py` alert integration — signal-level ACTION + health regression with 24h dedup matching `services/pacing` pattern. See `docs/diagnostics/alert-rules.md`.
-- Phase 2.5 design note — within-a-line ad-set arch mixing limitation documented in `docs/diagnostics/phase-2-5-arch-mixing.md`. Deferred pending ad-set-grain FFS.
+**Validation / calibration:**
+- Phase 0 validation across all active projects (not just 25042) — compare automated scores to manual analyst reads
+- Historical backfill of completed campaigns for calibration corpus
+- FFS wizard in project settings (Form Friction Score inputs for F-pillar)
 
 **Future / Blocked on CRM:**
-- **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md` for unblocking requirements and candidate signal definitions.
+- **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md`.
 
 **Other Features (Asana backlog):**
-4. **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
-5. **Blurred creative underlay** — campaign-specific visual backgrounds
-6. **Auto-display client logo** in campaign UI
+- **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
+- **Blurred creative underlay** — campaign-specific visual backgrounds
+- **Auto-display client logo** in campaign UI
+- **Client-level & cross-client historical benchmarks** (blocked on creative duration/format metadata audit)
+
+**Recently landed:**
+- Engine `campaign_name` fallback + transformation regression fix (2026-04-20)
+- `daily_job.py` alert integration — signal-level ACTION + health regression with 24h dedup matching `services/pacing` pattern. See `docs/diagnostics/alert-rules.md`.
+- Phase 2.5 design note — within-a-line ad-set arch mixing limitation documented in `docs/diagnostics/phase-2-5-arch-mixing.md`. Deferred pending ad-set-grain FFS.
+- `feat/engine-mixed-campaigns` merged to main + production; dual-health-card frontend rendering live.
 
 ### Current Users
 Only Frazer so far. Goal is to make it good enough that the whole team adopts it immediately on rollout.
@@ -144,10 +154,23 @@ All bugs and features are tracked in Asana. When working on a task, update the A
 - **Build Phase custom field GID:** `1213906940579551`, Brightwater option GID: `1213906940579553`
 - **URL:** https://app.asana.com/1/9281551468324/project/1213881933598770/list
 
-### Open Tickets (as of 2026-04-10)
+### Open Tickets (as of 2026-04-20)
+
+**Feature backlog:**
 - `1213988918905284` — [FEATURE] Interactive tab confirmation UI for media plan sync — two-step preview/confirm flow
 - `1213891599887233` — [FEATURE] Blurred creative underlay for campaign UI
 - `1213891489614027` — [FEATURE] Auto-display client logo in campaign UI
+
+**Diagnostic engine follow-on (deferred / calibration):**
+- `1214050846233692` — [Diag] Quality signals Q1-Q3 — **deferred** pending CRM disposition data
+- `1214047462724891` — [Diag] Phase 0 validation across all active projects — partial (25042 verified); full sweep pending
+- `1214044687660071` — [Diag] FFS wizard in project settings
+- `1214038918477523` — [Diag] Historical backfill of completed campaigns for calibration corpus
+
+**Benchmarks (blocked on creative metadata audit):**
+- `1213929922989571` — Investigate creative duration/format metadata in platform data (prerequisite)
+- `1213917492001776` — Client-level historical benchmarks
+- `1213917562834224` — Cross-client internal benchmarks
 
 ### Recently Completed (selected)
 - All media plan sync bugs (tab filter, matching, overwrite, dedup, flight dates) — FIXED

@@ -137,35 +137,41 @@ def test_r1_guard_fails_with_insufficient_volume():
 
 
 def test_r1_healthy_engagement_scores_strong():
-    """High-quality engagement → STRONG."""
+    """High-quality engagement → STRONG.
+
+    Calibrated 2026-04-20: video_views_3s no longer counted as quality.
+    _engaged_platform has 10k post_engagement, 3k reactions + 1.5k outbound
+    = 4.5k quality → 0.45 ratio. Benchmark 0.55 / floor 0.20.
+    """
     result = compute_r1_engagement_quality(_campaign([_engaged_platform()]))
     assert result.guard_passed is True
     assert result.score is not None
     assert 0 <= result.score <= 100
-    # reactions(3000) + outbound(1500) + video_3s(4000) = 8500 / 10000 = 0.85
-    assert result.raw_value == pytest.approx(0.85, abs=0.01)
-    assert result.status == StatusBand.STRONG
+    # reactions(3000) + outbound(1500) = 4500 / 10000 = 0.45
+    assert result.raw_value == pytest.approx(0.45, abs=0.01)
+    # 0.45 is between floor(0.20) and benchmark(0.55) → WATCH band
+    assert result.status == StatusBand.WATCH
 
 
 def test_r1_low_quality_engagement_scores_action():
     """Mostly passive engagement → ACTION."""
     result = compute_r1_engagement_quality(_campaign([_low_quality_platform()]))
     assert result.guard_passed is True
-    # reactions(200) + outbound(100) + video_3s(100) = 400 / 8000 = 0.05
-    assert result.raw_value == pytest.approx(0.05, abs=0.01)
+    # reactions(200) + outbound(100) = 300 / 8000 = 0.0375
+    assert result.raw_value == pytest.approx(0.0375, abs=0.01)
     assert result.status == StatusBand.ACTION
 
 
-def test_r1_caps_ratio_at_one():
-    """Quality components can exceed post_engagement — ratio caps at 1.0."""
+def test_r1_caps_per_platform_quality_at_post_engagement():
+    """Quality components can exceed post_engagement (reporting overlap);
+    per-platform quality is capped at post_engagement so ratio <= 1.0."""
     p = PlatformMetrics(
         platform_id="facebook",
         spend=1_000,
         impressions=100_000,
         post_engagement=100,
         post_reactions=50,
-        outbound_clicks=30,
-        video_views_3s=80,  # 50+30+80 = 160 > 100
+        outbound_clicks=80,  # 50+80 = 130 > 100
     )
     result = compute_r1_engagement_quality(_campaign([p]))
     assert result.guard_passed is True
@@ -173,7 +179,8 @@ def test_r1_caps_ratio_at_one():
 
 
 def test_r1_aggregates_across_platforms():
-    """Multiple platforms contribute to a single R1 score."""
+    """Multiple platforms contribute to a single R1 score via
+    impression-weighted roll-up of per-platform scores."""
     p1 = PlatformMetrics(
         platform_id="facebook",
         spend=3_000,
@@ -181,7 +188,6 @@ def test_r1_aggregates_across_platforms():
         post_engagement=5_000,
         post_reactions=2_000,
         outbound_clicks=1_000,
-        video_views_3s=500,
     )
     p2 = PlatformMetrics(
         platform_id="stackadapt",
@@ -190,12 +196,14 @@ def test_r1_aggregates_across_platforms():
         post_engagement=3_000,
         post_reactions=200,
         outbound_clicks=50,
-        video_views_3s=0,
     )
     result = compute_r1_engagement_quality(_campaign([p1, p2]))
     assert result.guard_passed is True
-    # Total: (2000+1000+500+200+50+0) / (5000+3000) = 3750/8000 = 0.469
-    assert result.raw_value == pytest.approx(0.469, abs=0.01)
+    # Overall ratio (engagement-weighted): (3000+250)/(5000+3000) = 0.406
+    assert result.raw_value == pytest.approx(0.406, abs=0.01)
+    # Per-platform scores exposed in inputs
+    assert "facebook" in result.inputs["platforms"]
+    assert "stackadapt" in result.inputs["platforms"]
 
 
 def test_r1_guard_fails_on_day_zero():
@@ -237,16 +245,20 @@ def test_r3_guard_fails_with_insufficient_sessions():
 
 
 def test_r3_strong_engagement_scores_high():
-    """Healthy GA4 engagement → STRONG."""
+    """Healthy GA4 engagement → STRONG.
+
+    Calibrated 2026-04-20: weights are 0.85/0.15 (engaged/scroll) when
+    scroll tracking is present. Engaged rate carries most of the score;
+    scroll is a small supplementary signal.
+    """
     result = compute_r3_landing_page_depth(
         _campaign([_engaged_platform()], ga4=_healthy_ga4())
     )
     assert result.guard_passed is True
     assert result.score is not None
     # engaged_rate = 700/1000 = 0.70, scroll_rate = 650/1000 = 0.65
-    # combined = 0.70*0.65 + 0.65*0.35 = 0.455 + 0.2275 = 0.6825
-    # combined_pct = 68.25
-    assert result.raw_value == pytest.approx(0.683, abs=0.01)
+    # combined = 0.70*0.85 + 0.65*0.15 = 0.595 + 0.0975 = 0.6925
+    assert result.raw_value == pytest.approx(0.693, abs=0.01)
     assert result.status == StatusBand.STRONG
 
 
@@ -257,10 +269,23 @@ def test_r3_weak_engagement_scores_action():
     )
     assert result.guard_passed is True
     # engaged_rate = 80/500 = 0.16, scroll_rate = 50/500 = 0.10
-    # combined = 0.16*0.65 + 0.10*0.35 = 0.104 + 0.035 = 0.139
-    # combined_pct = 13.9 — below 20% floor
+    # combined = 0.16*0.85 + 0.10*0.15 = 0.136 + 0.015 = 0.151
+    # combined_pct = 15.1 — below 20% floor
     assert result.status == StatusBand.ACTION
     assert result.score == 0.0
+
+
+def test_r3_scores_engaged_rate_alone_when_scroll_tracking_absent():
+    """No scroll events → score on engaged_rate only, flag in diagnostic."""
+    ga4 = GA4Metrics(sessions=1000, scrolls=0, engaged_sessions=700)
+    result = compute_r3_landing_page_depth(
+        _campaign([_engaged_platform()], ga4=ga4)
+    )
+    assert result.guard_passed is True
+    # combined = engaged_rate = 0.70 (no scroll blend)
+    assert result.raw_value == pytest.approx(0.70, abs=0.01)
+    assert result.inputs["scroll_tracking_present"] is False
+    assert "scroll" in result.diagnostic.lower()  # flagged to user
 
 
 def test_r3_guard_fails_on_day_zero():
