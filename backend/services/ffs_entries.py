@@ -31,8 +31,31 @@ logger = logging.getLogger(__name__)
 
 
 def list_entries(project_code: str) -> list[dict]:
-    """List all FFS entries for a project with linked-line IDs + counts."""
+    """List all FFS entries for a project with linked-line IDs + counts.
+
+    Uses a pre-aggregated CTE + LEFT JOIN rather than an ARRAY() correlated
+    subquery — BigQuery rejects correlated subqueries across tables. The CTE
+    also applies the standard ROW_NUMBER dedup on media_plan_lines.
+    """
     sql = f"""
+        WITH linked AS (
+          SELECT
+            ffs_entry_id AS entry_id,
+            ARRAY_AGG(line_id ORDER BY line_id) AS line_ids
+          FROM (
+            SELECT
+              line_id,
+              ffs_entry_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY line_id ORDER BY sync_version DESC
+              ) AS rn
+            FROM {bq.table('media_plan_lines')}
+            WHERE project_code = @project_code
+              AND ffs_entry_id IS NOT NULL
+          )
+          WHERE rn = 1
+          GROUP BY ffs_entry_id
+        )
         SELECT
           e.entry_id,
           e.project_code,
@@ -45,13 +68,9 @@ def list_entries(project_code: str) -> list[dict]:
           CAST(e.created_at AS STRING) AS created_at,
           CAST(e.updated_at AS STRING) AS updated_at,
           e.created_by,
-          ARRAY(
-            SELECT l.line_id
-            FROM {bq.table('media_plan_lines')} l
-            WHERE l.ffs_entry_id = e.entry_id
-            ORDER BY l.line_id
-          ) AS linked_line_ids
+          IFNULL(linked.line_ids, []) AS linked_line_ids
         FROM {bq.table('ffs_entries')} e
+        LEFT JOIN linked ON linked.entry_id = e.entry_id
         WHERE e.project_code = @project_code
         ORDER BY e.created_at
     """
@@ -60,7 +79,30 @@ def list_entries(project_code: str) -> list[dict]:
 
 
 def get_entry(project_code: str, entry_id: str) -> dict | None:
+    """Fetch one FFS entry including its linked-line IDs.
+
+    Uses the same CTE + LEFT JOIN pattern as ``list_entries`` so the shape
+    matches and BigQuery doesn't have to evaluate a correlated subquery.
+    """
     sql = f"""
+        WITH linked AS (
+          SELECT
+            ffs_entry_id AS entry_id,
+            ARRAY_AGG(line_id ORDER BY line_id) AS line_ids
+          FROM (
+            SELECT
+              line_id,
+              ffs_entry_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY line_id ORDER BY sync_version DESC
+              ) AS rn
+            FROM {bq.table('media_plan_lines')}
+            WHERE project_code = @project_code
+              AND ffs_entry_id = @entry_id
+          )
+          WHERE rn = 1
+          GROUP BY ffs_entry_id
+        )
         SELECT
           e.entry_id, e.project_code, e.label, e.lp_url, e.is_platform_form,
           e.platform_id,
@@ -68,13 +110,9 @@ def get_entry(project_code: str, entry_id: str) -> dict | None:
           CAST(e.created_at AS STRING) AS created_at,
           CAST(e.updated_at AS STRING) AS updated_at,
           e.created_by,
-          ARRAY(
-            SELECT l.line_id
-            FROM {bq.table('media_plan_lines')} l
-            WHERE l.ffs_entry_id = e.entry_id
-            ORDER BY l.line_id
-          ) AS linked_line_ids
+          IFNULL(linked.line_ids, []) AS linked_line_ids
         FROM {bq.table('ffs_entries')} e
+        LEFT JOIN linked ON linked.entry_id = e.entry_id
         WHERE e.project_code = @project_code AND e.entry_id = @entry_id
     """
     rows = bq.run_query(sql, [

@@ -426,10 +426,19 @@ class TestListEntries:
         assert out[1]["linked_line_ids"] == ["line-a", "line-b"]
         assert out[1]["linked_line_count"] == 2
 
-    def test_list_sql_uses_array_subquery(self, fake_bq):
-        """Guard against regression to the old COUNT(1) approach."""
+    def test_list_sql_uses_array_agg_left_join(self, fake_bq):
+        """Guard the CTE + LEFT JOIN shape.
+
+        Earlier versions used a correlated ``ARRAY()`` subquery which
+        BigQuery rejects with *"Correlated subqueries that reference other
+        tables are not supported"*. The service must pre-aggregate in a CTE
+        and LEFT JOIN, and must apply the standard ROW_NUMBER dedup on
+        ``media_plan_lines`` so stale rows from prior syncs don't leak in.
+        """
         fake_bq.queue([])
         svc.list_entries("25042")
         sql, _ = fake_bq.calls[0]
-        assert "ARRAY(" in sql
+        assert "ARRAY_AGG" in sql
+        assert "LEFT JOIN" in sql
+        assert "ROW_NUMBER" in sql  # dedup on media_plan_lines
         assert "linked_line_ids" in sql
