@@ -135,13 +135,39 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
   geo_targeting STRING,
   is_traditional BOOL DEFAULT FALSE,
   -- Form Friction Score (FFS) — collected via dashboard wizard, used by diagnostic engine
+  -- Cached projection of a linked ffs_entries row. Written by the FFS wizard service.
   ffs_score FLOAT64,                           -- Computed Form Friction Score (0-100)
-  ffs_inputs JSON,                             -- Raw wizard inputs: {field_count, required_count, field_types, clicks_to_submit, form_position, has_autofill, is_platform_form}
+  ffs_inputs JSON,                             -- Raw wizard inputs: {field_count, required_fields, field_types, clicks_to_submit, below_fold_mobile, has_autofill, is_platform_form}
+  ffs_entry_id STRING,                         -- FK → ffs_entries.entry_id. NULL = no entry linked; fallback to generic F-pillar benchmarks.
+  ffs_override BOOL DEFAULT FALSE,             -- TRUE = line holds its own custom values; entry propagation must not touch ffs_score/ffs_inputs.
   audience_type STRING,                        -- member_list | retargeting | lookalike_warm | lookalike_cold | prospecting (for audience temperature adjustment)
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 OPTIONS(
   description='Individual line items from media plans. Maps to actual campaigns via line_code.'
+);
+
+
+-- FFS entries table — one row per form (landing page or platform lead form) per project.
+-- Populated by the FFS wizard in the project Settings tab. Linked to media_plan_lines
+-- via media_plan_lines.ffs_entry_id. See /Projects--00002-ADA/FFS Wizard Spec.md.
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.ffs_entries` (
+  entry_id         STRING    NOT NULL,             -- UUID, server-generated
+  project_code     STRING    NOT NULL,
+  label            STRING,                         -- user-facing, e.g. "underfunded.ca main"
+  lp_url           STRING,                         -- canonical URL; NULL if platform form
+  is_platform_form BOOL      DEFAULT FALSE,
+  platform_id      STRING,                         -- 'meta' | 'linkedin' | 'tiktok' when is_platform_form
+  ffs_inputs       JSON      NOT NULL,             -- raw wizard answers
+  ffs_score        FLOAT64   NOT NULL,             -- server-computed via compute_ffs()
+  created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+  updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+  created_by       STRING,                         -- PB email from IAP header
+  PRIMARY KEY (entry_id) NOT ENFORCED
+)
+CLUSTER BY project_code
+OPTIONS(
+  description='Form Friction Score entries. Populated by the FFS wizard; each entry can be applied to one or more media_plan_lines rows via ffs_entry_id.'
 );
 
 
