@@ -16,6 +16,10 @@ CONVERSION_KEYWORDS = [
     "purchase", "acquisition", "app install", "sign up", "signup",
     "traffic", "clicks", "website visits", "landing page",
     "retargeting", "remarketing", "performance",
+    # Audience-based targeting that implies a conversion objective
+    # (e.g. LinkedIn "Member List" / "member job titles" campaigns
+    # are targeted at owned prospect lists — always conversion).
+    "member list", "memberlist", "member job",
 ]
 
 

@@ -41,6 +41,18 @@ class TestClassifyObjective:
         """Media plan objective is checked first."""
         assert classify_objective("Awareness (Video Views)", "Some Conversion Campaign") == "awareness"
 
+    def test_linkedin_member_list_campaign_is_conversion(self):
+        """LinkedIn 'Member List' campaigns target owned prospect lists —
+        always conversion, even when the campaign name has no other
+        conversion keywords."""
+        assert classify_objective(None, "OMERS Member List Push") == "conversion"
+
+    def test_linkedin_member_job_titles_is_conversion(self):
+        """LinkedIn 'Member Job Titles' targeting is a conversion tactic."""
+        assert classify_objective(
+            None, "OMERS Member Job Titles"
+        ) == "conversion"
+
 
 class TestClassifyProject:
     """classify_project aggregates campaign-level objectives."""

@@ -135,15 +135,17 @@ def _ctv_platform(spend: float = 3_000, impressions: int = 500_000) -> PlatformM
 
 
 def _healthy_ga4() -> GA4Metrics:
-    # Tuned so the healthy fixture produces STRONG across F3 and F5:
+    # Tuned so the healthy fixture produces STRONG across F3 and F5.
+    # Recalibrated 2026-04-20 after F3 weights flipped to 30/70
+    # (scroll/discovery) — discovery is now the dominant F3 component.
     # - scroll_rate = 3000/5000 = 0.60  (above 0.50 benchmark)
-    # - discovery_rate = 1500/5000 = 0.30  (60% of the 0.50 mid_page target)
+    # - discovery_rate = 2500/5000 = 0.50  (at the mid_page target)
     # - F5 activation = (425-325)/325 ≈ 0.308 (above the 0.20 benchmark)
     return GA4Metrics(
         sessions=5_000,
         scrolls=3_000,
         engaged_sessions=3_500,
-        form_starts=1_500,
+        form_starts=2_500,
         form_submits=325,
         key_events=425,   # 100 post-submit key events after subtracting 325 submits
     )
@@ -353,6 +355,111 @@ class TestF2LandingPageLoadRate:
         assert result.guard_passed
         assert result.raw_value == 1.0
 
+    def test_flags_overcounting_when_lp_views_exceed_clicks(self):
+        """When LP views exceed clicks by >10%, flag overcounting in diagnostic."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform(clicks=1_000, lp_views=1_500)],
+            media_plan=[_arch_a_line()],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        assert result.inputs.get("overcounting_flagged") is True
+        assert result.inputs.get("raw_rate") == pytest.approx(1.5, abs=0.01)
+
+    def test_does_not_flag_overcounting_at_normal_levels(self):
+        """Healthy ~90% load rate should not trigger overcounting flag."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform(clicks=5_000, lp_views=4_500)],
+            media_plan=[_arch_a_line()],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        assert result.inputs.get("overcounting_flagged") is False
+
+    def test_excludes_non_reporting_platforms_from_score(self):
+        """Platforms with clicks but no LP views tracked as non-reporting only."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[
+                _meta_platform(clicks=2_000, lp_views=1_800),
+                PlatformMetrics(
+                    platform_id="stackadapt",
+                    spend=1_000,
+                    impressions=100_000,
+                    clicks=500,
+                    landing_page_views=0,
+                ),
+            ],
+            media_plan=[_arch_a_line()],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        # Rate only from reporting platform: 1800/2000 = 0.90
+        assert result.raw_value == pytest.approx(0.9, abs=0.01)
+        assert "stackadapt" in result.inputs.get("non_reporting_platforms", [])
+
+    def test_prefers_outbound_clicks_when_populated(self):
+        """Meta case: clicks includes noise (reactions, profile clicks).
+        When outbound_clicks is populated, it should be the denominator —
+        otherwise healthy campaigns look catastrophically bad."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[
+                PlatformMetrics(
+                    platform_id="facebook",
+                    spend=7_000,
+                    impressions=750_000,
+                    clicks=15_000,           # Total clicks (includes on-platform noise)
+                    outbound_clicks=5_000,   # Clicks that actually tried to leave
+                    landing_page_views=4_500,
+                ),
+            ],
+            media_plan=[_arch_a_line()],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        # Should use outbound_clicks: 4500/5000 = 0.90, not 4500/15000 = 0.30
+        assert result.raw_value == pytest.approx(0.9, abs=0.01)
+        assert result.status == StatusBand.STRONG
+        assert result.inputs["reporting_denominator"] == 5_000
+        assert (
+            result.inputs["platforms"]["facebook"]["denominator_source"]
+            == "outbound_clicks"
+        )
+
+    def test_falls_back_to_clicks_when_outbound_not_populated(self):
+        """Platforms that don't report outbound_clicks (DSPs, LinkedIn
+        historically) should keep using clicks as the denominator."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[
+                PlatformMetrics(
+                    platform_id="stackadapt",
+                    spend=3_000,
+                    impressions=400_000,
+                    clicks=2_000,
+                    outbound_clicks=0,       # Not populated by this platform
+                    landing_page_views=1_800,
+                ),
+            ],
+            media_plan=[_arch_a_line()],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        assert result.raw_value == pytest.approx(0.9, abs=0.01)
+        assert result.inputs["reporting_denominator"] == 2_000
+        assert (
+            result.inputs["platforms"]["stackadapt"]["denominator_source"]
+            == "clicks"
+        )
+
 
 # ── F3: Scroll / Form Discovery ─────────────────────────────────────
 
@@ -433,6 +540,52 @@ class TestF3ScrollDiscovery:
         assert result.guard_passed
         assert result.status == StatusBand.ACTION
 
+    def test_scores_discovery_alone_when_scroll_tracking_absent(self):
+        """Scroll events absent on healthy sessions → drop scroll component,
+        score on discovery alone, flag in diagnostic."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        ga4 = GA4Metrics(
+            sessions=5_000,
+            scrolls=0,  # tracking not wired up
+            engaged_sessions=3_500,
+            form_starts=2_500,  # healthy 50% discovery
+        )
+        data = _campaign(
+            platform_metrics=[_meta_platform()],
+            media_plan=[_arch_a_line()],
+            ga4=ga4,
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f3_scroll_discovery(data, mix)
+        assert result.guard_passed
+        assert result.inputs["scroll_tracking_present"] is False
+        # raw_value should equal discovery_rate only (no scroll blend)
+        assert result.raw_value == pytest.approx(0.50, abs=0.01)
+        # Discovery alone at target → STRONG
+        assert result.status == StatusBand.STRONG
+        assert "scroll tracking not detected" in result.diagnostic.lower()
+
+    def test_scroll_absent_with_weak_discovery_scores_action(self):
+        """Scroll absent + weak discovery → ACTION on discovery alone,
+        no silent drag from the missing scroll signal."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        ga4 = GA4Metrics(
+            sessions=5_000,
+            scrolls=0,
+            engaged_sessions=3_500,
+            form_starts=250,  # 5% discovery — very low
+        )
+        data = _campaign(
+            platform_metrics=[_meta_platform()],
+            media_plan=[_arch_a_line()],
+            ga4=ga4,
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f3_scroll_discovery(data, mix)
+        assert result.guard_passed
+        assert result.inputs["scroll_tracking_present"] is False
+        assert result.status == StatusBand.ACTION
+
 
 # ── F4: Form Completion ─────────────────────────────────────────────
 
@@ -480,12 +633,12 @@ class TestF4FormCompletion:
         # benchmark should reflect the high FFS adjustment
         assert result.benchmark < 0.35
 
-    def test_arch_b_uses_on_platform_leads(self):
-        """Pure Arch B campaigns proxy completion as on_platform_leads
-        per click; benchmark is the boosted in-platform target."""
+    def test_arch_b_uses_click_to_lead_benchmark(self):
+        """Pure Arch B: scored on click→lead (NOT form→submit). Healthy
+        click→lead rate should score STRONG against the 15% benchmark."""
         from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
         data = _campaign(
-            platform_metrics=[_meta_platform(clicks=1_000, on_platform_leads=400)],
+            platform_metrics=[_meta_platform(clicks=1_000, on_platform_leads=200)],
             media_plan=[_arch_b_line()],
             # No GA4 form_starts — Arch B doesn't need them
             ga4=GA4Metrics(),
@@ -493,8 +646,73 @@ class TestF4FormCompletion:
         mix = _compute_arch_mix(data)
         result = compute_f4_form_completion(data, mix)
         assert result.guard_passed
-        # 400 leads / 1000 clicks = 0.40
-        assert result.raw_value == pytest.approx(0.40, abs=0.01)
+        # 200 leads / 1000 clicks = 0.20 click→lead (above 15% benchmark)
+        assert result.raw_value == pytest.approx(0.20, abs=0.01)
+        assert result.benchmark == pytest.approx(0.15, abs=0.001)
+        assert result.floor == pytest.approx(0.03, abs=0.001)
+        assert result.status == StatusBand.STRONG
+        assert result.inputs["measurement"] == "click_to_lead"
+
+    def test_arch_b_typical_click_to_lead_is_no_longer_stuck_on_action(self):
+        """Realistic 10% click→lead rate (common for Meta Lead Ads) now
+        produces WATCH rather than ACTION under the old form-benchmark."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform(clicks=2_000, on_platform_leads=200)],
+            media_plan=[_arch_b_line()],
+            ga4=GA4Metrics(),
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f4_form_completion(data, mix)
+        assert result.guard_passed
+        # 10% click→lead: above 3% floor, below 15% benchmark → WATCH
+        assert result.raw_value == pytest.approx(0.10, abs=0.01)
+        assert result.status == StatusBand.WATCH
+
+    def test_arch_b_low_click_to_lead_scores_action(self):
+        """Under the 3% floor → ACTION with click→lead diagnostic."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform(clicks=2_000, on_platform_leads=40)],
+            media_plan=[_arch_b_line()],
+            ga4=GA4Metrics(),
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f4_form_completion(data, mix)
+        assert result.guard_passed
+        # 2% click→lead, below 3% floor → ACTION
+        assert result.raw_value == pytest.approx(0.02, abs=0.01)
+        assert result.status == StatusBand.ACTION
+        assert "click→lead" in result.diagnostic.lower() or "click\u2192lead" in result.diagnostic
+
+    def test_arch_a_flags_missing_ffs_in_diagnostic(self):
+        """When FFS is missing on Arch A lines, the diagnostic should
+        surface it rather than silently scoring against the base."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform()],
+            media_plan=[_arch_a_line(ffs=None)],
+            ga4=GA4Metrics(form_starts=400, form_submits=180, sessions=2_000),
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f4_form_completion(data, mix)
+        assert result.guard_passed
+        assert result.inputs["ffs_available"] is False
+        assert "ffs" in result.diagnostic.lower() or "friction score" in result.diagnostic.lower()
+
+    def test_arch_a_with_ffs_does_not_flag(self):
+        """When FFS is present, no missing-FFS flag in the diagnostic."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform()],
+            media_plan=[_arch_a_line(ffs=25.0)],
+            ga4=GA4Metrics(form_starts=500, form_submits=325, sessions=2_000),
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f4_form_completion(data, mix)
+        assert result.guard_passed
+        assert result.inputs["ffs_available"] is True
+        assert "no form friction score" not in result.diagnostic.lower()
 
     def test_arch_b_no_leads_guard_fails(self):
         from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
@@ -525,8 +743,9 @@ class TestF4FormCompletion:
         result = compute_f4_form_completion(data, mix)
         assert result.guard_passed
         # Expected target = 0.8 * target_a + 0.2 * target_b
+        target_a, _ = _arch_a_f4_target(mix.arch_a_lines)
         expected_target = (
-            _arch_a_f4_target(mix.arch_a_lines) * mix.arch_a_share
+            target_a * mix.arch_a_share
             + _arch_b_f4_target() * mix.arch_b_share
         )
         assert result.benchmark == pytest.approx(round(expected_target, 3), abs=0.01)
@@ -579,20 +798,56 @@ class TestF5Activation:
         # 0 follow-on events / 10 submits = 0 → score 0 → ACTION
         assert result.status == StatusBand.ACTION
 
-    def test_arch_b_falls_back_to_on_platform_leads(self):
-        """When GA4 form_submits is zero but the platform reports leads,
-        F5 should use on_platform_leads as the denominator."""
+    def test_arch_b_only_guard_fails(self):
+        """Pure Arch B has no reliable post-conversion GA4 signal —
+        F5 guard-fails cleanly and drops out of the pillar."""
         from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
         data = _campaign(
             platform_metrics=[_meta_platform(on_platform_leads=100)],
             media_plan=[_arch_b_line()],
-            ga4=GA4Metrics(key_events=25),   # 25 follow-on events (no form_submits)
+            ga4=GA4Metrics(key_events=25),   # events shouldn't matter here
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f5_activation(data, mix)
+        assert not result.guard_passed
+        assert result.guard_reason == "arch_b_no_activation_signal"
+
+    def test_mixed_uses_on_platform_leads_when_no_form_submits(self):
+        """Mixed campaign with no GA4 form_submits yet but in-platform
+        leads flowing — F5 should still score using leads as denominator."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform(on_platform_leads=100)],
+            media_plan=[
+                _arch_a_line(budget=8_000),
+                _arch_b_line(budget=2_000),
+            ],
+            ga4=GA4Metrics(key_events=25, sessions=1_000),
         )
         mix = _compute_arch_mix(data)
         result = compute_f5_activation(data, mix)
         assert result.guard_passed
-        # 25 / 100 = 0.25
+        # 25 / 100 = 0.25 (above 0.20 benchmark)
         assert result.raw_value == pytest.approx(0.25, abs=0.01)
+
+    def test_zero_key_events_guard_fails_not_action(self):
+        """Healthy conversions but no key_events configured → guard-fail
+        with tracking-setup message, not false ACTION."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform()],
+            media_plan=[_arch_a_line()],
+            ga4=GA4Metrics(
+                sessions=2_000,
+                form_starts=500,
+                form_submits=100,
+                key_events=0,  # tracking not configured
+            ),
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f5_activation(data, mix)
+        assert not result.guard_passed
+        assert result.guard_reason == "no_key_events_configured"
 
 
 # ── Pillar rollup ───────────────────────────────────────────────────
@@ -619,7 +874,8 @@ class TestFunnelPillar:
         assert pillar.score is not None
 
     def test_pure_arch_b_pillar(self):
-        """Arch B: F2/F3 guard-fail (no LP); F1 + F4 + F5 active."""
+        """Arch B: F2/F3/F5 all guard-fail (no LP, no post-conversion GA4
+        signal); only F1 + F4 are active."""
         pillar = compute_funnel_pillar(
             _campaign(
                 platform_metrics=[_meta_platform(
@@ -635,6 +891,7 @@ class TestFunnelPillar:
         assert "F4" in active
         assert "F2" not in active
         assert "F3" not in active
+        assert "F5" not in active
         assert pillar.score is not None
 
     def test_mixed_campaign_pillar_blends(self):
