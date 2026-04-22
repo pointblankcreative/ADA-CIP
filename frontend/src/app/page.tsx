@@ -16,6 +16,7 @@ import { api, type Project } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { PacingBadge } from "@/components/pacing-badge";
 import { BudgetGauge } from "@/components/budget-gauge";
+import { OrphanPanel } from "@/components/orphan-panel";
 import {
   formatCurrency,
   formatNumber,
@@ -141,6 +142,9 @@ export default function OverviewPage() {
                 ))}
         </div>
       </div>
+
+      {/* Unconfigured spend (orphan project codes in fact_* not in dim_projects) */}
+      <OrphanPanel />
 
       {/* Recently ended campaigns */}
       {!loading && recentlyEndedProjects.length > 0 && (
