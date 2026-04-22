@@ -659,6 +659,24 @@ OPTIONS(
 );
 
 
+-- Dismissed orphans table (Orphan Project Auto-Discovery)
+-- Active spend in fact_* tables for project_codes that are NOT in dim_projects
+-- is surfaced as an "orphan" on the Overview page with Configure / Dismiss CTAs.
+-- Dismissals are permanent-until-reversed: a project_code in this table is
+-- hidden from the orphan scanner until someone explicitly un-dismisses it.
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.dismissed_orphans` (
+  project_code  STRING    NOT NULL,               -- orphan project code (e.g. '25034')
+  dismissed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+  dismissed_by  STRING,                           -- PB email from IAP header
+  reason        STRING,                           -- optional free-text note
+  PRIMARY KEY (project_code) NOT ENFORCED
+)
+CLUSTER BY project_code
+OPTIONS(
+  description='Project codes with spend in fact_* tables that have been explicitly dismissed from the orphan auto-discovery scanner. Permanent until someone removes the row.'
+);
+
+
 -- ==============================================================================
 -- END OF SCHEMA DEFINITION
 -- ==============================================================================

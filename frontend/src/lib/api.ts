@@ -405,6 +405,30 @@ export interface FFSApplyResponse {
   removed: string[];
 }
 
+export interface OrphanPlatformSpend {
+  platform_id: string;
+  spend: number;
+  row_count: number;
+}
+
+export interface OrphanProject {
+  project_code: string;
+  total_spend: number;
+  total_rows: number;
+  first_date: string | null;
+  last_date: string | null;
+  by_platform: OrphanPlatformSpend[];
+  dismissed: boolean;
+  dismissed_at: string | null;
+  dismissed_by: string | null;
+  dismissed_reason: string | null;
+}
+
+export interface OrphanListResponse {
+  orphans: OrphanProject[];
+  count: number;
+}
+
 /* ── Benchmark types ── */
 
 export interface BenchmarkValue {
@@ -673,5 +697,21 @@ export const api = {
       apiFetch<Record<string, unknown>>(`/api/admin/creative-aliases/${encodeURIComponent(aliasId)}`, {
         method: "DELETE",
       }),
+  },
+  orphans: {
+    list: (includeDismissed = false) =>
+      apiFetch<OrphanListResponse>(
+        `/api/orphan-projects${includeDismissed ? "?include_dismissed=true" : ""}`
+      ),
+    dismiss: (projectCode: string, reason?: string) =>
+      apiFetch<OrphanProject>(`/api/orphan-projects/${projectCode}/dismiss`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason ?? null }),
+      }),
+    undismiss: (projectCode: string) =>
+      apiFetch<{ status: string; project_code: string }>(
+        `/api/orphan-projects/${projectCode}/undismiss`,
+        { method: "POST" }
+      ),
   },
 };
