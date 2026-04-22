@@ -1,9 +1,18 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Trash2, Globe, Loader2 } from "lucide-react";
-import { api, type GA4Url, type GA4Property } from "@/lib/api";
+import { Plus, Trash2, Globe, Loader2, FileText, Pencil } from "lucide-react";
+import {
+  api,
+  type GA4Url,
+  type GA4Property,
+  type FFSEntry,
+  type PacingLine,
+} from "@/lib/api";
 import { Card } from "@/components/card";
+import { FFSWizard } from "@/components/ffs-wizard";
+import { ffsBucket } from "@/lib/ffs";
+import { cn } from "@/lib/utils";
 
 export function SettingsTab({ code }: { code: string }) {
   const [urls, setUrls] = useState<GA4Url[]>([]);
@@ -211,6 +220,193 @@ export function SettingsTab({ code }: { code: string }) {
           </form>
         )}
       </Card>
+
+      <FFSSection code={code} />
     </div>
+  );
+}
+
+// ── FFS Section ─────────────────────────────────────────────────────────
+
+function FFSSection({ code }: { code: string }) {
+  const [entries, setEntries] = useState<FFSEntry[]>([]);
+  const [lines, setLines] = useState<PacingLine[]>([]);
+  const [lineLinks, setLineLinks] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<FFSEntry | null>(null);
+
+  const loadFFS = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Entries + pacing (for lines) in parallel.
+      const [ents, pacing] = await Promise.all([
+        api.ffs.list(code),
+        api.pacing.get(code).catch(() => null),
+      ]);
+      setEntries(ents);
+      setLines(pacing?.lines ?? []);
+      // Build line_id → entry_id map so the wizard can flag lines already
+      // linked to a different entry. Last-write wins if the same line is
+      // linked to multiple entries (shouldn't happen — media_plan_lines has
+      // a single ffs_entry_id column — but be defensive).
+      const links: Record<string, string | null> = {};
+      for (const ent of ents) {
+        for (const lineId of ent.linked_line_ids) {
+          links[lineId] = ent.entry_id;
+        }
+      }
+      setLineLinks(links);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load FFS entries");
+    } finally {
+      setLoading(false);
+    }
+  }, [code]);
+
+  useEffect(() => { loadFFS(); }, [loadFFS]);
+
+  async function handleSubmit(payload: {
+    label: string | null;
+    lp_url: string | null;
+    is_platform_form: boolean;
+    platform_id: string | null;
+    ffs_inputs: FFSEntry["ffs_inputs"];
+    applied_line_ids: string[];
+  }) {
+    if (editingEntry) {
+      await api.ffs.update(code, editingEntry.entry_id, {
+        label: payload.label,
+        lp_url: payload.lp_url,
+        is_platform_form: payload.is_platform_form,
+        platform_id: payload.platform_id,
+        ffs_inputs: payload.ffs_inputs,
+      });
+      // Re-apply line mapping separately (update doesn't touch links).
+      await api.ffs.apply(code, editingEntry.entry_id, payload.applied_line_ids);
+    } else {
+      await api.ffs.create(code, {
+        label: payload.label,
+        lp_url: payload.lp_url,
+        is_platform_form: payload.is_platform_form,
+        platform_id: payload.platform_id,
+        ffs_inputs: payload.ffs_inputs,
+        applied_line_ids: payload.applied_line_ids,
+      });
+    }
+    await loadFFS();
+  }
+
+  async function handleDelete(entry: FFSEntry) {
+    if (!confirm(`Delete "${entry.label || entry.lp_url || entry.entry_id}"?\n\nLinked lines will lose this FFS (override lines keep their custom values).`)) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.ffs.delete(code, entry.entry_id);
+      await loadFFS();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete FFS entry");
+    }
+  }
+
+  return (
+    <>
+      <Card>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-white">Form Friction Scores</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Score each form once. The diagnostic engine uses FFS to adjust CVR benchmarks
+              for the F2, F4, and C1 signals.
+            </p>
+          </div>
+          <button
+            onClick={() => { setEditingEntry(null); setWizardOpen(true); }}
+            className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" /> New FFS entry
+          </button>
+        </div>
+
+        {error && (
+          <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+            {error}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="mt-4 h-16 animate-pulse rounded-md bg-slate-800/50" />
+        ) : entries.length === 0 ? (
+          <div className="mt-4 rounded-md border border-dashed border-slate-700 px-4 py-6 text-center">
+            <FileText className="mx-auto h-6 w-6 text-slate-600" />
+            <p className="mt-2 text-sm text-slate-500">No FFS entries yet</p>
+            <p className="mt-1 text-xs text-slate-600">
+              Add one for each unique form on this campaign.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 space-y-2">
+            {entries.map((entry) => {
+              const bucket = ffsBucket(entry.ffs_score);
+              return (
+                <div
+                  key={entry.entry_id}
+                  className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2.5"
+                >
+                  <div className={cn("flex-shrink-0 flex h-10 w-10 items-center justify-center rounded-md", bucket.bg)}>
+                    <span className={cn("text-sm font-semibold tabular-nums", bucket.color)}>
+                      {entry.ffs_score.toFixed(0)}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-slate-200">
+                      {entry.label || entry.lp_url || (entry.is_platform_form ? `${entry.platform_id ?? "platform"} form` : "Untitled form")}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {entry.is_platform_form
+                        ? `In-platform (${entry.platform_id ?? "—"})`
+                        : entry.lp_url ?? "Landing page form"}
+                      {" · "}
+                      {entry.linked_line_count} line{entry.linked_line_count === 1 ? "" : "s"}
+                      {" · "}
+                      <span className={bucket.color}>{bucket.label}</span>
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => { setEditingEntry(entry); setWizardOpen(true); }}
+                    className="flex-shrink-0 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300 transition-colors"
+                    title="Edit"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(entry)}
+                    className="flex-shrink-0 rounded p-1 text-slate-600 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                    title="Delete"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <FFSWizard
+        open={wizardOpen}
+        mode={editingEntry ? "edit" : "create"}
+        projectCode={code}
+        entry={editingEntry}
+        lines={lines}
+        existingLineLinks={lineLinks}
+        onClose={() => { setWizardOpen(false); setEditingEntry(null); }}
+        onSubmit={handleSubmit}
+      />
+    </>
   );
 }

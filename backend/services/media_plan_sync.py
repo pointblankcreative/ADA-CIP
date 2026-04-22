@@ -965,6 +965,10 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         # 2. Then delete old versions (no window of missing data)
         sync_version = datetime.now(timezone.utc).isoformat()
 
+        # Snapshot FFS wizard state before the sync wipes it. Re-applied below
+        # so user-entered form-friction data survives media plan re-syncs.
+        ffs_snapshot = _snapshot_ffs_state(mtl, project_code)
+
         _write_records_with_version(mtl, "media_plans", [media_plan_record], sync_version)
         _write_records_with_version(mtl, "media_plan_lines", line_records, sync_version)
         _write_records_with_version(mtl, "blocking_chart_weeks", week_records, sync_version)
@@ -974,6 +978,9 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
         # Apply any saved audience_name overrides so manual edits survive re-sync
         _apply_audience_overrides(mtl, project_code)
+
+        # Re-apply FFS wizard state for lines that survived the sync
+        _restore_ffs_state(mtl, project_code, ffs_snapshot)
     finally:
         mtl.close()
 
@@ -1153,6 +1160,113 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
         pass  # Table doesn't exist yet
     except Exception as e:
         logger.warning("  Could not cleanup stale overrides: %s", e)
+
+
+def _snapshot_ffs_state(mtl: bigquery.Client, project_code: str) -> list[dict]:
+    """Snapshot FFS wizard state for a project before a sync wipes it.
+
+    Returns a list of {line_id, ffs_entry_id, ffs_override, ffs_score, ffs_inputs}
+    for every line in the project that has any FFS data set. Used by
+    ``_restore_ffs_state`` below to re-apply after the versioned write+delete.
+    """
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    sql = f"""
+        SELECT
+          line_id,
+          ffs_entry_id,
+          ffs_override,
+          ffs_score,
+          TO_JSON_STRING(ffs_inputs) AS ffs_inputs_json
+        FROM {prefix}.media_plan_lines`
+        WHERE project_code = @pc
+          AND (ffs_entry_id IS NOT NULL
+               OR ffs_override = TRUE
+               OR ffs_score IS NOT NULL)
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+    ])
+    try:
+        rows = list(mtl.query(sql, job_config=job_config).result())
+    except google.cloud.exceptions.NotFound:
+        return []
+    except Exception as e:
+        logger.warning("  Could not snapshot FFS state for %s: %s", project_code, e)
+        return []
+
+    snapshot: list[dict] = []
+    for r in rows:
+        snapshot.append({
+            "line_id": r["line_id"],
+            "ffs_entry_id": r.get("ffs_entry_id"),
+            "ffs_override": r.get("ffs_override"),
+            "ffs_score": r.get("ffs_score"),
+            "ffs_inputs_json": r.get("ffs_inputs_json"),
+        })
+    return snapshot
+
+
+def _restore_ffs_state(
+    mtl: bigquery.Client, project_code: str, snapshot: list[dict]
+) -> None:
+    """Re-apply snapshot ffs_* columns to surviving lines (matched on line_id).
+
+    Lines whose line_id didn't survive the sync are skipped and logged — in
+    practice this happens when the sheet row was materially edited (budget,
+    platform, etc.) since that changes the derived line_id. For stable rows
+    the FFS state is preserved exactly.
+    """
+    if not snapshot:
+        return
+
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    applied = 0
+    skipped = 0
+
+    for entry in snapshot:
+        line_id = entry["line_id"]
+        params = [
+            bigquery.ScalarQueryParameter("line_id", "STRING", line_id),
+            bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            bigquery.ScalarQueryParameter("ffs_entry_id", "STRING", entry.get("ffs_entry_id")),
+            bigquery.ScalarQueryParameter("ffs_override", "BOOL", bool(entry.get("ffs_override") or False)),
+            bigquery.ScalarQueryParameter("ffs_score", "FLOAT64", entry.get("ffs_score")),
+        ]
+        inputs_json = entry.get("ffs_inputs_json")
+        if inputs_json:
+            params.append(bigquery.ScalarQueryParameter("ffs_inputs_json", "STRING", inputs_json))
+            inputs_expr = "PARSE_JSON(@ffs_inputs_json)"
+        else:
+            inputs_expr = "NULL"
+
+        sql = f"""
+            UPDATE {prefix}.media_plan_lines`
+            SET
+              ffs_entry_id = @ffs_entry_id,
+              ffs_override = @ffs_override,
+              ffs_score    = @ffs_score,
+              ffs_inputs   = {inputs_expr}
+            WHERE line_id = @line_id AND project_code = @pc
+        """
+        try:
+            result = mtl.query(sql, job_config=bigquery.QueryJobConfig(
+                query_parameters=params
+            )).result()
+            if (result.num_dml_affected_rows or 0) > 0:
+                applied += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.warning("  FFS restore failed for line %s: %s", line_id, e)
+            skipped += 1
+
+    if applied:
+        logger.info("    Restored FFS state on %d lines for %s", applied, project_code)
+    if skipped:
+        logger.info(
+            "    Skipped %d FFS lines for %s (line_id changed across sync)",
+            skipped, project_code,
+        )
 
 
 def _write_records_with_version(

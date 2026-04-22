@@ -353,6 +353,58 @@ export interface GA4PerformanceResponse {
   avg_session_duration?: number | null;
 }
 
+/* ── FFS (Form Friction Score) types ── */
+
+export interface FFSInputs {
+  field_count: number;
+  required_fields: number;
+  field_types: string[];
+  clicks_to_submit: number;
+  below_fold_mobile: boolean;
+  has_autofill: boolean;
+  is_platform_form: boolean;
+}
+
+export interface FFSEntry {
+  entry_id: string;
+  project_code: string;
+  label: string | null;
+  lp_url: string | null;
+  is_platform_form: boolean;
+  platform_id: string | null;
+  ffs_inputs: FFSInputs;
+  ffs_score: number;
+  created_at: string | null;
+  updated_at: string | null;
+  created_by: string | null;
+  linked_line_count: number;
+  linked_line_ids: string[];
+}
+
+export interface FFSEntryCreatePayload {
+  label?: string | null;
+  lp_url?: string | null;
+  is_platform_form: boolean;
+  platform_id?: string | null;
+  ffs_inputs: FFSInputs;
+  applied_line_ids?: string[];
+}
+
+export interface FFSEntryUpdatePayload {
+  label?: string | null;
+  lp_url?: string | null;
+  is_platform_form?: boolean | null;
+  platform_id?: string | null;
+  ffs_inputs?: FFSInputs | null;
+}
+
+export interface FFSApplyResponse {
+  entry_id: string;
+  linked_line_ids: string[];
+  added: string[];
+  removed: string[];
+}
+
 /* ── Benchmark types ── */
 
 export interface BenchmarkValue {
@@ -516,6 +568,38 @@ export const api = {
     run: (code: string) =>
       apiFetch<DiagnosticRunResponse>(`/api/diagnostics/${code}/run`, {
         method: "POST",
+      }),
+  },
+  ffs: {
+    list: (code: string) => apiFetch<FFSEntry[]>(`/api/ffs/${code}`),
+    create: (code: string, data: FFSEntryCreatePayload) =>
+      apiFetch<FFSEntry>(`/api/ffs/${code}`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    update: (code: string, entryId: string, data: FFSEntryUpdatePayload) =>
+      apiFetch<FFSEntry>(`/api/ffs/${code}/${entryId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    delete: (code: string, entryId: string) =>
+      apiFetch<{ status: string; entry_id: string }>(`/api/ffs/${code}/${entryId}`, {
+        method: "DELETE",
+      }),
+    apply: (code: string, entryId: string, lineIds: string[]) =>
+      apiFetch<FFSApplyResponse>(`/api/ffs/${code}/${entryId}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ line_ids: lineIds }),
+      }),
+    setLineOverride: (code: string, lineId: string, ffsInputs: FFSInputs) =>
+      apiFetch<Record<string, unknown>>(`/api/ffs/${code}/lines/${lineId}/override`, {
+        method: "POST",
+        body: JSON.stringify({ ffs_inputs: ffsInputs, clear: false }),
+      }),
+    clearLineOverride: (code: string, lineId: string) =>
+      apiFetch<Record<string, unknown>>(`/api/ffs/${code}/lines/${lineId}/override`, {
+        method: "POST",
+        body: JSON.stringify({ clear: true }),
       }),
   },
   ga4: {
