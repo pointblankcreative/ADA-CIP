@@ -13,6 +13,8 @@ from datetime import date
 import pytest
 
 from backend.services.media_plan_sync import (
+    _assign_bundle_groups,
+    _compute_bundle_id,
     _extract_line_code,
     _filter_canonical_tabs,
     _match_all_mp_lines,
@@ -384,6 +386,199 @@ class TestExtractLineCodesFromAdsetName:
             "#11",
             "#11",
         ]
+
+
+class TestAssignBundleGroups:
+    """PR 3: group merged_with_previous runs into bundles.
+
+    Members of a group share the same integer bundle_group index; singletons
+    (standalone rows where no merge follows) get bundle_group=None.
+    """
+
+    def test_empty_list_is_noop(self):
+        lines: list[dict] = []
+        _assign_bundle_groups(lines)
+        assert lines == []
+
+    def test_single_standalone_line(self):
+        lines = [{"line_code": "#01", "merged_with_previous": False}]
+        _assign_bundle_groups(lines)
+        assert lines[0]["bundle_group"] is None
+
+    def test_two_row_bundle(self):
+        lines = [
+            {"line_code": "#09", "merged_with_previous": False},
+            {"line_code": "#10", "merged_with_previous": True},
+        ]
+        _assign_bundle_groups(lines)
+        # Both lines share the same (non-None) group id.
+        assert lines[0]["bundle_group"] is not None
+        assert lines[0]["bundle_group"] == lines[1]["bundle_group"]
+
+    def test_three_independent_bundles_get_three_ids(self):
+        """Squamish Flight 2 Meta shape — three 2-row bundles in sequence."""
+        lines = [
+            {"line_code": "#09", "merged_with_previous": False},
+            {"line_code": "#10", "merged_with_previous": True},
+            {"line_code": "#11", "merged_with_previous": False},
+            {"line_code": "#12", "merged_with_previous": True},
+            {"line_code": "#13", "merged_with_previous": False},
+            {"line_code": "#14", "merged_with_previous": True},
+        ]
+        _assign_bundle_groups(lines)
+        groups = [ln["bundle_group"] for ln in lines]
+        # Pairs share IDs
+        assert groups[0] == groups[1]
+        assert groups[2] == groups[3]
+        assert groups[4] == groups[5]
+        # Different bundles have different IDs
+        assert groups[0] != groups[2]
+        assert groups[2] != groups[4]
+        assert groups[0] != groups[4]
+        # None are None
+        assert all(g is not None for g in groups)
+
+    def test_mixed_bundle_and_standalone(self):
+        lines = [
+            {"line_code": "#01", "merged_with_previous": False},  # standalone
+            {"line_code": "#02", "merged_with_previous": False},  # parent
+            {"line_code": "#03", "merged_with_previous": True},   # child
+            {"line_code": "#04", "merged_with_previous": False},  # standalone
+        ]
+        _assign_bundle_groups(lines)
+        assert lines[0]["bundle_group"] is None
+        assert lines[1]["bundle_group"] is not None
+        assert lines[1]["bundle_group"] == lines[2]["bundle_group"]
+        assert lines[3]["bundle_group"] is None
+
+    def test_orphan_merged_with_previous_at_start(self):
+        """First row with merged_with_previous=True is anomalous but must not crash."""
+        lines = [
+            {"line_code": "#01", "merged_with_previous": True},
+            {"line_code": "#02", "merged_with_previous": False},
+        ]
+        _assign_bundle_groups(lines)
+        # Both should be standalone (no real parent for the first row).
+        assert lines[0]["bundle_group"] is None
+        assert lines[1]["bundle_group"] is None
+
+    def test_three_row_bundle(self):
+        """Flight 1 Meta has 5 merged rows (#01-#05). Must all share one group."""
+        lines = [
+            {"line_code": "#01", "merged_with_previous": False},
+            {"line_code": "#02", "merged_with_previous": True},
+            {"line_code": "#03", "merged_with_previous": True},
+            {"line_code": "#04", "merged_with_previous": True},
+            {"line_code": "#05", "merged_with_previous": True},
+        ]
+        _assign_bundle_groups(lines)
+        groups = [ln["bundle_group"] for ln in lines]
+        assert len(set(groups)) == 1
+        assert groups[0] is not None
+
+
+class TestComputeBundleId:
+    """PR 3: bundle_id must be stable, human-readable, and safe."""
+
+    def test_basic_format(self):
+        members = [
+            {"platform_id": "meta", "line_code": "#09", "audience_name": "North Van Engagers"},
+            {"platform_id": "meta", "line_code": "#10", "audience_name": "North Van List"},
+        ]
+        assert _compute_bundle_id("25034", members) == "25034-meta-09"
+
+    def test_preserves_letter_suffix(self):
+        members = [
+            {"platform_id": "meta", "line_code": "#14a", "audience_name": "Foo"},
+            {"platform_id": "meta", "line_code": "#14b", "audience_name": "Bar"},
+        ]
+        assert _compute_bundle_id("25034", members) == "25034-meta-14a"
+
+    def test_osstf_style_bare_code(self):
+        members = [
+            {"platform_id": "meta", "line_code": "1A", "audience_name": "Teachers"},
+            {"platform_id": "meta", "line_code": "1B", "audience_name": "Retirees"},
+        ]
+        # No '#' to strip, so preserved as-is
+        assert _compute_bundle_id("25042", members) == "25042-meta-1A"
+
+    def test_stable_across_repeated_calls(self):
+        """Bundle ID computation must be deterministic."""
+        members = [
+            {"platform_id": "meta", "line_code": "#09", "audience_name": "a"},
+            {"platform_id": "meta", "line_code": "#10", "audience_name": "b"},
+        ]
+        assert _compute_bundle_id("25034", members) == _compute_bundle_id("25034", members)
+
+    def test_fallback_when_no_line_code(self):
+        """If line_code is missing, fall back to a deterministic hash — must not crash."""
+        members = [
+            {"platform_id": "meta", "line_code": None, "audience_name": "A"},
+            {"platform_id": "meta", "line_code": "", "audience_name": "B"},
+        ]
+        bundle_id = _compute_bundle_id("25034", members)
+        # Starts with the project + platform prefix
+        assert bundle_id.startswith("25034-meta-")
+        # Deterministic
+        assert bundle_id == _compute_bundle_id("25034", members)
+
+
+class TestParseMediaPlanTabBundleGroupAnnotation:
+    """PR 3: _parse_media_plan_tab must annotate mp_lines with bundle_group."""
+
+    def test_squamish_three_sub_bundles_get_three_groups(self):
+        rows = [
+            ["Meta", "Conv", "Mar 17", "Apr 12", "27", "Conv CA",
+             "#09 North Van Engagers", "", "North Van", "", "CPC", "", "", "$2,238.19"],
+            ["", "", "", "", "", "", "#10 North Van List", "",
+             "North Van", "", "CPC", "", "", ""],
+            ["", "", "Mar 26", "Apr 22", "27", "Conv CA",
+             "#11 Viewers BC", "", "BC Excl", "", "CPC", "", "", "$3,104.00"],
+            ["", "", "", "", "", "", "#12 List BC", "",
+             "BC Excl", "", "CPC", "", "", ""],
+            ["", "", "Mar 30", "Apr 26", "27", "Conv CA",
+             "#13 Squamish Engagers", "", "Squamish", "", "CPC", "", "", "$2,387.72"],
+            ["", "", "", "", "", "", "#14 Squamish List", "",
+             "Squamish", "", "CPC", "", "", ""],
+        ]
+        data = _squamish_data(*rows)
+        header_idx = 5
+        budget_col = 13
+        merges = [
+            {"startRowIndex": header_idx + 1, "endRowIndex": header_idx + 3,
+             "startColumnIndex": budget_col, "endColumnIndex": budget_col + 1},
+            {"startRowIndex": header_idx + 3, "endRowIndex": header_idx + 5,
+             "startColumnIndex": budget_col, "endColumnIndex": budget_col + 1},
+            {"startRowIndex": header_idx + 5, "endRowIndex": header_idx + 7,
+             "startColumnIndex": budget_col, "endColumnIndex": budget_col + 1},
+        ]
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=merges, ref_year=2026
+        )
+        assert len(lines) == 6
+        # Pairs share bundle_group
+        assert lines[0]["bundle_group"] == lines[1]["bundle_group"]
+        assert lines[2]["bundle_group"] == lines[3]["bundle_group"]
+        assert lines[4]["bundle_group"] == lines[5]["bundle_group"]
+        # All three bundles are distinct
+        assert lines[0]["bundle_group"] != lines[2]["bundle_group"]
+        assert lines[2]["bundle_group"] != lines[4]["bundle_group"]
+        # None are None (every row is in SOME bundle)
+        assert all(ln["bundle_group"] is not None for ln in lines)
+
+    def test_no_merges_means_no_bundle_groups(self):
+        """Standard plan with no merges → every line has bundle_group=None."""
+        row = [
+            "Meta (Facebook, Instagram)", "Conversions", "March 17", "April 12",
+            "27", "Conversions CA", "#09 North Van Engagers", "",
+            "North Van", "", "CPC", "", "", "$2,238.19",
+        ]
+        data = _squamish_data(row)
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=[], ref_year=2026
+        )
+        assert len(lines) == 1
+        assert lines[0]["bundle_group"] is None
 
 
 class TestVwFactDigitalDailyDDL:

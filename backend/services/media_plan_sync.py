@@ -352,6 +352,62 @@ def _fetch_worksheet_merges(ws: "gspread.Worksheet | None") -> list[dict]:
     return []
 
 
+def _assign_bundle_groups(mp_lines: list[dict]) -> None:
+    """In-place: annotate mp_lines with `bundle_group` (int or None).
+
+    Walks lines in order. A line with `merged_with_previous=True` inherits the
+    previous line's group. Otherwise the line starts a fresh candidate group.
+    Singleton groups (standalone rows with no merged neighbours) collapse to
+    `bundle_group=None`.
+
+    Edge case: the first line never has a real parent, so a stray
+    `merged_with_previous=True` on lines[0] is treated as False (standalone).
+    """
+    if not mp_lines:
+        return
+
+    # Pass 1 — assign raw candidate group indices.
+    next_group = 0
+    for i, line in enumerate(mp_lines):
+        inherits = i > 0 and bool(line.get("merged_with_previous"))
+        if inherits:
+            line["bundle_group"] = mp_lines[i - 1]["bundle_group"]
+        else:
+            line["bundle_group"] = next_group
+            next_group += 1
+
+    # Pass 2 — strip singletons (group size < 2).
+    counts: dict[int, int] = {}
+    for line in mp_lines:
+        g = line["bundle_group"]
+        counts[g] = counts.get(g, 0) + 1
+    for line in mp_lines:
+        if counts[line["bundle_group"]] < 2:
+            line["bundle_group"] = None
+
+
+def _compute_bundle_id(project_code: str, members: list[dict]) -> str:
+    """Build a stable, human-readable bundle_id from the group parent.
+
+    Format: ``{project_code}-{platform_id}-{first_line_code_sans_hash}``
+      e.g. "25034-meta-09" for a Squamish Meta bundle starting at #09.
+      e.g. "25042-meta-1A" for an OSSTF-style bare-code bundle.
+
+    Falls back to an 8-char MD5 digest of the members' audience_names when
+    no usable line_code is available — deterministic, but opaque.
+    """
+    first = members[0] if members else {}
+    platform = first.get("platform_id") or "unknown"
+    first_code = (first.get("line_code") or "").lstrip("#").strip()
+    if first_code:
+        return f"{project_code}-{platform}-{first_code}"
+    import hashlib
+
+    tag = "|".join((m.get("audience_name") or "") for m in members)
+    digest = hashlib.md5(tag.encode("utf-8")).hexdigest()[:8]
+    return f"{project_code}-{platform}-{digest}"
+
+
 def _merged_child_rows_for_column(
     merges: list[dict], col_index: int
 ) -> set[int]:
@@ -435,6 +491,11 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         f"ALTER TABLE {prefix}.media_plans` ADD COLUMN IF NOT EXISTS sync_version STRING",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS sync_version STRING",
         f"ALTER TABLE {prefix}.blocking_chart_weeks` ADD COLUMN IF NOT EXISTS sync_version STRING",
+        # Bundled-optimization (PR 3): bundle_id links sibling lines, bundle_role
+        # tracks planner intent state (suggested_* on first detection; confirmed_*
+        # / rejected once a user acts in the UI — PR 5).
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_id STRING",
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_role STRING",
         # Bug 3 (ADAC-18): audience_name overrides table
         f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
             project_code STRING,
@@ -891,6 +952,10 @@ def _parse_media_plan_tab(
             "merged_with_previous": row_idx in merged_budget_rows,
         })
 
+    # PR 3: annotate bundle_group on each line so sync_media_plan can emit
+    # bundle siblings (suggested_child rows) alongside the bundle parent.
+    _assign_bundle_groups(lines)
+
     return lines
 
 
@@ -1135,6 +1200,25 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         # Use media plan tab's line_code if matched, otherwise generate one
         line_code = mp_detail.get("line_code") if mp_detail else None
 
+        # Bundled-optimization (PR 3): if the matched mp_line is part of a
+        # bundle, this bc_line becomes the suggested parent. Sibling
+        # suggested_child rows get emitted below so each audience in the
+        # bundle is addressable in downstream pacing / UI layers.
+        bundle_group = mp_detail.get("bundle_group") if mp_detail else None
+        bundle_siblings: list[dict] = []
+        bundle_id: str | None = None
+        bundle_role: str | None = None
+        if bundle_group is not None:
+            bundle_siblings = [
+                mp for mp in mp_lines
+                if mp is not mp_detail and mp.get("bundle_group") == bundle_group
+            ]
+            if bundle_siblings:
+                bundle_id = _compute_bundle_id(
+                    project_code, [mp_detail] + bundle_siblings
+                )
+                bundle_role = "suggested_parent"
+
         line_records.append({
             "line_id": line_id,
             "plan_id": plan_id,
@@ -1159,7 +1243,52 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
             "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
             "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
             "is_traditional": _is_traditional_media(bc_line.get("platform"), bc_line.get("platform_id")),
+            "bundle_id": bundle_id,
+            "bundle_role": bundle_role,
         })
+
+        # Emit suggested_child rows for every sibling in the bundle. Budget
+        # is NULL on children — the bundle's pool total lives on the parent
+        # row, and `SUM(budget) GROUP BY bundle_id` gives the pool value
+        # without double-counting.
+        for j, sib in enumerate(bundle_siblings, start=1):
+            sib_flight_start = sib.get("flight_start") or flight_start
+            sib_flight_end = sib.get("flight_end") or flight_end
+            line_records.append({
+                "line_id": f"{line_id}-bundled-{j:02d}",
+                "plan_id": plan_id,
+                "project_code": project_code,
+                "line_code": sib.get("line_code"),
+                "platform_id": bc_line["platform_id"],
+                "site_network": bc_line["platform"],
+                "channel_category": _channel_category(bc_line.get("objective_format", "")),
+                "flight_start": (
+                    sib_flight_start.isoformat() if sib_flight_start else None
+                ),
+                "flight_end": (
+                    sib_flight_end.isoformat() if sib_flight_end else None
+                ),
+                "objective": bc_line.get("objective_format"),
+                "audience_name": sib.get("audience_name"),
+                "audience_targeting": sib.get("audience_targeting"),
+                "landing_page": sib.get("landing_page"),
+                "pricing_model": sib.get("pricing_model"),
+                # CRITICAL: children must have NULL budget. The bundle's
+                # total lives only on the parent row. See PR 3 worklog.
+                "budget": None,
+                "estimated_impressions": (
+                    int(sib["estimated_impressions"])
+                    if sib.get("estimated_impressions")
+                    else None
+                ),
+                "frequency_cap": sib.get("frequency_cap"),
+                "geo_targeting": sib.get("geo_targeting"),
+                "is_traditional": _is_traditional_media(
+                    bc_line.get("platform"), bc_line.get("platform_id")
+                ),
+                "bundle_id": bundle_id,
+                "bundle_role": "suggested_child",
+            })
 
         line_has_weeks = False
         for w in bc["weeks"]:
