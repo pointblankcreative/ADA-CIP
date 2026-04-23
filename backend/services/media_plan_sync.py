@@ -246,6 +246,43 @@ def _parse_money(val: str | None) -> float | None:
         return None
 
 
+# ── Line-code extraction ─────────────────────────────────────────────
+# Bundled-optimization support: media plans tag individual lines with short
+# codes. Two formats in the wild:
+#   - Squamish (25034) Col G "Group Name": "#09 North Van Engagers" —
+#     '#' prefix + digits + optional description.
+#   - OSSTF (25042) Col G "ID": "1A", "1B", "2A", "2B", or bare "1"/"2" —
+#     no '#' prefix; whole cell is the code.
+# A permissive fallback also handles "1A Description" (OSSTF code + tail).
+
+_LINE_CODE_FULL_RE = re.compile(r"^#?\d+[A-Za-z]?$")
+_LINE_CODE_PREFIX_RE = re.compile(r"^(#?\d+[A-Za-z]?)\s+(.+)$")
+
+
+def _extract_line_code(raw: str | None) -> tuple[str, str]:
+    """Split a cell value into (line_code, remainder).
+
+    Preserves the '#' prefix as-given:
+      - "#09 Engagers"  → ("#09", "Engagers")
+      - "#91"           → ("#91", "")
+      - "1A"            → ("1A", "")
+      - "2B Teachers"   → ("2B", "Teachers")
+      - "Retargeting"   → ("", "Retargeting")
+      - "" / None       → ("", "")
+    """
+    if not raw:
+        return ("", "")
+    s = raw.strip()
+    if not s:
+        return ("", "")
+    if _LINE_CODE_FULL_RE.match(s):
+        return (s, "")
+    m = _LINE_CODE_PREFIX_RE.match(s)
+    if m:
+        return (m.group(1), m.group(2).strip())
+    return ("", s)
+
+
 def _parse_pct(val: str | None) -> float | None:
     if not val:
         return None
@@ -550,30 +587,76 @@ def _parse_media_plan_tab(
 
     headers = all_data[header_row_idx]
 
-    # Build column map from header names
+    # Build column map from header names.
+    #
+    # Priority note: matchers are ordered specific → general to avoid
+    # collisions (e.g. "Goal Frequency" must hit `frequency`, not `goal`;
+    # "Group Name" must hit `group_name`, not `audience_name` via a generic
+    # "name" fallback).
+    #
+    # Known header variants this matcher handles:
+    #   OSSTF (25042): "Site/Network", "Goal", "Start", "End", "Days", "ID",
+    #                  "Audience Name", "Geo", "Audience Targeting", ...
+    #   Squamish (25034): "Site/Network", "Campaign Type/Objective",
+    #                     "Start Date", "End Date", "# Days", "Audience Group",
+    #                     "Group Name", "Notes/Targeting", "Geo Target",
+    #                     "Creative", "Pricing", "Est'd Rate",
+    #                     "Est'd Impressions", "Budget $"
     col_map: dict[str, int] = {}
     for i, h in enumerate(headers):
         h_lower = h.strip().lower()
-        if "site" in h_lower or "network" in h_lower:
-            col_map["platform"] = i
-        elif h_lower in ("goal", "goal "):
-            col_map["goal"] = i
-        elif "goal" in h_lower and "freq" in h_lower:
+        if not h_lower:
+            continue
+
+        # --- Specific matchers first ---
+        # "Goal Frequency" / "Frequency" → frequency (not goal)
+        if ("goal" in h_lower and "freq" in h_lower) or (
+            "freq" in h_lower and "goal" not in h_lower
+        ):
             col_map["frequency"] = i
-        elif h_lower.strip() in ("start", "start "):
-            col_map["start"] = i
-        elif h_lower.strip() in ("end", "end "):
-            col_map["end"] = i
-        elif h_lower.strip() == "days":
-            col_map["days"] = i
-        elif h_lower.strip() == "id":
-            col_map["id"] = i
-        elif "audience name" in h_lower or "ad set name" in h_lower or "adset name" in h_lower:
+        elif "site" in h_lower or "network" in h_lower:
+            col_map["platform"] = i
+        # "Group Name" (Squamish Col G) — must precede audience_name matcher
+        # because "name" could otherwise collide via the legacy fallback.
+        elif "group name" in h_lower:
+            col_map["group_name"] = i
+        # "Audience Group" (Squamish Col F) — broader audience category.
+        elif "audience group" in h_lower:
+            col_map["audience_group"] = i
+        elif "est" in h_lower and "impression" in h_lower:
+            col_map["est_impressions"] = i
+        elif "est" in h_lower and "audience" in h_lower:
+            col_map["est_audience"] = i
+        elif (
+            "audience name" in h_lower
+            or "ad set name" in h_lower
+            or "adset name" in h_lower
+        ):
             col_map["audience_name"] = i
-        elif "geo" in h_lower:
-            col_map["geo"] = i
         elif "audience" in h_lower and "targeting" in h_lower:
             col_map["audience_targeting"] = i
+        elif h_lower in ("id", "line id", "line code"):
+            col_map["id"] = i
+        # Goal / Objective — widened to accept "Campaign Type/Objective"
+        # (Squamish) and bare "Objective".
+        elif (
+            h_lower in ("goal", "objective")
+            or "campaign type" in h_lower
+        ):
+            col_map["goal"] = i
+        # Start / End — widened to accept "Start Date" / "End Date".
+        elif h_lower == "start" or "start date" in h_lower:
+            col_map["start"] = i
+        elif h_lower == "end" or "end date" in h_lower:
+            col_map["end"] = i
+        # Days — widened to accept "# Days".
+        elif h_lower in ("days", "# days") or "# days" in h_lower:
+            col_map["days"] = i
+        # Budget — widened to accept "Budget $".
+        elif h_lower in ("budget", "budget $"):
+            col_map["budget"] = i
+        elif "geo" in h_lower:
+            col_map["geo"] = i
         elif "technical" in h_lower:
             col_map["technical"] = i
         elif "landing" in h_lower:
@@ -582,24 +665,37 @@ def _parse_media_plan_tab(
             col_map["creative"] = i
         elif "pricing" in h_lower:
             col_map["pricing"] = i
-        elif "est" in h_lower and "audience" in h_lower:
-            col_map["est_audience"] = i
         elif "bid" in h_lower:
             col_map["bid"] = i
-        elif "est" in h_lower and "impression" in h_lower:
-            col_map["est_impressions"] = i
-        elif "freq" in h_lower and "goal" not in h_lower:
-            col_map["frequency"] = i
-        elif h_lower.strip() == "budget":
-            col_map["budget"] = i
 
-    # Fallback: if no audience_name column was found, try less-specific headers
+    # Fallback: if no audience_name column was found, try less-specific headers.
+    # Must NOT hijack "Group Name" — the group_name slot has its own path below.
     if "audience_name" not in col_map:
         for i, h in enumerate(headers):
             h_lower = h.strip().lower()
-            if h_lower == "audience" or h_lower == "name":
+            if h_lower in ("audience", "name") and i != col_map.get("group_name"):
                 col_map["audience_name"] = i
                 break
+
+    # Silent-fail warnings: log expected-but-missing columns. Parsing continues.
+    _expected_critical = {"start", "end", "budget"}
+    _missing = _expected_critical - col_map.keys()
+    if _missing:
+        logger.warning(
+            "Media Plan tab missing expected columns %s; "
+            "parsed headers were: %r",
+            sorted(_missing),
+            headers,
+        )
+    if not (
+        "id" in col_map
+        or "audience_name" in col_map
+        or "group_name" in col_map
+    ):
+        logger.warning(
+            "Media Plan tab has no line-identifier column "
+            "(id / audience_name / group_name); rows will lack identifiers"
+        )
 
     logger.info("  Media Plan tab column map: %s", col_map)
 
@@ -628,6 +724,18 @@ def _parse_media_plan_tab(
         line_code = gc(row, "id")
         goal = gc(row, "goal")
         budget = _parse_money(gc(row, "budget"))
+        audience_name = gc(row, "audience_name")
+
+        # Squamish Col G "Group Name" carries both the line_code and the
+        # audience description in a single cell (e.g. "#09 North Van Engagers").
+        # Derive each field where it isn't already set by a dedicated column.
+        group_name_raw = gc(row, "group_name")
+        if group_name_raw:
+            gn_code, gn_rest = _extract_line_code(group_name_raw)
+            if not line_code and gn_code:
+                line_code = gn_code
+            if not audience_name:
+                audience_name = gn_rest or group_name_raw
 
         # Skip total/footer rows
         if current_platform and current_platform.lower() in ("total", "grand total", "terms"):
@@ -648,7 +756,8 @@ def _parse_media_plan_tab(
             "flight_end": _parse_date(gc(row, "end"), ref_year),
             "days": gc(row, "days"),
             "line_code": line_code,
-            "audience_name": gc(row, "audience_name"),
+            "audience_name": audience_name,
+            "audience_group": gc(row, "audience_group"),
             "geo_targeting": gc(row, "geo"),
             "audience_targeting": gc(row, "audience_targeting"),
             "technical_targeting": gc(row, "technical"),
