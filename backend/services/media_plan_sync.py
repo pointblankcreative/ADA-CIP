@@ -1217,8 +1217,18 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         ref_year = bc["metadata"]["start_date"].year
         logger.info("  Using ref_year=%d from blocking chart start_date", ref_year)
 
+    # Diagnostic: list media plan tabs that survived discovery + canonical filter.
+    # If this logs an empty list, that explains any "0 media plan lines" result.
+    logger.info(
+        "  Media plan tabs ready for processing (count=%d): %r",
+        len(media_plan_tabs),
+        [ws.title for ws in media_plan_tabs],
+    )
+
     filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
+        # Diagnostic: prove we're entering the loop for each tab.
+        logger.info("  Evaluating media plan tab: %r", mp_ws.title)
         # If a specific tab was requested, skip non-matching tabs
         if tab_name:
             if mp_ws.title.strip().lower() != tab_name.strip().lower():
