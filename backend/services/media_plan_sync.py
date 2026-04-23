@@ -246,6 +246,196 @@ def _parse_money(val: str | None) -> float | None:
         return None
 
 
+# ── Line-code extraction ─────────────────────────────────────────────
+# Bundled-optimization support: media plans tag individual lines with short
+# codes. Two formats in the wild:
+#   - Squamish (25034) Col G "Group Name": "#09 North Van Engagers" —
+#     '#' prefix + digits + optional description.
+#   - OSSTF (25042) Col G "ID": "1A", "1B", "2A", "2B", or bare "1"/"2" —
+#     no '#' prefix; whole cell is the code.
+# A permissive fallback also handles "1A Description" (OSSTF code + tail).
+
+_LINE_CODE_FULL_RE = re.compile(r"^#?\d+[A-Za-z]?$")
+_LINE_CODE_PREFIX_RE = re.compile(r"^(#?\d+[A-Za-z]?)\s+(.+)$")
+
+
+def _extract_line_code(raw: str | None) -> tuple[str, str]:
+    """Split a cell value into (line_code, remainder).
+
+    Preserves the '#' prefix as-given:
+      - "#09 Engagers"  → ("#09", "Engagers")
+      - "#91"           → ("#91", "")
+      - "1A"            → ("1A", "")
+      - "2B Teachers"   → ("2B", "Teachers")
+      - "Retargeting"   → ("", "Retargeting")
+      - "" / None       → ("", "")
+    """
+    if not raw:
+        return ("", "")
+    s = raw.strip()
+    if not s:
+        return ("", "")
+    if _LINE_CODE_FULL_RE.match(s):
+        return (s, "")
+    m = _LINE_CODE_PREFIX_RE.match(s)
+    if m:
+        return (m.group(1), m.group(2).strip())
+    return ("", s)
+
+
+# ── Ad-set-name line-code extraction ─────────────────────────────────
+# Used by PR 4 (pacing) to attribute fact_digital_daily spend back to
+# media_plan_lines via their `line_code`. Kept in sync with the BigQuery
+# view (`vw_fact_digital_daily`): both use `r'#\d+[A-Za-z]?'`.
+#
+# Requires the '#' prefix on purpose — bare numbers inside ad set names
+# (impressions, years, etc.) are ambiguous and would corrupt attribution.
+# OSSTF-style bare codes ('1A', '2B') aren't extracted here; they'd
+# need a separate, plan-specific heuristic.
+
+_ADSET_LINE_CODE_RE = re.compile(r"#\d+[A-Za-z]?")
+
+# The identical BigQuery RE2 pattern (kept here as a string so the view
+# SQL and Python stay provably in sync).
+BQ_LINE_CODE_REGEX = r"#\d+[A-Za-z]?"
+
+
+def extract_line_codes_from_adset_name(name: str | None) -> list[str]:
+    """Extract all `#XX` line codes from an ad set name.
+
+    Returns codes in order of appearance, preserving duplicates (caller
+    decides whether to dedupe). Examples:
+      - "#11 viewers BC"              → ["#11"]
+      - "#11 viewers BC, #12 list"    → ["#11", "#12"]
+      - "Conversions CA"              → []
+      - "24 hours"                    → []  (no '#')
+      - "#14A Retargeting"            → ["#14A"]
+    """
+    if not name:
+        return []
+    return _ADSET_LINE_CODE_RE.findall(name)
+
+
+# ── Merge metadata ───────────────────────────────────────────────────
+# Media planners use merged cells in the Budget column to signal shared-budget
+# (CBO-style) bundles — e.g. Squamish (25034) Flight 2 Meta has three 2-row
+# merges creating three distinct sub-bundles. gspread's get_all_values() strips
+# merges (value only in the top-left cell), so we fetch the merge ranges from
+# the spreadsheet metadata and stamp child rows with `merged_with_previous`.
+# PR 3 consumes that flag to populate the bundle sidecar table.
+
+def _fetch_worksheet_merges(ws: "gspread.Worksheet | None") -> list[dict]:
+    """Return merge ranges for a worksheet as a list of GSheets API dicts
+    (keys: startRowIndex, endRowIndex, startColumnIndex, endColumnIndex).
+
+    Best-effort: if the metadata fetch fails, we log and return []. Parsing
+    falls back to treating every line as a standalone (pre-PR-1b behaviour).
+    """
+    if ws is None:
+        return []
+    try:
+        meta = ws.spreadsheet.fetch_sheet_metadata(
+            params={"fields": "sheets(properties(sheetId,title),merges)"}
+        )
+    except Exception as exc:  # network error, auth error, schema drift, etc.
+        logger.warning(
+            "Could not fetch merge metadata for worksheet %r: %s",
+            getattr(ws, "title", "?"), exc,
+        )
+        return []
+    for sheet in meta.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("sheetId") == getattr(ws, "id", None) or (
+            props.get("title") == getattr(ws, "title", None)
+        ):
+            return sheet.get("merges", []) or []
+    return []
+
+
+def _assign_bundle_groups(mp_lines: list[dict]) -> None:
+    """In-place: annotate mp_lines with `bundle_group` (int or None).
+
+    Walks lines in order. A line with `merged_with_previous=True` inherits the
+    previous line's group. Otherwise the line starts a fresh candidate group.
+    Singleton groups (standalone rows with no merged neighbours) collapse to
+    `bundle_group=None`.
+
+    Edge case: the first line never has a real parent, so a stray
+    `merged_with_previous=True` on lines[0] is treated as False (standalone).
+    """
+    if not mp_lines:
+        return
+
+    # Pass 1 — assign raw candidate group indices.
+    next_group = 0
+    for i, line in enumerate(mp_lines):
+        inherits = i > 0 and bool(line.get("merged_with_previous"))
+        if inherits:
+            line["bundle_group"] = mp_lines[i - 1]["bundle_group"]
+        else:
+            line["bundle_group"] = next_group
+            next_group += 1
+
+    # Pass 2 — strip singletons (group size < 2).
+    counts: dict[int, int] = {}
+    for line in mp_lines:
+        g = line["bundle_group"]
+        counts[g] = counts.get(g, 0) + 1
+    for line in mp_lines:
+        if counts[line["bundle_group"]] < 2:
+            line["bundle_group"] = None
+
+
+def _compute_bundle_id(project_code: str, members: list[dict]) -> str:
+    """Build a stable, human-readable bundle_id from the group parent.
+
+    Format: ``{project_code}-{platform_id}-{first_line_code_sans_hash}``
+      e.g. "25034-meta-09" for a Squamish Meta bundle starting at #09.
+      e.g. "25042-meta-1A" for an OSSTF-style bare-code bundle.
+
+    Falls back to an 8-char MD5 digest of the members' audience_names when
+    no usable line_code is available — deterministic, but opaque.
+    """
+    first = members[0] if members else {}
+    platform = first.get("platform_id") or "unknown"
+    first_code = (first.get("line_code") or "").lstrip("#").strip()
+    if first_code:
+        return f"{project_code}-{platform}-{first_code}"
+    import hashlib
+
+    tag = "|".join((m.get("audience_name") or "") for m in members)
+    digest = hashlib.md5(tag.encode("utf-8")).hexdigest()[:8]
+    return f"{project_code}-{platform}-{digest}"
+
+
+def _merged_child_rows_for_column(
+    merges: list[dict], col_index: int
+) -> set[int]:
+    """Return the set of 0-indexed sheet rows that are merged children
+    (not the top-left) for the given column index.
+
+    A merge with startRowIndex=6, endRowIndex=8, startColumnIndex=13,
+    endColumnIndex=14 covers rows 6-7 inclusive. Row 6 is the parent
+    (carries the value); row 7 is the merged child.
+    """
+    children: set[int] = set()
+    for m in merges:
+        try:
+            c_start = int(m["startColumnIndex"])
+            c_end = int(m["endColumnIndex"])
+            r_start = int(m["startRowIndex"])
+            r_end = int(m["endRowIndex"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (c_start <= col_index < c_end):
+            continue
+        if r_end - r_start <= 1:
+            continue
+        for r in range(r_start + 1, r_end):
+            children.add(r)
+    return children
+
+
 def _parse_pct(val: str | None) -> float | None:
     if not val:
         return None
@@ -301,6 +491,11 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         f"ALTER TABLE {prefix}.media_plans` ADD COLUMN IF NOT EXISTS sync_version STRING",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS sync_version STRING",
         f"ALTER TABLE {prefix}.blocking_chart_weeks` ADD COLUMN IF NOT EXISTS sync_version STRING",
+        # Bundled-optimization (PR 3): bundle_id links sibling lines, bundle_role
+        # tracks planner intent state (suggested_* on first detection; confirmed_*
+        # / rejected once a user acts in the UI — PR 5).
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_id STRING",
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_role STRING",
         # Bug 3 (ADAC-18): audience_name overrides table
         f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
             project_code STRING,
@@ -517,17 +712,22 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
 # ── Media Plan Tab Parser ───────────────────────────────────────────
 
 def _parse_media_plan_tab(
-    ws: gspread.Worksheet,
+    ws: "gspread.Worksheet | None",
     prefetched_data: list[list[str]] | None = None,
     ref_year: int | None = None,
+    prefetched_merges: list[dict] | None = None,
 ) -> list[dict]:
     """Parse the Media Plan tab for detailed line items with targeting info.
 
     Args:
-        ws: gspread Worksheet to parse.
+        ws: gspread Worksheet to parse. May be None if `prefetched_data` and
+            `prefetched_merges` are both provided (test path).
         prefetched_data: Pre-fetched sheet data to avoid redundant API calls.
         ref_year: Reference year for month-day dates (from blocking chart start_date).
                  If not provided, defaults to today's year (fallback).
+        prefetched_merges: Pre-fetched merge metadata (list of GSheets merge
+            range dicts). If None, fetches from `ws`. Pass `[]` to explicitly
+            skip merge detection (e.g. tests that don't care about bundles).
     """
     all_data = prefetched_data or ws.get_all_values()
     if len(all_data) < 14:
@@ -550,30 +750,76 @@ def _parse_media_plan_tab(
 
     headers = all_data[header_row_idx]
 
-    # Build column map from header names
+    # Build column map from header names.
+    #
+    # Priority note: matchers are ordered specific → general to avoid
+    # collisions (e.g. "Goal Frequency" must hit `frequency`, not `goal`;
+    # "Group Name" must hit `group_name`, not `audience_name` via a generic
+    # "name" fallback).
+    #
+    # Known header variants this matcher handles:
+    #   OSSTF (25042): "Site/Network", "Goal", "Start", "End", "Days", "ID",
+    #                  "Audience Name", "Geo", "Audience Targeting", ...
+    #   Squamish (25034): "Site/Network", "Campaign Type/Objective",
+    #                     "Start Date", "End Date", "# Days", "Audience Group",
+    #                     "Group Name", "Notes/Targeting", "Geo Target",
+    #                     "Creative", "Pricing", "Est'd Rate",
+    #                     "Est'd Impressions", "Budget $"
     col_map: dict[str, int] = {}
     for i, h in enumerate(headers):
         h_lower = h.strip().lower()
-        if "site" in h_lower or "network" in h_lower:
-            col_map["platform"] = i
-        elif h_lower in ("goal", "goal "):
-            col_map["goal"] = i
-        elif "goal" in h_lower and "freq" in h_lower:
+        if not h_lower:
+            continue
+
+        # --- Specific matchers first ---
+        # "Goal Frequency" / "Frequency" → frequency (not goal)
+        if ("goal" in h_lower and "freq" in h_lower) or (
+            "freq" in h_lower and "goal" not in h_lower
+        ):
             col_map["frequency"] = i
-        elif h_lower.strip() in ("start", "start "):
-            col_map["start"] = i
-        elif h_lower.strip() in ("end", "end "):
-            col_map["end"] = i
-        elif h_lower.strip() == "days":
-            col_map["days"] = i
-        elif h_lower.strip() == "id":
-            col_map["id"] = i
-        elif "audience name" in h_lower or "ad set name" in h_lower or "adset name" in h_lower:
+        elif "site" in h_lower or "network" in h_lower:
+            col_map["platform"] = i
+        # "Group Name" (Squamish Col G) — must precede audience_name matcher
+        # because "name" could otherwise collide via the legacy fallback.
+        elif "group name" in h_lower:
+            col_map["group_name"] = i
+        # "Audience Group" (Squamish Col F) — broader audience category.
+        elif "audience group" in h_lower:
+            col_map["audience_group"] = i
+        elif "est" in h_lower and "impression" in h_lower:
+            col_map["est_impressions"] = i
+        elif "est" in h_lower and "audience" in h_lower:
+            col_map["est_audience"] = i
+        elif (
+            "audience name" in h_lower
+            or "ad set name" in h_lower
+            or "adset name" in h_lower
+        ):
             col_map["audience_name"] = i
-        elif "geo" in h_lower:
-            col_map["geo"] = i
         elif "audience" in h_lower and "targeting" in h_lower:
             col_map["audience_targeting"] = i
+        elif h_lower in ("id", "line id", "line code"):
+            col_map["id"] = i
+        # Goal / Objective — widened to accept "Campaign Type/Objective"
+        # (Squamish) and bare "Objective".
+        elif (
+            h_lower in ("goal", "objective")
+            or "campaign type" in h_lower
+        ):
+            col_map["goal"] = i
+        # Start / End — widened to accept "Start Date" / "End Date".
+        elif h_lower == "start" or "start date" in h_lower:
+            col_map["start"] = i
+        elif h_lower == "end" or "end date" in h_lower:
+            col_map["end"] = i
+        # Days — widened to accept "# Days".
+        elif h_lower in ("days", "# days") or "# days" in h_lower:
+            col_map["days"] = i
+        # Budget — widened to accept "Budget $".
+        elif h_lower in ("budget", "budget $"):
+            col_map["budget"] = i
+        elif "geo" in h_lower:
+            col_map["geo"] = i
         elif "technical" in h_lower:
             col_map["technical"] = i
         elif "landing" in h_lower:
@@ -582,26 +828,58 @@ def _parse_media_plan_tab(
             col_map["creative"] = i
         elif "pricing" in h_lower:
             col_map["pricing"] = i
-        elif "est" in h_lower and "audience" in h_lower:
-            col_map["est_audience"] = i
         elif "bid" in h_lower:
             col_map["bid"] = i
-        elif "est" in h_lower and "impression" in h_lower:
-            col_map["est_impressions"] = i
-        elif "freq" in h_lower and "goal" not in h_lower:
-            col_map["frequency"] = i
-        elif h_lower.strip() == "budget":
-            col_map["budget"] = i
 
-    # Fallback: if no audience_name column was found, try less-specific headers
+    # Fallback: if no audience_name column was found, try less-specific headers.
+    # Must NOT hijack "Group Name" — the group_name slot has its own path below.
     if "audience_name" not in col_map:
         for i, h in enumerate(headers):
             h_lower = h.strip().lower()
-            if h_lower == "audience" or h_lower == "name":
+            if h_lower in ("audience", "name") and i != col_map.get("group_name"):
                 col_map["audience_name"] = i
                 break
 
+    # Silent-fail warnings: log expected-but-missing columns. Parsing continues.
+    _expected_critical = {"start", "end", "budget"}
+    _missing = _expected_critical - col_map.keys()
+    if _missing:
+        logger.warning(
+            "Media Plan tab missing expected columns %s; "
+            "parsed headers were: %r",
+            sorted(_missing),
+            headers,
+        )
+    if not (
+        "id" in col_map
+        or "audience_name" in col_map
+        or "group_name" in col_map
+    ):
+        logger.warning(
+            "Media Plan tab has no line-identifier column "
+            "(id / audience_name / group_name); rows will lack identifiers"
+        )
+
     logger.info("  Media Plan tab column map: %s", col_map)
+
+    # Merged-cell detection on the Budget column — primary bundle signal.
+    # See _fetch_worksheet_merges docstring for background.
+    if prefetched_merges is not None:
+        merges = prefetched_merges
+    else:
+        merges = _fetch_worksheet_merges(ws)
+
+    budget_col = col_map.get("budget")
+    merged_budget_rows: set[int] = (
+        _merged_child_rows_for_column(merges, budget_col)
+        if budget_col is not None
+        else set()
+    )
+    if merged_budget_rows:
+        logger.info(
+            "  Media Plan tab found %d merged-budget child rows (bundle signal)",
+            len(merged_budget_rows),
+        )
 
     def gc(row: list[str], key: str) -> str:
         idx = col_map.get(key)
@@ -628,6 +906,18 @@ def _parse_media_plan_tab(
         line_code = gc(row, "id")
         goal = gc(row, "goal")
         budget = _parse_money(gc(row, "budget"))
+        audience_name = gc(row, "audience_name")
+
+        # Squamish Col G "Group Name" carries both the line_code and the
+        # audience description in a single cell (e.g. "#09 North Van Engagers").
+        # Derive each field where it isn't already set by a dedicated column.
+        group_name_raw = gc(row, "group_name")
+        if group_name_raw:
+            gn_code, gn_rest = _extract_line_code(group_name_raw)
+            if not line_code and gn_code:
+                line_code = gn_code
+            if not audience_name:
+                audience_name = gn_rest or group_name_raw
 
         # Skip total/footer rows
         if current_platform and current_platform.lower() in ("total", "grand total", "terms"):
@@ -648,7 +938,8 @@ def _parse_media_plan_tab(
             "flight_end": _parse_date(gc(row, "end"), ref_year),
             "days": gc(row, "days"),
             "line_code": line_code,
-            "audience_name": gc(row, "audience_name"),
+            "audience_name": audience_name,
+            "audience_group": gc(row, "audience_group"),
             "geo_targeting": gc(row, "geo"),
             "audience_targeting": gc(row, "audience_targeting"),
             "technical_targeting": gc(row, "technical"),
@@ -658,7 +949,12 @@ def _parse_media_plan_tab(
             "estimated_impressions": _parse_money(gc(row, "est_impressions")),
             "frequency_cap": gc(row, "frequency"),
             "budget": budget,
+            "merged_with_previous": row_idx in merged_budget_rows,
         })
+
+    # PR 3: annotate bundle_group on each line so sync_media_plan can emit
+    # bundle siblings (suggested_child rows) alongside the bundle parent.
+    _assign_bundle_groups(lines)
 
     return lines
 
@@ -711,6 +1007,126 @@ def _mp_lines_have_audience_data(mp_lines: list[dict]) -> bool:
         mp.get("audience_name") and mp.get("budget") and mp.get("budget") > 0
         for mp in mp_lines
     )
+
+
+# ── Line-record builder (extracted from sync_media_plan for testability) ──
+
+
+def _build_line_records_for_bc_line(
+    bc_line: dict,
+    mp_detail: dict | None,
+    all_mp_lines: list[dict],
+    plan_id: str,
+    line_id: str,
+    project_code: str,
+    meta: dict,
+) -> list[dict]:
+    """Turn one blocking-chart line (+ its matched mp line) into 1..N records.
+
+    Standalone lines produce exactly one record. Bundled lines (where
+    mp_detail carries a non-None ``bundle_group``) produce one
+    ``suggested_parent`` record — the bc_line's own row — plus one
+    ``suggested_child`` record for every other mp_line in the same bundle
+    group. Children carry ``budget=NULL`` so ``SUM(budget) GROUP BY bundle_id``
+    gives the pool total without double-counting.
+
+    Pure function: no BQ, no Sheets, no filesystem. Easy to unit-test.
+    """
+    flight_start = bc_line.get("flight_start") or meta.get("start_date")
+    flight_end = bc_line.get("flight_end") or meta.get("end_date")
+    line_code = mp_detail.get("line_code") if mp_detail else None
+
+    # Bundle detection: does this bc_line match an mp_line that belongs to a
+    # multi-row merged-budget group?
+    bundle_group = mp_detail.get("bundle_group") if mp_detail else None
+    bundle_siblings: list[dict] = []
+    bundle_id: str | None = None
+    bundle_role: str | None = None
+    if bundle_group is not None:
+        bundle_siblings = [
+            mp for mp in all_mp_lines
+            if mp is not mp_detail and mp.get("bundle_group") == bundle_group
+        ]
+        if bundle_siblings:
+            bundle_id = _compute_bundle_id(
+                project_code, [mp_detail] + bundle_siblings
+            )
+            bundle_role = "suggested_parent"
+
+    channel_category = _channel_category(bc_line.get("objective_format", ""))
+    is_traditional = _is_traditional_media(
+        bc_line.get("platform"), bc_line.get("platform_id")
+    )
+
+    records: list[dict] = [{
+        "line_id": line_id,
+        "plan_id": plan_id,
+        "project_code": project_code,
+        "line_code": line_code,
+        "platform_id": bc_line["platform_id"],
+        "site_network": bc_line["platform"],
+        "channel_category": channel_category,
+        "flight_start": flight_start.isoformat() if flight_start else None,
+        "flight_end": flight_end.isoformat() if flight_end else None,
+        "objective": bc_line.get("objective_format"),
+        "audience_name": bc_line.get("audience_name") or (
+            mp_detail.get("audience_name") if mp_detail else None
+        ),
+        "audience_targeting": mp_detail.get("audience_targeting") if mp_detail else None,
+        "landing_page": mp_detail.get("landing_page") if mp_detail else None,
+        "pricing_model": mp_detail.get("pricing_model") if mp_detail else None,
+        "budget": bc_line["budget"],
+        "estimated_impressions": (
+            int(mp_detail["estimated_impressions"])
+            if mp_detail and mp_detail.get("estimated_impressions")
+            else None
+        ),
+        "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
+        "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
+        "is_traditional": is_traditional,
+        "bundle_id": bundle_id,
+        "bundle_role": bundle_role,
+    }]
+
+    # Emit suggested_child rows for every sibling. Children carry bundle_id
+    # but budget IS NULL — the parent row holds the pool.
+    for j, sib in enumerate(bundle_siblings, start=1):
+        sib_flight_start = sib.get("flight_start") or flight_start
+        sib_flight_end = sib.get("flight_end") or flight_end
+        records.append({
+            "line_id": f"{line_id}-bundled-{j:02d}",
+            "plan_id": plan_id,
+            "project_code": project_code,
+            "line_code": sib.get("line_code"),
+            "platform_id": bc_line["platform_id"],
+            "site_network": bc_line["platform"],
+            "channel_category": channel_category,
+            "flight_start": (
+                sib_flight_start.isoformat() if sib_flight_start else None
+            ),
+            "flight_end": (
+                sib_flight_end.isoformat() if sib_flight_end else None
+            ),
+            "objective": bc_line.get("objective_format"),
+            "audience_name": sib.get("audience_name"),
+            "audience_targeting": sib.get("audience_targeting"),
+            "landing_page": sib.get("landing_page"),
+            "pricing_model": sib.get("pricing_model"),
+            # CRITICAL: children must have NULL budget. Pool lives on parent.
+            "budget": None,
+            "estimated_impressions": (
+                int(sib["estimated_impressions"])
+                if sib.get("estimated_impressions")
+                else None
+            ),
+            "frequency_cap": sib.get("frequency_cap"),
+            "geo_targeting": sib.get("geo_targeting"),
+            "is_traditional": is_traditional,
+            "bundle_id": bundle_id,
+            "bundle_role": "suggested_child",
+        })
+
+    return records
 
 
 # ── Sync Orchestrator ───────────────────────────────────────────────
@@ -894,41 +1310,20 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
-
-        # Use pre-computed global match from _match_all_mp_lines
-        mp_detail = mp_matches.get(i)
+        mp_detail = mp_matches.get(i)  # pre-computed global match
+        records_for_bc = _build_line_records_for_bc_line(
+            bc_line=bc_line,
+            mp_detail=mp_detail,
+            all_mp_lines=mp_lines,
+            plan_id=plan_id,
+            line_id=line_id,
+            project_code=project_code,
+            meta=meta,
+        )
+        line_records.extend(records_for_bc)
 
         flight_start = bc_line.get("flight_start") or meta.get("start_date")
         flight_end = bc_line.get("flight_end") or meta.get("end_date")
-
-        # Use media plan tab's line_code if matched, otherwise generate one
-        line_code = mp_detail.get("line_code") if mp_detail else None
-
-        line_records.append({
-            "line_id": line_id,
-            "plan_id": plan_id,
-            "project_code": project_code,
-            "line_code": line_code,
-            "platform_id": bc_line["platform_id"],
-            "site_network": bc_line["platform"],
-            "channel_category": _channel_category(bc_line.get("objective_format", "")),
-            "flight_start": flight_start.isoformat() if flight_start else None,
-            "flight_end": flight_end.isoformat() if flight_end else None,
-            "objective": bc_line.get("objective_format"),
-            "audience_name": bc_line.get("audience_name") or (mp_detail.get("audience_name") if mp_detail else None),
-            "audience_targeting": mp_detail.get("audience_targeting") if mp_detail else None,
-            "landing_page": mp_detail.get("landing_page") if mp_detail else None,
-            "pricing_model": mp_detail.get("pricing_model") if mp_detail else None,
-            "budget": bc_line["budget"],
-            "estimated_impressions": (
-                int(mp_detail["estimated_impressions"])
-                if mp_detail and mp_detail.get("estimated_impressions")
-                else None
-            ),
-            "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
-            "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
-            "is_traditional": _is_traditional_media(bc_line.get("platform"), bc_line.get("platform_id")),
-        })
 
         line_has_weeks = False
         for w in bc["weeks"]:

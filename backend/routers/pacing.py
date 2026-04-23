@@ -2,7 +2,13 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.models.pacing import LinePacing, PacingHistoryPoint, PacingHistoryResponse, PacingResponse
+from backend.models.pacing import (
+    BundleMember,
+    LinePacing,
+    PacingHistoryPoint,
+    PacingHistoryResponse,
+    PacingResponse,
+)
 from backend.services import bigquery_client as bq
 from backend.services.pacing import run_all_active, run_pacing_for_project
 
@@ -60,6 +66,8 @@ async def get_pacing(project_code: str):
             bt.daily_budget_required,
             bt.is_over_pacing,
             bt.is_under_pacing,
+            bt.bundle_id,
+            bt.bundle_role,
             mpl.audience_name,
             mpl.flight_start,
             mpl.flight_end
@@ -70,7 +78,7 @@ async def get_pacing(project_code: str):
                 SELECT MAX(date) FROM {bq.table('budget_tracking')}
                 WHERE project_code = @project_code
             )
-        ORDER BY bt.platform_id, bt.line_code
+        ORDER BY bt.platform_id, bt.bundle_id, bt.line_code
     """
     rows = bq.run_query(tracking_sql, [bq.string_param("project_code", project_code)])
 
@@ -82,6 +90,49 @@ async def get_pacing(project_code: str):
         )
 
     as_of = rows[0]["date"]
+
+    # Fetch bundle members for any bundle_id the pacing rows reference.
+    # Children aren't written to budget_tracking (pacing skips them), so their
+    # audience_name / line_code only lives on media_plan_lines. We surface the
+    # list on each parent's response so the UI can render the expandable card
+    # without a second round-trip.
+    bundle_ids = list({r.get("bundle_id") for r in rows if r.get("bundle_id")})
+    bundle_members_by_id: dict[str, list[BundleMember]] = {}
+    if bundle_ids:
+        members_sql = f"""
+            WITH mpl_dedup AS (
+                SELECT * EXCEPT(_rn) FROM (
+                    SELECT
+                        line_id, line_code, audience_name, bundle_id, bundle_role,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY line_id
+                            ORDER BY sync_version DESC
+                        ) AS _rn
+                    FROM {bq.table('media_plan_lines')}
+                    WHERE project_code = @project_code
+                ) WHERE _rn = 1
+            )
+            SELECT bundle_id, line_id, line_code, audience_name
+            FROM mpl_dedup
+            WHERE bundle_id IN UNNEST(@bundle_ids)
+              AND bundle_role IN ('suggested_child', 'confirmed_child')
+            ORDER BY bundle_id, line_id
+        """
+        member_rows = bq.run_query(
+            members_sql,
+            [
+                bq.string_param("project_code", project_code),
+                bq.array_param("bundle_ids", "STRING", bundle_ids),
+            ],
+        )
+        for mr in member_rows:
+            bundle_members_by_id.setdefault(mr["bundle_id"], []).append(
+                BundleMember(
+                    line_id=mr["line_id"],
+                    line_code=mr.get("line_code"),
+                    audience_name=mr.get("audience_name"),
+                )
+            )
 
     # C2: Conservative approach — exclude pending lines from BOTH numerator and denominator
     # to avoid inflating overall_pacing_percentage (aligns with conservative-estimate ethos)
@@ -118,6 +169,9 @@ async def get_pacing(project_code: str):
                 daily_budget_required=_float(r.get("daily_budget_required"), None),
                 is_over_pacing=bool(r.get("is_over_pacing")),
                 is_under_pacing=bool(r.get("is_under_pacing")),
+                bundle_id=r.get("bundle_id"),
+                bundle_role=r.get("bundle_role"),
+                bundle_members=bundle_members_by_id.get(r.get("bundle_id") or "", []),
             )
             for r in rows
         ],

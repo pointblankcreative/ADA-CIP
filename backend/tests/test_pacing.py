@@ -155,11 +155,13 @@ class TestFlightDateFiltering:
         total_flight_days = (flight_end - flight_start).days + 1
 
         for line_data in [by_id["L1"], by_id["L2"]]:
-            assert line_data["planned_spend_to_date"] <= line_data["budget"] * (
+            # The tracking-row dict uses `planned_budget` (not `budget`) as
+            # the column name in budget_tracking — see pacing._write_budget_tracking.
+            assert line_data["planned_spend_to_date"] <= line_data["planned_budget"] * (
                 days_elapsed / total_flight_days
             ), (
                 f"planned_spend_to_date {line_data['planned_spend_to_date']} must not exceed "
-                f"prorated budget {line_data['budget']} * ({days_elapsed}/{total_flight_days})"
+                f"prorated budget {line_data['planned_budget']} * ({days_elapsed}/{total_flight_days})"
             )
 
     @patch("backend.services.pacing.date")

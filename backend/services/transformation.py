@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 SQL_DIR = Path(__file__).resolve().parent.parent.parent / "ingestion" / "transformation"
 DAILY_SQL = SQL_DIR / "transform_funnel_to_unified.sql"
 FULL_SQL = SQL_DIR / "transform_funnel_to_unified_full_history.sql"
+VW_FACT_DAILY_SQL = SQL_DIR / "create_vw_fact_digital_daily.sql"
 
 TARGET_TABLE = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.fact_digital_daily"
 LOG_TABLE = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}.ingestion_log`"
@@ -172,6 +173,38 @@ def _log_run(
     mtl.query(sql, job_config=job_config).result()
 
 
+def _ensure_vw_fact_digital_daily(mtl: bigquery.Client) -> None:
+    """Create or refresh the view `vw_fact_digital_daily`.
+
+    This view wraps fact_digital_daily and adds a `line_codes ARRAY<STRING>`
+    column derived from REGEXP_EXTRACT_ALL on ad_set_name. Called on every
+    transformation run so the view is self-healing if someone drops it.
+
+    The regex must stay in sync with
+    `extract_line_codes_from_adset_name` in backend/services/media_plan_sync.py.
+    """
+    if not VW_FACT_DAILY_SQL.exists():
+        logger.warning(
+            "  vw_fact_digital_daily DDL not found at %s; skipping view refresh",
+            VW_FACT_DAILY_SQL,
+        )
+        return
+
+    ddl = VW_FACT_DAILY_SQL.read_text().format(
+        project=settings.gcp_project_id,
+        dataset=settings.bigquery_dataset,
+    )
+    try:
+        mtl.query(ddl).result()
+        logger.info("  vw_fact_digital_daily view created/refreshed")
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+        # Non-fatal: fact_digital_daily itself is the source of truth. The view
+        # is an enrichment layer; downstream code should handle its absence.
+        logger.warning(
+            "  vw_fact_digital_daily refresh failed (non-fatal): %s", e, exc_info=True,
+        )
+
+
 def _apply_mapping_fallback(mtl: bigquery.Client) -> None:
     """Apply campaign_project_mapping overrides to rows with NULL project_code.
 
@@ -273,6 +306,10 @@ def run_transformation(mode: str = "daily") -> dict:
 
         # Step 4: Apply campaign_project_mapping fallback (runs in Montreal)
         _apply_mapping_fallback(mtl)
+
+        # Step 5: Ensure the vw_fact_digital_daily view (line_codes enrichment)
+        # exists / is up to date. Cheap DDL; idempotent.
+        _ensure_vw_fact_digital_daily(mtl)
 
         _log_run(mtl, log_id, mode, started_at, "success", loaded, min_date, max_date)
 

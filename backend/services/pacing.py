@@ -176,7 +176,8 @@ def run_pacing_for_project(project_code: str) -> dict:
     # to prevent doubled lines and halved spend in proportional splits.
     lines_sql = f"""
         SELECT line_id, line_code, platform_id, channel_category,
-               site_network, budget, flight_start, flight_end
+               site_network, budget, flight_start, flight_end,
+               bundle_id, bundle_role
         FROM (
             SELECT
                 l.line_id,
@@ -187,6 +188,8 @@ def run_pacing_for_project(project_code: str) -> dict:
                 l.budget,
                 l.flight_start,
                 l.flight_end,
+                l.bundle_id,
+                l.bundle_role,
                 ROW_NUMBER() OVER (
                     PARTITION BY l.line_id
                     ORDER BY l.sync_version DESC
@@ -270,7 +273,11 @@ def run_pacing_for_project(project_code: str) -> dict:
         rows_result = bq.run_query(group_spend_sql, params)
         spend_by_group[(pid, fs, fe)] = _float(rows_result[0]["total_spend"]) if rows_result else 0.0
 
-        # Also fetch spend by line_code within this flight window
+        # Also fetch spend by line_code within this flight window. We query
+        # vw_fact_digital_daily (not fact_digital_daily directly) — the view
+        # exposes `line_codes ARRAY<STRING>` derived from ad_set_name, which
+        # is how line_code attribution actually works. (The scalar `line_code`
+        # column on fact_digital_daily itself is never populated.)
         line_codes = [l["line_code"] for l in group_lines if l.get("line_code")]
         for lc in line_codes:
             lc_params = [
@@ -280,9 +287,9 @@ def run_pacing_for_project(project_code: str) -> dict:
             if fs is not None and fe is not None:
                 lc_sql = f"""
                     SELECT SUM(spend) AS total_spend, MIN(date) AS first_spend_date
-                    FROM {bq.table('fact_digital_daily')}
+                    FROM {bq.table('vw_fact_digital_daily')}
                     WHERE project_code = @project_code
-                        AND line_code = @line_code
+                        AND @line_code IN UNNEST(line_codes)
                         AND date >= @flight_start
                         AND date <= @flight_end
                         AND spend > 0
@@ -292,9 +299,9 @@ def run_pacing_for_project(project_code: str) -> dict:
             else:
                 lc_sql = f"""
                     SELECT SUM(spend) AS total_spend, MIN(date) AS first_spend_date
-                    FROM {bq.table('fact_digital_daily')}
+                    FROM {bq.table('vw_fact_digital_daily')}
                     WHERE project_code = @project_code
-                        AND line_code = @line_code
+                        AND @line_code IN UNNEST(line_codes)
                         AND spend > 0
                 """
             lc_rows = bq.run_query(lc_sql, lc_params)
@@ -305,6 +312,77 @@ def run_pacing_for_project(project_code: str) -> dict:
                 if isinstance(fsd, str):
                     fsd = date.fromisoformat(fsd)
                 first_spend_date_by_line[lc] = fsd
+
+    # ── 3b. Bundle spend aggregation (PR 4) ─────────────────────────
+    # For each bundle, query TOTAL spend where ANY of the bundle's member
+    # line codes appears in the ad set's line_codes array. This is the only
+    # safe way to attribute spend for CBO-style bundles — summing per-code
+    # spend would double-count ad sets labelled with multiple codes (e.g.
+    # "#11 viewers BC, #12 list" contributing once to #11 and once to #12).
+    bundle_spend: dict[str, float] = {}
+    bundle_member_codes: dict[str, list[str]] = {}
+    bundle_parent_line: dict[str, dict] = {}
+    for line in lines:
+        bid = line.get("bundle_id")
+        if not bid:
+            continue
+        lc = line.get("line_code")
+        if lc:
+            bundle_member_codes.setdefault(bid, []).append(lc)
+        if line.get("bundle_role") in ("suggested_parent", "confirmed_parent"):
+            bundle_parent_line[bid] = line
+
+    for bid, member_codes in bundle_member_codes.items():
+        if not member_codes:
+            continue
+        parent = bundle_parent_line.get(bid)
+        if not parent:
+            logger.warning(
+                "Bundle %s has member line_codes but no parent; skipping "
+                "bundle spend aggregation", bid,
+            )
+            continue
+        pfs = parent.get("flight_start")
+        pfe = parent.get("flight_end")
+        if isinstance(pfs, str):
+            pfs = date.fromisoformat(pfs)
+        if isinstance(pfe, str):
+            pfe = date.fromisoformat(pfe)
+
+        bundle_params = [
+            bq.string_param("project_code", project_code),
+            bq.array_param("member_codes", "STRING", member_codes),
+        ]
+        if pfs is not None and pfe is not None:
+            bundle_sql = f"""
+                SELECT SUM(spend) AS total_spend
+                FROM {bq.table('vw_fact_digital_daily')}
+                WHERE project_code = @project_code
+                  AND EXISTS (
+                    SELECT 1 FROM UNNEST(line_codes) AS lc
+                    WHERE lc IN UNNEST(@member_codes)
+                  )
+                  AND date >= @flight_start
+                  AND date <= @flight_end
+                  AND spend > 0
+            """
+            bundle_params.append(bq.date_param("flight_start", pfs))
+            bundle_params.append(bq.date_param("flight_end", pfe))
+        else:
+            bundle_sql = f"""
+                SELECT SUM(spend) AS total_spend
+                FROM {bq.table('vw_fact_digital_daily')}
+                WHERE project_code = @project_code
+                  AND EXISTS (
+                    SELECT 1 FROM UNNEST(line_codes) AS lc
+                    WHERE lc IN UNNEST(@member_codes)
+                  )
+                  AND spend > 0
+            """
+        bundle_rows = bq.run_query(bundle_sql, bundle_params)
+        bundle_spend[bid] = (
+            _float(bundle_rows[0]["total_spend"]) if bundle_rows else 0.0
+        )
 
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
@@ -317,6 +395,15 @@ def run_pacing_for_project(project_code: str) -> dict:
         budget = _float(line.get("budget"))
         flight_start = line.get("flight_start")
         flight_end = line.get("flight_end")
+        bundle_id = line.get("bundle_id")
+        bundle_role = line.get("bundle_role")
+
+        # PR 4: Bundle children inherit pacing from their parent. They have
+        # budget=NULL by design; the parent's row carries the shared pool.
+        # Skip them explicitly so downstream accounting (alerts, tracking
+        # rows) stays clean instead of relying on the budget<=0 guard below.
+        if bundle_role in ("suggested_child", "confirmed_child"):
+            continue
 
         if not flight_start or not flight_end or budget <= 0:
             continue
@@ -376,16 +463,24 @@ def run_pacing_for_project(project_code: str) -> dict:
         else:
             planned_spend_to_date = 0.0
 
-        # Match actual spend: prefer line_code match, then split by flight group
+        # Match actual spend: bundle > line_code > flight-group split.
         group_key = (platform_id, flight_start, flight_end)
         actual_spend = 0.0
-        if line_code and line_code in spend_by_line_code:
+        if bundle_role in ("suggested_parent", "confirmed_parent") and bundle_id:
+            # Bundle parent — use the set-containment aggregate so multi-code
+            # ad sets don't double-count. Falls back to line_code match, then
+            # group-split, in case bundle attribution is unresolvable.
+            actual_spend = bundle_spend.get(bundle_id, 0.0)
+            if actual_spend == 0.0 and line_code and line_code in spend_by_line_code:
+                actual_spend = spend_by_line_code[line_code]
+        elif line_code and line_code in spend_by_line_code:
             actual_spend = spend_by_line_code[line_code]
-        elif platform_id and group_key in spend_by_group:
+        if actual_spend == 0.0 and platform_id and group_key in spend_by_group:
             # Split proportionally by budget among lines in the same flight group
             group_total_budget = sum(
                 _float(l.get("budget"))
                 for l in flight_groups.get(group_key, [])
+                if l.get("bundle_role") not in ("suggested_child", "confirmed_child")
             )
             if group_total_budget > 0:
                 actual_spend = spend_by_group[group_key] * (budget / group_total_budget)
@@ -427,6 +522,9 @@ def run_pacing_for_project(project_code: str) -> dict:
             "daily_budget_required": round(daily_required, 2) if daily_required is not None else None,
             "is_over_pacing": is_over,
             "is_under_pacing": is_under,
+            # PR 4: surface bundle context for the UI's expandable bundle card.
+            "bundle_id": bundle_id,
+            "bundle_role": bundle_role,
         })
 
     # ── 5. Write to budget_tracking ─────────────────────────────────
@@ -449,10 +547,44 @@ def run_pacing_for_project(project_code: str) -> dict:
     }
 
 
+_BUDGET_TRACKING_MIGRATED = False
+
+
+def _ensure_budget_tracking_schema(mtl: bigquery.Client) -> None:
+    """Idempotent ALTER TABLE to keep budget_tracking in sync with tracking_rows.
+
+    infrastructure/bigquery/schema.sql is the desired state for new installs
+    but the prod table has drifted (line_status was added without updating
+    the file). Rather than fix the drift separately, we enforce required
+    columns here on every startup. Cheap and self-healing.
+    """
+    global _BUDGET_TRACKING_MIGRATED
+    if _BUDGET_TRACKING_MIGRATED:
+        return
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    stmts = [
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS line_status STRING",
+        # PR 5: bundle context carried through from media_plan_lines so the
+        # UI can render bundle cards without a separate query.
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS bundle_id STRING",
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS bundle_role STRING",
+    ]
+    for sql in stmts:
+        try:
+            mtl.query(sql).result()
+        except Exception as e:
+            if "Already Exists" in str(e) or "Duplicate" in str(e):
+                pass
+            else:
+                logger.warning("  budget_tracking schema migration warning: %s", e)
+    _BUDGET_TRACKING_MIGRATED = True
+
+
 def _write_budget_tracking(project_code: str, as_of: date, rows: list[dict]) -> None:
     """Delete today's rows for this project, purge orphans, and insert fresh ones."""
     mtl = bigquery.Client(project=settings.gcp_project_id, location=settings.gcp_region)
     try:
+        _ensure_budget_tracking_schema(mtl)
         target = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.budget_tracking"
         mpl_table = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.media_plan_lines"
 
