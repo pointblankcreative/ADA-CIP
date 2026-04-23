@@ -547,10 +547,44 @@ def run_pacing_for_project(project_code: str) -> dict:
     }
 
 
+_BUDGET_TRACKING_MIGRATED = False
+
+
+def _ensure_budget_tracking_schema(mtl: bigquery.Client) -> None:
+    """Idempotent ALTER TABLE to keep budget_tracking in sync with tracking_rows.
+
+    infrastructure/bigquery/schema.sql is the desired state for new installs
+    but the prod table has drifted (line_status was added without updating
+    the file). Rather than fix the drift separately, we enforce required
+    columns here on every startup. Cheap and self-healing.
+    """
+    global _BUDGET_TRACKING_MIGRATED
+    if _BUDGET_TRACKING_MIGRATED:
+        return
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+    stmts = [
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS line_status STRING",
+        # PR 5: bundle context carried through from media_plan_lines so the
+        # UI can render bundle cards without a separate query.
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS bundle_id STRING",
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS bundle_role STRING",
+    ]
+    for sql in stmts:
+        try:
+            mtl.query(sql).result()
+        except Exception as e:
+            if "Already Exists" in str(e) or "Duplicate" in str(e):
+                pass
+            else:
+                logger.warning("  budget_tracking schema migration warning: %s", e)
+    _BUDGET_TRACKING_MIGRATED = True
+
+
 def _write_budget_tracking(project_code: str, as_of: date, rows: list[dict]) -> None:
     """Delete today's rows for this project, purge orphans, and insert fresh ones."""
     mtl = bigquery.Client(project=settings.gcp_project_id, location=settings.gcp_region)
     try:
+        _ensure_budget_tracking_schema(mtl)
         target = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.budget_tracking"
         mpl_table = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.media_plan_lines"
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, type PacingResponse, type PacingLine } from "@/lib/api";
+import { api, type PacingResponse, type PacingLine, type BundleMember } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { OscilloscopeCard } from "@/components/oscilloscope-card";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -20,6 +20,36 @@ function formatShortDate(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/**
+ * Label precedence (PR 5): audience_name (most specific) → line_code + channel
+ * → platform + channel → channel → platform. Falls back through the options
+ * so we always produce something readable, even for thinly-described lines.
+ */
+function lineDisplayName(line: {
+  audience_name?: string | null;
+  line_code?: string | null;
+  channel_category?: string | null;
+  platform_id?: string | null;
+}): string {
+  if (line.audience_name) return line.audience_name;
+  if (line.line_code && line.channel_category) {
+    return `${line.line_code} · ${line.channel_category}`;
+  }
+  if (line.channel_category && line.platform_id) {
+    return `${platformLabel(line.platform_id)} · ${line.channel_category}`;
+  }
+  if (line.channel_category) return line.channel_category;
+  if (line.platform_id) return platformLabel(line.platform_id);
+  return "Line";
+}
+
+function isBundleParent(line: PacingLine): boolean {
+  return (
+    line.bundle_role === "suggested_parent" ||
+    line.bundle_role === "confirmed_parent"
+  );
 }
 
 export function PacingTab({ code }: { code: string }) {
@@ -153,11 +183,16 @@ function LineRow({
     }
   }, [editing]);
 
-  const displayName = line.audience_name || line.channel_category || "";
+  // PR 5: use the unified label precedence so bundles and standalones share
+  // the same naming rules.
+  const displayName = line.audience_name || lineDisplayName(line);
   const dateRange =
     line.flight_start && line.flight_end
       ? `${formatShortDate(line.flight_start)} — ${formatShortDate(line.flight_end)}`
       : null;
+  const bundleParent = isBundleParent(line);
+  const bundleMemberCount = line.bundle_members?.length ?? 0;
+  const [bundleExpanded, setBundleExpanded] = useState(false);
 
   const handleSave = async () => {
     const trimmed = editValue.trim();
@@ -249,6 +284,24 @@ function LineRow({
                   {line.line_code}
                 </span>
               )}
+              {bundleParent && bundleMemberCount > 0 && (
+                <span
+                  className={cn(
+                    "rounded border px-1.5 py-0.5 text-[10px] font-medium",
+                    line.bundle_role === "suggested_parent"
+                      ? "border-dashed border-amber-500/40 bg-amber-500/10 text-amber-300"
+                      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                  )}
+                  title={
+                    line.bundle_role === "suggested_parent"
+                      ? "Suggested bundle — the media plan's merged Budget cell grouped these lines. Confirm in the plan to lock in."
+                      : "Confirmed bundle"
+                  }
+                >
+                  {line.bundle_role === "suggested_parent" ? "Suggested " : ""}
+                  Bundle · {bundleMemberCount + 1} lines
+                </span>
+              )}
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
               <span>{formatCurrency(line.actual_spend_to_date)} spent</span>
@@ -312,6 +365,59 @@ function LineRow({
           <span>Budget: {formatCurrency(line.planned_budget)}</span>
         </div>
       </div>
+
+      {/* PR 5: bundle members (CBO-style shared budget). Parent row carries
+          the pacing signal; the audiences below share this pool. */}
+      {bundleParent && bundleMemberCount > 0 && (
+        <div className="mt-3 border-t border-slate-800/60 pt-2">
+          <button
+            onClick={() => setBundleExpanded((v) => !v)}
+            className="flex w-full items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition-colors"
+          >
+            <span>
+              {bundleExpanded ? "Hide" : "Show"} {bundleMemberCount} other{" "}
+              {bundleMemberCount === 1 ? "audience" : "audiences"} sharing this
+              budget
+            </span>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              className={cn(
+                "h-3 w-3 transition-transform",
+                bundleExpanded && "rotate-180"
+              )}
+            >
+              <path d="M8 11 3 6h10z" />
+            </svg>
+          </button>
+          {bundleExpanded && (
+            <ul className="mt-2 space-y-1">
+              {line.bundle_members.map((m: BundleMember) => (
+                <li
+                  key={m.line_id}
+                  className="flex items-center gap-2 pl-4 text-xs text-slate-400"
+                >
+                  <span className="h-px w-3 bg-slate-700" aria-hidden />
+                  {m.line_code && (
+                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+                      {m.line_code}
+                    </span>
+                  )}
+                  <span className="truncate">
+                    {m.audience_name ||
+                      lineDisplayName({
+                        line_code: m.line_code,
+                        channel_category: line.channel_category,
+                        platform_id: line.platform_id,
+                      })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

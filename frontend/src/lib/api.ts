@@ -31,6 +31,19 @@ export interface Project {
   updated_at: string;
 }
 
+export type BundleRole =
+  | "suggested_parent"
+  | "suggested_child"
+  | "confirmed_parent"
+  | "confirmed_child"
+  | "rejected";
+
+export interface BundleMember {
+  line_id: string;
+  line_code: string | null;
+  audience_name: string | null;
+}
+
 export interface PacingLine {
   line_id: string;
   line_code: string | null;
@@ -49,6 +62,10 @@ export interface PacingLine {
   daily_budget_required: number | null;
   is_over_pacing: boolean;
   is_under_pacing: boolean;
+  // Bundled-optimization support (PR 5). NULL for standalone lines.
+  bundle_id: string | null;
+  bundle_role: BundleRole | null;
+  bundle_members: BundleMember[];
 }
 
 export interface PacingResponse {

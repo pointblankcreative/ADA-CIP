@@ -3,6 +3,16 @@ from datetime import date
 from pydantic import BaseModel
 
 
+class BundleMember(BaseModel):
+    """A sibling audience inside a CBO-style bundle. The bundle's parent line
+    carries the shared budget + pacing signal; members are surfaced here so
+    the UI can render them as expandable rows under the parent."""
+
+    line_id: str
+    line_code: str | None = None
+    audience_name: str | None = None
+
+
 class LinePacing(BaseModel):
     line_id: str
     line_code: str | None = None
@@ -21,6 +31,10 @@ class LinePacing(BaseModel):
     daily_budget_required: float | None = None
     is_over_pacing: bool = False
     is_under_pacing: bool = False
+    # PR 5: bundled-optimization context. NULL for standalone lines.
+    bundle_id: str | None = None
+    bundle_role: str | None = None  # suggested_parent | suggested_child | confirmed_* | rejected
+    bundle_members: list[BundleMember] = []  # populated only on parent rows
 
 
 class PacingResponse(BaseModel):
