@@ -19,6 +19,7 @@ from backend.services.media_plan_sync import (
     _mp_lines_have_audience_data,
     _parse_media_plan_tab,
     _synthesise_lines_from_mp,
+    extract_line_codes_from_adset_name,
 )
 from backend.routers.admin import MediaPlanLineUpdate
 
@@ -313,6 +314,115 @@ class TestExtractLineCode:
         assert _extract_line_code("#14 Squamish Engagers") == (
             "#14",
             "Squamish Engagers",
+        )
+
+
+# ── Bundled-optimization PR 2: extract_line_codes_from_adset_name ─────
+
+
+class TestExtractLineCodesFromAdsetName:
+    """Extract #XX codes from an ad set name (fact_digital_daily.ad_set_name).
+
+    Paired with the BigQuery view that uses the identical regex
+    (`REGEXP_EXTRACT_ALL(ad_set_name, r'#\\d+[A-Za-z]?')`) so Python-side
+    attribution logic (PR 4 pacing) matches what the view emits.
+
+    Attribution caveat: multi-code ad sets signal a planner-collapsed
+    audience set. PR 4 is responsible for deciding how to SPLIT spend
+    across the codes — this helper only EXTRACTS.
+    """
+
+    def test_single_code_with_description(self):
+        assert extract_line_codes_from_adset_name("#11 viewers BC") == ["#11"]
+
+    def test_code_only(self):
+        assert extract_line_codes_from_adset_name("#09") == ["#09"]
+
+    def test_multi_code_comma_separated(self):
+        """Real wild case: '#11 viewers BC, #12 list, followers, lookalikes BC'."""
+        name = "#11 viewers BC, #12 list, followers, lookalikes BC"
+        assert extract_line_codes_from_adset_name(name) == ["#11", "#12"]
+
+    def test_three_codes(self):
+        name = "#09 North Van, #10 List, #11 Lookalike"
+        assert extract_line_codes_from_adset_name(name) == ["#09", "#10", "#11"]
+
+    def test_no_code_returns_empty(self):
+        assert extract_line_codes_from_adset_name("Conversions CA") == []
+        assert extract_line_codes_from_adset_name("Awareness Provincial") == []
+
+    def test_empty_and_none(self):
+        assert extract_line_codes_from_adset_name("") == []
+        assert extract_line_codes_from_adset_name(None) == []
+        assert extract_line_codes_from_adset_name("   ") == []
+
+    def test_non_sequential_code(self):
+        assert extract_line_codes_from_adset_name("#91 Organic Boost") == ["#91"]
+
+    def test_code_with_letter_suffix(self):
+        """#14a / #14A — preserve case as found."""
+        assert extract_line_codes_from_adset_name("#14a Retargeting") == ["#14a"]
+        assert extract_line_codes_from_adset_name("#14A Retargeting") == ["#14A"]
+
+    def test_two_digit_code(self):
+        assert extract_line_codes_from_adset_name("#10 Awareness") == ["#10"]
+        assert extract_line_codes_from_adset_name("#123 Conversions") == ["#123"]
+
+    def test_hash_without_digits_ignored(self):
+        """Plain '#' or '#abc' should not match."""
+        assert extract_line_codes_from_adset_name("Some #abc test") == []
+        assert extract_line_codes_from_adset_name("# empty hash") == []
+
+    def test_numbers_without_hash_ignored(self):
+        """Must require the '#' prefix — avoids false positives on year/impressions/etc."""
+        assert extract_line_codes_from_adset_name("24 hours 50000 impressions") == []
+        assert extract_line_codes_from_adset_name("2026 Q2 push") == []
+
+    def test_does_not_deduplicate(self):
+        """Caller decides whether to dedupe — this is a faithful extraction."""
+        assert extract_line_codes_from_adset_name("#11 + #11 retargeting") == [
+            "#11",
+            "#11",
+        ]
+
+
+class TestVwFactDigitalDailyDDL:
+    """Lock in invariants about the view DDL file the transformation refreshes.
+
+    The view's regex must stay identical to the Python helper's regex, or
+    Python-side attribution (PR 4 pacing) will diverge from what BigQuery emits.
+    """
+
+    def test_ddl_template_loads_and_formats(self):
+        from pathlib import Path
+
+        ddl_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "ingestion" / "transformation" / "create_vw_fact_digital_daily.sql"
+        )
+        assert ddl_path.exists(), f"View DDL missing at {ddl_path}"
+        ddl = ddl_path.read_text()
+        # Must be formattable with the standard placeholders.
+        rendered = ddl.format(project="point-blank-ada", dataset="cip")
+        assert "CREATE OR REPLACE VIEW" in rendered
+        assert "point-blank-ada.cip.vw_fact_digital_daily" in rendered
+        assert "point-blank-ada.cip.fact_digital_daily" in rendered
+
+    def test_ddl_regex_matches_python_helper(self):
+        """The BQ regex and Python regex must be the same string."""
+        from pathlib import Path
+        from backend.services.media_plan_sync import BQ_LINE_CODE_REGEX
+
+        ddl_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "ingestion" / "transformation" / "create_vw_fact_digital_daily.sql"
+        )
+        ddl = ddl_path.read_text()
+        # The DDL embeds the regex as r'...'; verify our constant appears
+        # verbatim inside the DDL.
+        assert BQ_LINE_CODE_REGEX in ddl, (
+            f"Python BQ_LINE_CODE_REGEX ({BQ_LINE_CODE_REGEX!r}) must appear "
+            f"in the view DDL so Python attribution matches BQ extraction"
         )
 
 

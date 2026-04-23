@@ -283,6 +283,39 @@ def _extract_line_code(raw: str | None) -> tuple[str, str]:
     return ("", s)
 
 
+# ── Ad-set-name line-code extraction ─────────────────────────────────
+# Used by PR 4 (pacing) to attribute fact_digital_daily spend back to
+# media_plan_lines via their `line_code`. Kept in sync with the BigQuery
+# view (`vw_fact_digital_daily`): both use `r'#\d+[A-Za-z]?'`.
+#
+# Requires the '#' prefix on purpose — bare numbers inside ad set names
+# (impressions, years, etc.) are ambiguous and would corrupt attribution.
+# OSSTF-style bare codes ('1A', '2B') aren't extracted here; they'd
+# need a separate, plan-specific heuristic.
+
+_ADSET_LINE_CODE_RE = re.compile(r"#\d+[A-Za-z]?")
+
+# The identical BigQuery RE2 pattern (kept here as a string so the view
+# SQL and Python stay provably in sync).
+BQ_LINE_CODE_REGEX = r"#\d+[A-Za-z]?"
+
+
+def extract_line_codes_from_adset_name(name: str | None) -> list[str]:
+    """Extract all `#XX` line codes from an ad set name.
+
+    Returns codes in order of appearance, preserving duplicates (caller
+    decides whether to dedupe). Examples:
+      - "#11 viewers BC"              → ["#11"]
+      - "#11 viewers BC, #12 list"    → ["#11", "#12"]
+      - "Conversions CA"              → []
+      - "24 hours"                    → []  (no '#')
+      - "#14A Retargeting"            → ["#14A"]
+    """
+    if not name:
+        return []
+    return _ADSET_LINE_CODE_RE.findall(name)
+
+
 # ── Merge metadata ───────────────────────────────────────────────────
 # Media planners use merged cells in the Budget column to signal shared-budget
 # (CBO-style) bundles — e.g. Squamish (25034) Flight 2 Meta has three 2-row
