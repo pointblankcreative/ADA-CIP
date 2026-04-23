@@ -141,6 +141,14 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
   ffs_entry_id STRING,                         -- FK → ffs_entries.entry_id. NULL = no entry linked; fallback to generic F-pillar benchmarks.
   ffs_override BOOL DEFAULT FALSE,             -- TRUE = line holds its own custom values; entry propagation must not touch ffs_score/ffs_inputs.
   audience_type STRING,                        -- member_list | retargeting | lookalike_warm | lookalike_cold | prospecting (for audience temperature adjustment)
+  -- Bundled-optimization (CBO-style shared budget pools). NULL on standalone lines.
+  -- Both columns are STRING by design:
+  --   bundle_id     e.g. '25034-meta-09' — stable, human-readable. Same on parent + all children.
+  --   bundle_role   'suggested_parent' | 'suggested_child' | 'confirmed_parent' | 'confirmed_child' | 'rejected'.
+  --                 Children carry bundle metadata but have budget IS NULL; parents carry the pool total.
+  --                 SUM(budget) GROUP BY bundle_id gives the pool without double-counting.
+  bundle_id STRING,
+  bundle_role STRING,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 OPTIONS(
@@ -362,6 +370,7 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.budget_tracking` (
   line_code STRING,
   platform_id STRING,
   channel_category STRING,
+  line_status STRING,                          -- not_started | pending | active | completed (pacing engine annotation)
   planned_budget NUMERIC,
   planned_spend_to_date NUMERIC,
   actual_spend_to_date NUMERIC,
@@ -371,6 +380,10 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.budget_tracking` (
   daily_budget_required NUMERIC,
   is_over_pacing BOOL,
   is_under_pacing BOOL,
+  -- Bundled-optimization context carried through from media_plan_lines so the
+  -- UI can render bundle cards without an extra query.
+  bundle_id STRING,
+  bundle_role STRING,                          -- same enum as media_plan_lines.bundle_role
   loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 PARTITION BY date
