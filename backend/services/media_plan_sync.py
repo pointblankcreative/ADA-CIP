@@ -283,6 +283,70 @@ def _extract_line_code(raw: str | None) -> tuple[str, str]:
     return ("", s)
 
 
+# ── Merge metadata ───────────────────────────────────────────────────
+# Media planners use merged cells in the Budget column to signal shared-budget
+# (CBO-style) bundles — e.g. Squamish (25034) Flight 2 Meta has three 2-row
+# merges creating three distinct sub-bundles. gspread's get_all_values() strips
+# merges (value only in the top-left cell), so we fetch the merge ranges from
+# the spreadsheet metadata and stamp child rows with `merged_with_previous`.
+# PR 3 consumes that flag to populate the bundle sidecar table.
+
+def _fetch_worksheet_merges(ws: "gspread.Worksheet | None") -> list[dict]:
+    """Return merge ranges for a worksheet as a list of GSheets API dicts
+    (keys: startRowIndex, endRowIndex, startColumnIndex, endColumnIndex).
+
+    Best-effort: if the metadata fetch fails, we log and return []. Parsing
+    falls back to treating every line as a standalone (pre-PR-1b behaviour).
+    """
+    if ws is None:
+        return []
+    try:
+        meta = ws.spreadsheet.fetch_sheet_metadata(
+            params={"fields": "sheets(properties(sheetId,title),merges)"}
+        )
+    except Exception as exc:  # network error, auth error, schema drift, etc.
+        logger.warning(
+            "Could not fetch merge metadata for worksheet %r: %s",
+            getattr(ws, "title", "?"), exc,
+        )
+        return []
+    for sheet in meta.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("sheetId") == getattr(ws, "id", None) or (
+            props.get("title") == getattr(ws, "title", None)
+        ):
+            return sheet.get("merges", []) or []
+    return []
+
+
+def _merged_child_rows_for_column(
+    merges: list[dict], col_index: int
+) -> set[int]:
+    """Return the set of 0-indexed sheet rows that are merged children
+    (not the top-left) for the given column index.
+
+    A merge with startRowIndex=6, endRowIndex=8, startColumnIndex=13,
+    endColumnIndex=14 covers rows 6-7 inclusive. Row 6 is the parent
+    (carries the value); row 7 is the merged child.
+    """
+    children: set[int] = set()
+    for m in merges:
+        try:
+            c_start = int(m["startColumnIndex"])
+            c_end = int(m["endColumnIndex"])
+            r_start = int(m["startRowIndex"])
+            r_end = int(m["endRowIndex"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (c_start <= col_index < c_end):
+            continue
+        if r_end - r_start <= 1:
+            continue
+        for r in range(r_start + 1, r_end):
+            children.add(r)
+    return children
+
+
 def _parse_pct(val: str | None) -> float | None:
     if not val:
         return None
@@ -554,17 +618,22 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
 # ── Media Plan Tab Parser ───────────────────────────────────────────
 
 def _parse_media_plan_tab(
-    ws: gspread.Worksheet,
+    ws: "gspread.Worksheet | None",
     prefetched_data: list[list[str]] | None = None,
     ref_year: int | None = None,
+    prefetched_merges: list[dict] | None = None,
 ) -> list[dict]:
     """Parse the Media Plan tab for detailed line items with targeting info.
 
     Args:
-        ws: gspread Worksheet to parse.
+        ws: gspread Worksheet to parse. May be None if `prefetched_data` and
+            `prefetched_merges` are both provided (test path).
         prefetched_data: Pre-fetched sheet data to avoid redundant API calls.
         ref_year: Reference year for month-day dates (from blocking chart start_date).
                  If not provided, defaults to today's year (fallback).
+        prefetched_merges: Pre-fetched merge metadata (list of GSheets merge
+            range dicts). If None, fetches from `ws`. Pass `[]` to explicitly
+            skip merge detection (e.g. tests that don't care about bundles).
     """
     all_data = prefetched_data or ws.get_all_values()
     if len(all_data) < 14:
@@ -699,6 +768,25 @@ def _parse_media_plan_tab(
 
     logger.info("  Media Plan tab column map: %s", col_map)
 
+    # Merged-cell detection on the Budget column — primary bundle signal.
+    # See _fetch_worksheet_merges docstring for background.
+    if prefetched_merges is not None:
+        merges = prefetched_merges
+    else:
+        merges = _fetch_worksheet_merges(ws)
+
+    budget_col = col_map.get("budget")
+    merged_budget_rows: set[int] = (
+        _merged_child_rows_for_column(merges, budget_col)
+        if budget_col is not None
+        else set()
+    )
+    if merged_budget_rows:
+        logger.info(
+            "  Media Plan tab found %d merged-budget child rows (bundle signal)",
+            len(merged_budget_rows),
+        )
+
     def gc(row: list[str], key: str) -> str:
         idx = col_map.get(key)
         if idx is not None and idx < len(row):
@@ -767,6 +855,7 @@ def _parse_media_plan_tab(
             "estimated_impressions": _parse_money(gc(row, "est_impressions")),
             "frequency_cap": gc(row, "frequency"),
             "budget": budget,
+            "merged_with_previous": row_idx in merged_budget_rows,
         })
 
     return lines

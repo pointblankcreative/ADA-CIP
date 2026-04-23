@@ -628,6 +628,184 @@ class TestParseMediaPlanTabOsstf:
         assert lines[1]["platform_id"] == "google_ads"
 
 
+class TestParseMediaPlanTabMergedBudget:
+    """PR 1b: merged Budget cells → merged_with_previous flag on child rows.
+
+    The Google Sheets display shows one $ value spanning N rows; gspread returns
+    the value in the top row only, blanks in children. We fetch merge metadata
+    separately and stamp a flag so PR 3 (bundle data model) can detect the
+    planner's explicit bundling intent.
+
+    Real case: Squamish (25034) Flight 2 Meta has three 2-row merges in the
+    Budget column: #09/#10 ($2,238.19), #11/#12 ($3,104.00), #13/#14 ($2,387.72).
+    """
+
+    _HEADER_IDX = 5  # _squamish_data puts header at row index 5
+    _BUDGET_COL = 13  # Budget $ is column index 13 in _SQUAMISH_HEADER
+
+    def test_simple_two_row_merge(self):
+        rows = [
+            ["Meta (Facebook, Instagram)", "Conversions", "March 17", "April 12",
+             "27", "Conversions CA", "#09 North Van Engagers", "",
+             "North Van", "", "CPC", "", "", "$2,238.19"],
+            ["", "", "", "", "", "", "#10 North Van List", "",
+             "North Van", "", "CPC", "", "", ""],  # merged child — blank
+        ]
+        data = _squamish_data(*rows)
+        merges = [{
+            "startRowIndex": self._HEADER_IDX + 1,
+            "endRowIndex": self._HEADER_IDX + 3,
+            "startColumnIndex": self._BUDGET_COL,
+            "endColumnIndex": self._BUDGET_COL + 1,
+        }]
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=merges, ref_year=2026
+        )
+        assert len(lines) == 2
+        assert lines[0]["line_code"] == "#09"
+        assert lines[0]["merged_with_previous"] is False
+        assert lines[0]["budget"] == pytest.approx(2238.19)
+        assert lines[1]["line_code"] == "#10"
+        assert lines[1]["merged_with_previous"] is True
+        assert lines[1]["budget"] is None
+
+    def test_three_consecutive_sub_bundles(self):
+        """Real Squamish Flight 2 Meta shape: 3 sub-bundles of 2 rows each."""
+        rows = [
+            ["Meta", "Conv", "Mar 17", "Apr 12", "27", "Conv CA",
+             "#09 North Van Engagers", "", "North Van", "", "CPC", "", "", "$2,238.19"],
+            ["", "", "", "", "", "", "#10 North Van List", "",
+             "North Van", "", "CPC", "", "", ""],
+            ["", "", "Mar 26", "Apr 22", "27", "Conv CA",
+             "#11 Viewers BC", "", "BC Excl", "", "CPC", "", "", "$3,104.00"],
+            ["", "", "", "", "", "", "#12 List BC", "",
+             "BC Excl", "", "CPC", "", "", ""],
+            ["", "", "Mar 30", "Apr 26", "27", "Conv CA",
+             "#13 Squamish Engagers", "", "Squamish", "", "CPC", "", "", "$2,387.72"],
+            ["", "", "", "", "", "", "#14 Squamish List", "",
+             "Squamish", "", "CPC", "", "", ""],
+        ]
+        data = _squamish_data(*rows)
+        h = self._HEADER_IDX
+        b = self._BUDGET_COL
+        merges = [
+            {"startRowIndex": h + 1, "endRowIndex": h + 3,
+             "startColumnIndex": b, "endColumnIndex": b + 1},  # #09-#10
+            {"startRowIndex": h + 3, "endRowIndex": h + 5,
+             "startColumnIndex": b, "endColumnIndex": b + 1},  # #11-#12
+            {"startRowIndex": h + 5, "endRowIndex": h + 7,
+             "startColumnIndex": b, "endColumnIndex": b + 1},  # #13-#14
+        ]
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=merges, ref_year=2026
+        )
+        assert len(lines) == 6
+        # Parent rows (bundle heads) carry the budget
+        assert lines[0]["merged_with_previous"] is False
+        assert lines[0]["budget"] == pytest.approx(2238.19)
+        assert lines[2]["merged_with_previous"] is False
+        assert lines[2]["budget"] == pytest.approx(3104.00)
+        assert lines[4]["merged_with_previous"] is False
+        assert lines[4]["budget"] == pytest.approx(2387.72)
+        # Child rows are flagged
+        assert lines[1]["merged_with_previous"] is True
+        assert lines[1]["budget"] is None
+        assert lines[3]["merged_with_previous"] is True
+        assert lines[3]["budget"] is None
+        assert lines[5]["merged_with_previous"] is True
+        assert lines[5]["budget"] is None
+
+    def test_budgets_not_double_counted(self):
+        """Sum of line budgets must equal $7,729.90 — the Flight 2 total,
+        not $15,459.80 (which would be double-counting the merged cells).
+
+        This is the whole point of the feature: pacing math must not lie.
+        """
+        rows = [
+            ["Meta", "Conv", "Mar 17", "Apr 12", "27", "Conv CA",
+             "#09 North Van Engagers", "", "North Van", "", "CPC", "", "", "$2,238.19"],
+            ["", "", "", "", "", "", "#10 North Van List", "",
+             "North Van", "", "CPC", "", "", ""],
+            ["", "", "Mar 26", "Apr 22", "27", "Conv CA",
+             "#11 Viewers BC", "", "BC Excl", "", "CPC", "", "", "$3,104.00"],
+            ["", "", "", "", "", "", "#12 List BC", "",
+             "BC Excl", "", "CPC", "", "", ""],
+            ["", "", "Mar 30", "Apr 26", "27", "Conv CA",
+             "#13 Squamish Engagers", "", "Squamish", "", "CPC", "", "", "$2,387.72"],
+            ["", "", "", "", "", "", "#14 Squamish List", "",
+             "Squamish", "", "CPC", "", "", ""],
+        ]
+        data = _squamish_data(*rows)
+        h = self._HEADER_IDX
+        b = self._BUDGET_COL
+        merges = [
+            {"startRowIndex": h + 1, "endRowIndex": h + 3,
+             "startColumnIndex": b, "endColumnIndex": b + 1},
+            {"startRowIndex": h + 3, "endRowIndex": h + 5,
+             "startColumnIndex": b, "endColumnIndex": b + 1},
+            {"startRowIndex": h + 5, "endRowIndex": h + 7,
+             "startColumnIndex": b, "endColumnIndex": b + 1},
+        ]
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=merges, ref_year=2026
+        )
+        total = sum(ln["budget"] for ln in lines if ln["budget"] is not None)
+        assert total == pytest.approx(7729.91, rel=1e-4)
+
+    def test_no_merges_all_false(self):
+        """Standard plan with no merges → every line has merged_with_previous=False."""
+        row = [
+            "Meta (Facebook, Instagram)", "Conversions", "March 17", "April 12",
+            "27", "Conversions CA", "#09 North Van Engagers", "",
+            "North Van", "", "CPC", "", "", "$2,238.19",
+        ]
+        data = _squamish_data(row)
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=[], ref_year=2026
+        )
+        assert len(lines) == 1
+        assert lines[0]["merged_with_previous"] is False
+
+    def test_merge_in_non_budget_column_ignored(self):
+        """Merge on 'Audience Group' column must NOT mark budget as bundled."""
+        rows = [
+            ["Meta", "Conv", "Mar 17", "Apr 12", "27", "Conv CA",
+             "#09 Foo", "", "BC", "", "CPC", "", "", "$500.00"],
+            ["", "", "Mar 17", "Apr 12", "27", "",
+             "#10 Bar", "", "BC", "", "CPC", "", "", "$500.00"],
+        ]
+        data = _squamish_data(*rows)
+        h = self._HEADER_IDX
+        # Merge is on Audience Group (col 5), not Budget
+        merges = [{
+            "startRowIndex": h + 1, "endRowIndex": h + 3,
+            "startColumnIndex": 5, "endColumnIndex": 6,
+        }]
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=data, prefetched_merges=merges, ref_year=2026
+        )
+        assert len(lines) == 2
+        assert all(ln["merged_with_previous"] is False for ln in lines)
+
+    def test_no_budget_col_mapped_graceful(self):
+        """If Budget column isn't discovered, flag defaults to False on every row."""
+        header = _SQUAMISH_HEADER[:-1]  # drop Budget $
+        row = [
+            "Meta (Facebook, Instagram)", "Conv", "Mar 17", "Apr 12", "27",
+            "Conv CA", "#09 Foo", "", "BC", "", "CPC", "", "",
+        ]
+        rows = [[""] * len(header) for _ in range(5)]
+        rows.append(header)
+        rows.append(row)
+        while len(rows) < 16:
+            rows.append([""] * len(header))
+        lines = _parse_media_plan_tab(
+            None, prefetched_data=rows, prefetched_merges=[], ref_year=2026
+        )
+        assert len(lines) == 1
+        assert lines[0]["merged_with_previous"] is False
+
+
 class TestParseMediaPlanTabMissingColumnsWarning:
     """Silent-fail warnings — parser must log when expected columns are missing."""
 
