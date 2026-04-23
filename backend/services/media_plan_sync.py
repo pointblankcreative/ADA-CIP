@@ -737,16 +737,27 @@ def _parse_media_plan_tab(
     if ref_year is None:
         ref_year = date.today().year
 
-    # Find header row by looking for "Site/Network" or "Goal".
-    # Search the whole tab, not just the first 15 rows — some plans
-    # (e.g. Squamish's "Combined Plan for Frazer") have substantial
-    # preamble (flight summaries, Blocking Chart references) before the
-    # actual header, pushing it well past row 14.
+    # Find the header row by word-level presence. We search the whole tab
+    # (not just the first 15 rows) because some plans — e.g. Squamish's
+    # "Combined Plan for Frazer" — have substantial preamble (flight
+    # summaries, Blocking Chart refs) before the header. We check for
+    # word-level presence rather than a fixed substring because headers
+    # in the wild often have whitespace or newlines around separators
+    # (e.g. "Site / Network", "Campaign Type/\nObjective") which break
+    # a naive substring match like `"site/network" in row_text`.
     header_row_idx = None
     for r in range(4, len(all_data)):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
-        if "site/network" in row_text or ("goal" in row_text and "start" in row_text):
+        has_site_network = "site" in row_text and "network" in row_text
+        has_goal_start = "goal" in row_text and "start" in row_text
+        has_start_end = "start date" in row_text and "end date" in row_text
+        if has_site_network or has_goal_start or has_start_end:
             header_row_idx = r
+            logger.info(
+                "  Media Plan tab header row located at row %d: %r",
+                r,
+                [c[:40] for c in all_data[r] if c.strip()],
+            )
             break
     if header_row_idx is None:
         logger.warning("Could not find header row in Media Plan tab")
