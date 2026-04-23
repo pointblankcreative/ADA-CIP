@@ -14,6 +14,7 @@ import pytest
 
 from backend.services.media_plan_sync import (
     _assign_bundle_groups,
+    _build_line_records_for_bc_line,
     _compute_bundle_id,
     _extract_line_code,
     _filter_canonical_tabs,
@@ -1148,3 +1149,282 @@ class TestParseMediaPlanTabMissingColumnsWarning:
         assert lines[0]["budget"] is None
         # A warning mentions the missing column
         assert any("budget" in rec.message.lower() for rec in caplog.records)
+
+
+# ── PR 3 cleanup: _build_line_records_for_bc_line (sibling emission) ────
+
+
+class TestBuildLineRecordsForBcLine:
+    """The pure helper that turns one bc_line + its matched mp_detail into
+    1..N media_plan_lines records. Standalones → 1 record; bundles →
+    1 parent + N children with budget=NULL on children.
+
+    This is the accuracy-critical seam: if this function emits the wrong
+    shape, pacing will miscount budgets. Tested directly so regressions
+    surface in unit tests rather than at the next prod sync.
+    """
+
+    def _bc(self, **overrides):
+        """Minimal bc_line dict with safe defaults; override specific fields."""
+        base = {
+            "platform": "Meta (Facebook, Instagram)",
+            "platform_id": "meta",
+            "budget": 2238.19,
+            "objective_format": "Conversion",
+            "flight_start": date(2026, 3, 17),
+            "flight_end": date(2026, 4, 12),
+            "audience_name": None,
+        }
+        base.update(overrides)
+        return base
+
+    def _mp(self, **overrides):
+        """Minimal mp_line dict (as emitted by _parse_media_plan_tab)."""
+        base = {
+            "platform_id": "meta",
+            "platform": "Meta",
+            "line_code": "#09",
+            "audience_name": "North Van Engagers",
+            "audience_targeting": "Engagers",
+            "landing_page": None,
+            "pricing_model": "CPC",
+            "geo_targeting": "North Van",
+            "technical_targeting": "",
+            "creative": "",
+            "estimated_impressions": 50000,
+            "frequency_cap": "",
+            "budget": 2238.19,
+            "flight_start": date(2026, 3, 17),
+            "flight_end": date(2026, 4, 12),
+            "merged_with_previous": False,
+            "bundle_group": None,
+        }
+        base.update(overrides)
+        return base
+
+    _meta = {
+        "start_date": date(2026, 3, 1),
+        "end_date": date(2026, 4, 30),
+        "client_name": "Squamish",
+    }
+
+    def test_standalone_without_mp_detail(self):
+        """bc_line with no mp_match → 1 record, no bundle fields."""
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(),
+            mp_detail=None,
+            all_mp_lines=[],
+            plan_id="plan-x",
+            line_id="plan-x-line-001",
+            project_code="25034",
+            meta=self._meta,
+        )
+        assert len(out) == 1
+        r = out[0]
+        assert r["line_id"] == "plan-x-line-001"
+        assert r["bundle_id"] is None
+        assert r["bundle_role"] is None
+        assert r["budget"] == pytest.approx(2238.19)
+        assert r["line_code"] is None  # no mp_detail
+        assert r["platform_id"] == "meta"
+
+    def test_standalone_with_mp_detail_no_bundle(self):
+        """bc_line matched to an mp_line that's NOT in a bundle → 1 record."""
+        mp = self._mp(bundle_group=None)
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(),
+            mp_detail=mp,
+            all_mp_lines=[mp],
+            plan_id="plan-x",
+            line_id="plan-x-line-001",
+            project_code="25034",
+            meta=self._meta,
+        )
+        assert len(out) == 1
+        r = out[0]
+        assert r["bundle_id"] is None
+        assert r["bundle_role"] is None
+        assert r["line_code"] == "#09"
+        assert r["audience_name"] == "North Van Engagers"
+        assert r["audience_targeting"] == "Engagers"
+        assert r["estimated_impressions"] == 50000
+
+    def test_two_row_bundle_emits_parent_plus_child(self):
+        """Squamish #09/#10 shape: parent carries budget, child carries NULL."""
+        parent_mp = self._mp(
+            line_code="#09",
+            audience_name="North Van Engagers",
+            bundle_group=0,
+        )
+        child_mp = self._mp(
+            line_code="#10",
+            audience_name="North Van List",
+            budget=None,  # child cells are blank after gspread returns merged
+            bundle_group=0,
+            merged_with_previous=True,
+        )
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(budget=2238.19),
+            mp_detail=parent_mp,
+            all_mp_lines=[parent_mp, child_mp],
+            plan_id="plan-x",
+            line_id="plan-x-line-004",
+            project_code="25034",
+            meta=self._meta,
+        )
+        assert len(out) == 2
+        parent, child = out
+        # Parent
+        assert parent["line_id"] == "plan-x-line-004"
+        assert parent["bundle_role"] == "suggested_parent"
+        assert parent["bundle_id"] == "25034-meta-09"
+        assert parent["budget"] == pytest.approx(2238.19)
+        assert parent["line_code"] == "#09"
+        assert parent["audience_name"] == "North Van Engagers"
+        # Child
+        assert child["line_id"] == "plan-x-line-004-bundled-01"
+        assert child["bundle_role"] == "suggested_child"
+        assert child["bundle_id"] == "25034-meta-09"
+        assert child["budget"] is None, (
+            "Bundle children MUST have NULL budget so SUM(budget) "
+            "GROUP BY bundle_id doesn't double-count"
+        )
+        assert child["line_code"] == "#10"
+        assert child["audience_name"] == "North Van List"
+
+    def test_bundle_budget_sum_equals_parent_only(self):
+        """Accuracy invariant: summing budget across bundle members equals
+        just the parent's budget — no double-counting.
+        """
+        parent_mp = self._mp(line_code="#09", bundle_group=0)
+        child_a = self._mp(line_code="#10", budget=None, bundle_group=0,
+                           merged_with_previous=True, audience_name="a")
+        child_b = self._mp(line_code="#10b", budget=None, bundle_group=0,
+                           merged_with_previous=True, audience_name="b")
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(budget=3000.00),
+            mp_detail=parent_mp,
+            all_mp_lines=[parent_mp, child_a, child_b],
+            plan_id="plan-x",
+            line_id="plan-x-line-000",
+            project_code="25034",
+            meta=self._meta,
+        )
+        assert len(out) == 3
+        total = sum((r["budget"] or 0.0) for r in out)
+        assert total == pytest.approx(3000.00)
+
+    def test_all_children_share_parent_bundle_id(self):
+        parent_mp = self._mp(line_code="#11", bundle_group=1)
+        c1 = self._mp(line_code="#12", budget=None, bundle_group=1,
+                      merged_with_previous=True, audience_name="list BC")
+        c2 = self._mp(line_code="#12b", budget=None, bundle_group=1,
+                      merged_with_previous=True, audience_name="lookalike BC")
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(),
+            mp_detail=parent_mp,
+            all_mp_lines=[parent_mp, c1, c2],
+            plan_id="plan-x",
+            line_id="plan-x-line-002",
+            project_code="25034",
+            meta=self._meta,
+        )
+        assert len(out) == 3
+        assert len({r["bundle_id"] for r in out}) == 1
+        assert all(r["bundle_id"] == "25034-meta-11" for r in out)
+
+    def test_child_line_ids_are_sequential_and_distinct(self):
+        parent_mp = self._mp(line_code="#09", bundle_group=0)
+        siblings = [
+            self._mp(line_code=f"#10_{i}", budget=None, bundle_group=0,
+                     merged_with_previous=True, audience_name=f"sib {i}")
+            for i in range(3)
+        ]
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(),
+            mp_detail=parent_mp,
+            all_mp_lines=[parent_mp, *siblings],
+            plan_id="plan-x",
+            line_id="plan-x-line-005",
+            project_code="25034",
+            meta=self._meta,
+        )
+        ids = [r["line_id"] for r in out]
+        assert ids == [
+            "plan-x-line-005",
+            "plan-x-line-005-bundled-01",
+            "plan-x-line-005-bundled-02",
+            "plan-x-line-005-bundled-03",
+        ]
+
+    def test_child_inherits_flight_dates_from_bc_when_mp_missing(self):
+        """If the mp_sibling has no flight_start/end, fall back to the bc_line."""
+        parent_mp = self._mp(line_code="#09", bundle_group=0)
+        child_without_dates = self._mp(
+            line_code="#10",
+            budget=None,
+            bundle_group=0,
+            merged_with_previous=True,
+            flight_start=None,
+            flight_end=None,
+            audience_name="sib",
+        )
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(flight_start=date(2026, 3, 17),
+                             flight_end=date(2026, 4, 12)),
+            mp_detail=parent_mp,
+            all_mp_lines=[parent_mp, child_without_dates],
+            plan_id="plan-x",
+            line_id="plan-x-line-001",
+            project_code="25034",
+            meta=self._meta,
+        )
+        child = out[1]
+        assert child["flight_start"] == "2026-03-17"
+        assert child["flight_end"] == "2026-04-12"
+
+    def test_child_keeps_its_own_flight_dates_when_mp_has_them(self):
+        """If the mp_sibling carries specific dates, those take precedence."""
+        parent_mp = self._mp(line_code="#09", bundle_group=0)
+        child_with_own_dates = self._mp(
+            line_code="#10",
+            budget=None,
+            bundle_group=0,
+            merged_with_previous=True,
+            flight_start=date(2026, 3, 26),
+            flight_end=date(2026, 4, 22),
+            audience_name="BC list",
+        )
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(flight_start=date(2026, 3, 17),
+                             flight_end=date(2026, 4, 12)),
+            mp_detail=parent_mp,
+            all_mp_lines=[parent_mp, child_with_own_dates],
+            plan_id="plan-x",
+            line_id="plan-x-line-001",
+            project_code="25034",
+            meta=self._meta,
+        )
+        child = out[1]
+        assert child["flight_start"] == "2026-03-26"
+        assert child["flight_end"] == "2026-04-22"
+
+    def test_orphan_bundle_group_without_siblings_degrades_to_standalone(self):
+        """Defensive: if the matched mp_line has bundle_group set but no
+        actual siblings exist in all_mp_lines, emit 1 record with no bundle
+        fields. Shouldn't happen in practice (singletons strip in
+        _assign_bundle_groups), but the helper stays safe anyway.
+        """
+        lonely = self._mp(line_code="#09", bundle_group=99)
+        out = _build_line_records_for_bc_line(
+            bc_line=self._bc(),
+            mp_detail=lonely,
+            all_mp_lines=[lonely],  # no siblings
+            plan_id="plan-x",
+            line_id="plan-x-line-001",
+            project_code="25034",
+            meta=self._meta,
+        )
+        assert len(out) == 1
+        assert out[0]["bundle_id"] is None
+        assert out[0]["bundle_role"] is None

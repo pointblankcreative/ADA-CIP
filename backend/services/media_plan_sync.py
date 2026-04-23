@@ -1009,6 +1009,126 @@ def _mp_lines_have_audience_data(mp_lines: list[dict]) -> bool:
     )
 
 
+# ── Line-record builder (extracted from sync_media_plan for testability) ──
+
+
+def _build_line_records_for_bc_line(
+    bc_line: dict,
+    mp_detail: dict | None,
+    all_mp_lines: list[dict],
+    plan_id: str,
+    line_id: str,
+    project_code: str,
+    meta: dict,
+) -> list[dict]:
+    """Turn one blocking-chart line (+ its matched mp line) into 1..N records.
+
+    Standalone lines produce exactly one record. Bundled lines (where
+    mp_detail carries a non-None ``bundle_group``) produce one
+    ``suggested_parent`` record — the bc_line's own row — plus one
+    ``suggested_child`` record for every other mp_line in the same bundle
+    group. Children carry ``budget=NULL`` so ``SUM(budget) GROUP BY bundle_id``
+    gives the pool total without double-counting.
+
+    Pure function: no BQ, no Sheets, no filesystem. Easy to unit-test.
+    """
+    flight_start = bc_line.get("flight_start") or meta.get("start_date")
+    flight_end = bc_line.get("flight_end") or meta.get("end_date")
+    line_code = mp_detail.get("line_code") if mp_detail else None
+
+    # Bundle detection: does this bc_line match an mp_line that belongs to a
+    # multi-row merged-budget group?
+    bundle_group = mp_detail.get("bundle_group") if mp_detail else None
+    bundle_siblings: list[dict] = []
+    bundle_id: str | None = None
+    bundle_role: str | None = None
+    if bundle_group is not None:
+        bundle_siblings = [
+            mp for mp in all_mp_lines
+            if mp is not mp_detail and mp.get("bundle_group") == bundle_group
+        ]
+        if bundle_siblings:
+            bundle_id = _compute_bundle_id(
+                project_code, [mp_detail] + bundle_siblings
+            )
+            bundle_role = "suggested_parent"
+
+    channel_category = _channel_category(bc_line.get("objective_format", ""))
+    is_traditional = _is_traditional_media(
+        bc_line.get("platform"), bc_line.get("platform_id")
+    )
+
+    records: list[dict] = [{
+        "line_id": line_id,
+        "plan_id": plan_id,
+        "project_code": project_code,
+        "line_code": line_code,
+        "platform_id": bc_line["platform_id"],
+        "site_network": bc_line["platform"],
+        "channel_category": channel_category,
+        "flight_start": flight_start.isoformat() if flight_start else None,
+        "flight_end": flight_end.isoformat() if flight_end else None,
+        "objective": bc_line.get("objective_format"),
+        "audience_name": bc_line.get("audience_name") or (
+            mp_detail.get("audience_name") if mp_detail else None
+        ),
+        "audience_targeting": mp_detail.get("audience_targeting") if mp_detail else None,
+        "landing_page": mp_detail.get("landing_page") if mp_detail else None,
+        "pricing_model": mp_detail.get("pricing_model") if mp_detail else None,
+        "budget": bc_line["budget"],
+        "estimated_impressions": (
+            int(mp_detail["estimated_impressions"])
+            if mp_detail and mp_detail.get("estimated_impressions")
+            else None
+        ),
+        "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
+        "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
+        "is_traditional": is_traditional,
+        "bundle_id": bundle_id,
+        "bundle_role": bundle_role,
+    }]
+
+    # Emit suggested_child rows for every sibling. Children carry bundle_id
+    # but budget IS NULL — the parent row holds the pool.
+    for j, sib in enumerate(bundle_siblings, start=1):
+        sib_flight_start = sib.get("flight_start") or flight_start
+        sib_flight_end = sib.get("flight_end") or flight_end
+        records.append({
+            "line_id": f"{line_id}-bundled-{j:02d}",
+            "plan_id": plan_id,
+            "project_code": project_code,
+            "line_code": sib.get("line_code"),
+            "platform_id": bc_line["platform_id"],
+            "site_network": bc_line["platform"],
+            "channel_category": channel_category,
+            "flight_start": (
+                sib_flight_start.isoformat() if sib_flight_start else None
+            ),
+            "flight_end": (
+                sib_flight_end.isoformat() if sib_flight_end else None
+            ),
+            "objective": bc_line.get("objective_format"),
+            "audience_name": sib.get("audience_name"),
+            "audience_targeting": sib.get("audience_targeting"),
+            "landing_page": sib.get("landing_page"),
+            "pricing_model": sib.get("pricing_model"),
+            # CRITICAL: children must have NULL budget. Pool lives on parent.
+            "budget": None,
+            "estimated_impressions": (
+                int(sib["estimated_impressions"])
+                if sib.get("estimated_impressions")
+                else None
+            ),
+            "frequency_cap": sib.get("frequency_cap"),
+            "geo_targeting": sib.get("geo_targeting"),
+            "is_traditional": is_traditional,
+            "bundle_id": bundle_id,
+            "bundle_role": "suggested_child",
+        })
+
+    return records
+
+
 # ── Sync Orchestrator ───────────────────────────────────────────────
 
 def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = None) -> dict:
@@ -1190,105 +1310,20 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
-
-        # Use pre-computed global match from _match_all_mp_lines
-        mp_detail = mp_matches.get(i)
+        mp_detail = mp_matches.get(i)  # pre-computed global match
+        records_for_bc = _build_line_records_for_bc_line(
+            bc_line=bc_line,
+            mp_detail=mp_detail,
+            all_mp_lines=mp_lines,
+            plan_id=plan_id,
+            line_id=line_id,
+            project_code=project_code,
+            meta=meta,
+        )
+        line_records.extend(records_for_bc)
 
         flight_start = bc_line.get("flight_start") or meta.get("start_date")
         flight_end = bc_line.get("flight_end") or meta.get("end_date")
-
-        # Use media plan tab's line_code if matched, otherwise generate one
-        line_code = mp_detail.get("line_code") if mp_detail else None
-
-        # Bundled-optimization (PR 3): if the matched mp_line is part of a
-        # bundle, this bc_line becomes the suggested parent. Sibling
-        # suggested_child rows get emitted below so each audience in the
-        # bundle is addressable in downstream pacing / UI layers.
-        bundle_group = mp_detail.get("bundle_group") if mp_detail else None
-        bundle_siblings: list[dict] = []
-        bundle_id: str | None = None
-        bundle_role: str | None = None
-        if bundle_group is not None:
-            bundle_siblings = [
-                mp for mp in mp_lines
-                if mp is not mp_detail and mp.get("bundle_group") == bundle_group
-            ]
-            if bundle_siblings:
-                bundle_id = _compute_bundle_id(
-                    project_code, [mp_detail] + bundle_siblings
-                )
-                bundle_role = "suggested_parent"
-
-        line_records.append({
-            "line_id": line_id,
-            "plan_id": plan_id,
-            "project_code": project_code,
-            "line_code": line_code,
-            "platform_id": bc_line["platform_id"],
-            "site_network": bc_line["platform"],
-            "channel_category": _channel_category(bc_line.get("objective_format", "")),
-            "flight_start": flight_start.isoformat() if flight_start else None,
-            "flight_end": flight_end.isoformat() if flight_end else None,
-            "objective": bc_line.get("objective_format"),
-            "audience_name": bc_line.get("audience_name") or (mp_detail.get("audience_name") if mp_detail else None),
-            "audience_targeting": mp_detail.get("audience_targeting") if mp_detail else None,
-            "landing_page": mp_detail.get("landing_page") if mp_detail else None,
-            "pricing_model": mp_detail.get("pricing_model") if mp_detail else None,
-            "budget": bc_line["budget"],
-            "estimated_impressions": (
-                int(mp_detail["estimated_impressions"])
-                if mp_detail and mp_detail.get("estimated_impressions")
-                else None
-            ),
-            "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
-            "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
-            "is_traditional": _is_traditional_media(bc_line.get("platform"), bc_line.get("platform_id")),
-            "bundle_id": bundle_id,
-            "bundle_role": bundle_role,
-        })
-
-        # Emit suggested_child rows for every sibling in the bundle. Budget
-        # is NULL on children — the bundle's pool total lives on the parent
-        # row, and `SUM(budget) GROUP BY bundle_id` gives the pool value
-        # without double-counting.
-        for j, sib in enumerate(bundle_siblings, start=1):
-            sib_flight_start = sib.get("flight_start") or flight_start
-            sib_flight_end = sib.get("flight_end") or flight_end
-            line_records.append({
-                "line_id": f"{line_id}-bundled-{j:02d}",
-                "plan_id": plan_id,
-                "project_code": project_code,
-                "line_code": sib.get("line_code"),
-                "platform_id": bc_line["platform_id"],
-                "site_network": bc_line["platform"],
-                "channel_category": _channel_category(bc_line.get("objective_format", "")),
-                "flight_start": (
-                    sib_flight_start.isoformat() if sib_flight_start else None
-                ),
-                "flight_end": (
-                    sib_flight_end.isoformat() if sib_flight_end else None
-                ),
-                "objective": bc_line.get("objective_format"),
-                "audience_name": sib.get("audience_name"),
-                "audience_targeting": sib.get("audience_targeting"),
-                "landing_page": sib.get("landing_page"),
-                "pricing_model": sib.get("pricing_model"),
-                # CRITICAL: children must have NULL budget. The bundle's
-                # total lives only on the parent row. See PR 3 worklog.
-                "budget": None,
-                "estimated_impressions": (
-                    int(sib["estimated_impressions"])
-                    if sib.get("estimated_impressions")
-                    else None
-                ),
-                "frequency_cap": sib.get("frequency_cap"),
-                "geo_targeting": sib.get("geo_targeting"),
-                "is_traditional": _is_traditional_media(
-                    bc_line.get("platform"), bc_line.get("platform_id")
-                ),
-                "bundle_id": bundle_id,
-                "bundle_role": "suggested_child",
-            })
 
         line_has_weeks = False
         for w in bc["weeks"]:
