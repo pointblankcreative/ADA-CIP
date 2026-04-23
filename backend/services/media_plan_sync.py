@@ -1170,6 +1170,10 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         _skip_words = {"example", "template", "sample"}
 
         try:
+            # Normalise the tab_name override for title-match comparison.
+            _requested_tab_lower = (
+                tab_name.strip().lower() if tab_name else None
+            )
             for ws in ss.worksheets():
                 title_lower = ws.title.lower()
                 # Skip example/template tabs
@@ -1179,6 +1183,18 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
                 if "blocking" in title_lower and "chart" in title_lower:
                     blocking_ws = ws
                 elif "media plan" in title_lower or title_lower == "media plan":
+                    media_plan_tabs.append(ws)
+                # Fix: when the caller (or dim_projects.media_plan_tab_name)
+                # specifies a canonical tab that doesn't contain "media plan"
+                # in its title (e.g. Squamish's "Combined Plan for Frazer"),
+                # still include it. Without this, the processing loop's
+                # tab_name filter silently drops every discovered tab and
+                # zero mp_lines get parsed.
+                elif _requested_tab_lower and title_lower.strip() == _requested_tab_lower:
+                    logger.info(
+                        "  Including tab by explicit tab_name override: %r",
+                        ws.title,
+                    )
                     media_plan_tabs.append(ws)
         except gspread.exceptions.APIError as e:
             logger.error("Sheets API error listing tabs: %s", e)
@@ -1217,18 +1233,8 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         ref_year = bc["metadata"]["start_date"].year
         logger.info("  Using ref_year=%d from blocking chart start_date", ref_year)
 
-    # Diagnostic: list media plan tabs that survived discovery + canonical filter.
-    # If this logs an empty list, that explains any "0 media plan lines" result.
-    logger.info(
-        "  Media plan tabs ready for processing (count=%d): %r",
-        len(media_plan_tabs),
-        [ws.title for ws in media_plan_tabs],
-    )
-
     filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
-        # Diagnostic: prove we're entering the loop for each tab.
-        logger.info("  Evaluating media plan tab: %r", mp_ws.title)
         # If a specific tab was requested, skip non-matching tabs
         if tab_name:
             if mp_ws.title.strip().lower() != tab_name.strip().lower():
