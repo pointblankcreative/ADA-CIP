@@ -737,9 +737,13 @@ def _parse_media_plan_tab(
     if ref_year is None:
         ref_year = date.today().year
 
-    # Find header row by looking for "Site/Network" or "Goal"
+    # Find header row by looking for "Site/Network" or "Goal".
+    # Search the whole tab, not just the first 15 rows — some plans
+    # (e.g. Squamish's "Combined Plan for Frazer") have substantial
+    # preamble (flight summaries, Blocking Chart references) before the
+    # actual header, pushing it well past row 14.
     header_row_idx = None
-    for r in range(4, min(15, len(all_data))):
+    for r in range(4, len(all_data)):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         if "site/network" in row_text or ("goal" in row_text and "start" in row_text):
             header_row_idx = r
