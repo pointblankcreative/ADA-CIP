@@ -213,3 +213,266 @@ class TestLineStatus:
         # has passed since flight_start.
         assert row["line_status"] == "active", \
             "Grace period should not re-trigger on resume; line should be active"
+
+
+# ── PR 4: bundled-optimization pacing awareness ─────────────────────
+
+
+class TestBundleAwarePacing:
+    """Pacing must:
+      - skip bundle children (budget=NULL; their spend is attributed to parent)
+      - aggregate spend across all member line_codes for bundle parents
+      - not double-count when a single ad set has multiple line codes
+
+    Accuracy matters: the whole reason for this feature is to stop pacing
+    under/overspend from going undetected when CBO shares a budget pool.
+    """
+
+    def _run_pacing_with_mocked_data(
+        self,
+        lines: list[dict],
+        blocking_weeks: list[dict],
+        spend_responses: list[dict],
+    ) -> list[dict]:
+        """Drive run_pacing_for_project with synthetic mp_lines + weeks + spend rows.
+
+        `spend_responses` is a FIFO queue consumed by each spend-query call
+        (every one of the group-spend, per-code, and per-bundle queries).
+        Each entry should be a list of row dicts (e.g. ``[{"total_spend": 500.0}]``).
+        """
+        from unittest.mock import MagicMock
+
+        captured_rows: list[dict] = []
+
+        def fake_write(project_code, as_of, rows):
+            captured_rows.extend(rows)
+
+        spend_queue = list(spend_responses)
+
+        with patch("backend.services.pacing.bq") as mock_bq, \
+             patch("backend.services.pacing._write_budget_tracking", side_effect=fake_write), \
+             patch("backend.services.pacing._write_alerts"):
+
+            mock_bq.table.side_effect = lambda n: f"`dummy.{n}`"
+            mock_bq.string_param.return_value = MagicMock()
+            mock_bq.scalar_param.return_value = MagicMock()
+            mock_bq.date_param.return_value = MagicMock()
+            mock_bq.array_param.return_value = MagicMock()
+
+            call_count = [0]
+
+            def mock_run_query(sql, params=None):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return lines
+                elif call_count[0] == 2:
+                    return blocking_weeks
+                # All subsequent calls are spend queries
+                return spend_queue.pop(0) if spend_queue else []
+
+            mock_bq.run_query.side_effect = mock_run_query
+
+            from backend.services.pacing import run_pacing_for_project
+            run_pacing_for_project("BND_TEST")
+
+        return captured_rows
+
+    def test_bundle_child_emits_no_tracking_row(self):
+        """A line with bundle_role='suggested_child' must be excluded from pacing."""
+        today = date.today()
+        flight_start = today - timedelta(days=5)
+        flight_end = today + timedelta(days=15)
+
+        lines = [
+            {
+                "line_id": "parent-01",
+                "line_code": "#09",
+                "platform_id": "meta",
+                "channel_category": "Digital",
+                "budget": 2238.19,
+                "flight_start": flight_start.isoformat(),
+                "flight_end": flight_end.isoformat(),
+                "bundle_id": "25034-meta-09",
+                "bundle_role": "suggested_parent",
+            },
+            {
+                "line_id": "parent-01-bundled-01",
+                "line_code": "#10",
+                "platform_id": "meta",
+                "channel_category": "Digital",
+                "budget": None,  # child has NULL budget
+                "flight_start": flight_start.isoformat(),
+                "flight_end": flight_end.isoformat(),
+                "bundle_id": "25034-meta-09",
+                "bundle_role": "suggested_child",
+            },
+        ]
+        blocking_weeks = [
+            {"line_id": "parent-01", "week_start": flight_start.isoformat(), "is_active": True},
+        ]
+        # Enough spend_responses to cover any query pattern pacing makes
+        spend_responses = [[{"total_spend": 500.0}]] * 20
+
+        rows = self._run_pacing_with_mocked_data(lines, blocking_weeks, spend_responses)
+        line_ids = [r["line_id"] for r in rows]
+        assert "parent-01" in line_ids, "Bundle parent must still pace"
+        assert "parent-01-bundled-01" not in line_ids, (
+            "Bundle child must NOT produce a tracking row — child spend is "
+            "attributed to the parent"
+        )
+
+    def test_bundle_parent_aggregates_spend_across_members(self):
+        """Parent's actual_spend must equal the total bundle spend, regardless of
+        whether the ad set names contain only #09, only #10, or both.
+
+        This is the core accuracy guarantee: a bundle paces as ONE pool.
+        """
+        today = date.today()
+        flight_start = today - timedelta(days=5)
+        flight_end = today + timedelta(days=15)
+
+        lines = [
+            {
+                "line_id": "parent-01",
+                "line_code": "#09",
+                "platform_id": "meta",
+                "channel_category": "Digital",
+                "budget": 2238.19,
+                "flight_start": flight_start.isoformat(),
+                "flight_end": flight_end.isoformat(),
+                "bundle_id": "25034-meta-09",
+                "bundle_role": "suggested_parent",
+            },
+            {
+                "line_id": "parent-01-bundled-01",
+                "line_code": "#10",
+                "platform_id": "meta",
+                "channel_category": "Digital",
+                "budget": None,
+                "flight_start": flight_start.isoformat(),
+                "flight_end": flight_end.isoformat(),
+                "bundle_id": "25034-meta-09",
+                "bundle_role": "suggested_child",
+            },
+        ]
+        blocking_weeks = [
+            {"line_id": "parent-01", "week_start": flight_start.isoformat(), "is_active": True},
+        ]
+        # Spend query order pacing is expected to run:
+        #   1. Per-flight-group total-spend query → $1200 (whole platform for flight)
+        #   2. Per-line-code query for "#09"       → $400
+        #   3. Per-line-code query for "#10"       → $800
+        #   4. Per-bundle set-containment query    → $1200 (full bundle, no double-count)
+        # Parent should take the bundle query value ($1200), NOT sum of per-code ($1200).
+        spend_responses = [
+            [{"total_spend": 1200.0}],                                    # group total
+            [{"total_spend": 400.0, "first_spend_date": flight_start}],   # #09
+            [{"total_spend": 800.0, "first_spend_date": flight_start}],   # #10
+            [{"total_spend": 1200.0}],                                    # bundle
+        ]
+        rows = self._run_pacing_with_mocked_data(lines, blocking_weeks, spend_responses)
+        parent_row = next((r for r in rows if r["line_id"] == "parent-01"), None)
+        assert parent_row is not None
+        # The actual_spend_to_date should equal the bundle query (1200), not
+        # the sum of per-code queries (which would double-count a multi-code
+        # ad set if one existed).
+        assert parent_row["actual_spend_to_date"] == pytest.approx(1200.0), (
+            f"Bundle parent must aggregate via the bundle query "
+            f"(got {parent_row['actual_spend_to_date']}, expected 1200.0)"
+        )
+
+    def test_bundle_parent_does_not_double_count_multi_code_adsets(self):
+        """Regression guard: in real CBO data, one ad set often carries multiple
+        codes (e.g. "#11 viewers BC, #12 list"). Summing per-code spend would
+        count that ad set's budget twice. The bundle-level query must win.
+
+        In this scenario the per-code queries each return $500 (because both
+        match the same multi-code ad set), but the bundle aggregate is $500
+        (the ad set's true spend). The parent's actual_spend must reflect $500.
+        """
+        today = date.today()
+        flight_start = today - timedelta(days=5)
+        flight_end = today + timedelta(days=15)
+
+        lines = [
+            {
+                "line_id": "p-11",
+                "line_code": "#11",
+                "platform_id": "meta",
+                "channel_category": "Digital",
+                "budget": 3104.00,
+                "flight_start": flight_start.isoformat(),
+                "flight_end": flight_end.isoformat(),
+                "bundle_id": "25034-meta-11",
+                "bundle_role": "suggested_parent",
+            },
+            {
+                "line_id": "p-11-bundled-01",
+                "line_code": "#12",
+                "platform_id": "meta",
+                "channel_category": "Digital",
+                "budget": None,
+                "flight_start": flight_start.isoformat(),
+                "flight_end": flight_end.isoformat(),
+                "bundle_id": "25034-meta-11",
+                "bundle_role": "suggested_child",
+            },
+        ]
+        blocking_weeks = [
+            {"line_id": "p-11", "week_start": flight_start.isoformat(), "is_active": True},
+        ]
+        # Both per-code queries return $500 because the ad set's line_codes
+        # array contains both "#11" and "#12". Naive summation would report
+        # $1000 spent; the bundle-aggregate query returns the real $500.
+        spend_responses = [
+            [{"total_spend": 700.0}],                                      # group spend (irrelevant for parent)
+            [{"total_spend": 500.0, "first_spend_date": flight_start}],    # #11
+            [{"total_spend": 500.0, "first_spend_date": flight_start}],    # #12
+            [{"total_spend": 500.0}],                                      # bundle aggregate — THE correct answer
+        ]
+        rows = self._run_pacing_with_mocked_data(lines, blocking_weeks, spend_responses)
+        parent = next((r for r in rows if r["line_id"] == "p-11"), None)
+        assert parent is not None
+        assert parent["actual_spend_to_date"] == pytest.approx(500.0), (
+            f"Double-count regression — parent shows "
+            f"{parent['actual_spend_to_date']} but true spend is 500.0. "
+            f"Bundle aggregate query must beat summing per-code results."
+        )
+
+    def test_standalone_line_uses_view_unnest_for_line_code_match(self):
+        """Non-bundled standalone line with line_code must get correct attribution.
+
+        Prior to PR 4, pacing queried `fact_digital_daily.line_code` (a column
+        that's never populated), so line_code-matched spend was always $0 and
+        lines fell through to proportional flight-group splits. With the view
+        + IN UNNEST, line_code matches now work.
+        """
+        today = date.today()
+        flight_start = today - timedelta(days=5)
+        flight_end = today + timedelta(days=15)
+
+        lines = [{
+            "line_id": "solo-01",
+            "line_code": "#05",
+            "platform_id": "meta",
+            "channel_category": "Digital",
+            "budget": 5000.0,
+            "flight_start": flight_start.isoformat(),
+            "flight_end": flight_end.isoformat(),
+            "bundle_id": None,
+            "bundle_role": None,
+        }]
+        blocking_weeks = [
+            {"line_id": "solo-01", "week_start": flight_start.isoformat(), "is_active": True},
+        ]
+        # Spend responses: group total, then line_code "#05"
+        spend_responses = [
+            [{"total_spend": 9000.0}],                                    # group (noise)
+            [{"total_spend": 3000.0, "first_spend_date": flight_start}],  # #05
+        ]
+        rows = self._run_pacing_with_mocked_data(lines, blocking_weeks, spend_responses)
+        assert len(rows) == 1
+        assert rows[0]["line_code"] == "#05"
+        # Actual spend comes from the per-code query ($3000), NOT from the
+        # group-split fallback.
+        assert rows[0]["actual_spend_to_date"] == pytest.approx(3000.0)
