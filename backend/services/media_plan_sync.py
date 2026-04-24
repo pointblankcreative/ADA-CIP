@@ -760,7 +760,21 @@ def _parse_media_plan_tab(
             )
             break
     if header_row_idx is None:
-        logger.warning("Could not find header row in Media Plan tab")
+        # Diagnostic dump: print the first 30 rows with non-empty content so
+        # we can see what the parser is actually looking at when it can't
+        # find a header. Each row truncated to 200 chars to keep logs sane.
+        sample = []
+        for i, row in enumerate(all_data[:30]):
+            non_empty = [c for c in row if c.strip()]
+            if non_empty:
+                joined = " | ".join(non_empty)
+                sample.append(f"row {i}: {joined[:200]!r}")
+        logger.warning(
+            "Could not find header row in Media Plan tab. "
+            "len(all_data)=%d; first non-empty rows:\n%s",
+            len(all_data),
+            "\n".join(sample) if sample else "(all rows empty)",
+        )
         return []
 
     headers = all_data[header_row_idx]
