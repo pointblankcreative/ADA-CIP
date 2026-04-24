@@ -89,23 +89,13 @@ async def get_retrospective(
     # and raises 422 automatically on bad input. So inside the handler we can
     # assume ``as_of_date`` is a valid date object.
     try:
-        diag_rows = snapshots.find_or_compute(project_code, as_of_date)
+        diag_rows, cached = snapshots.find_or_compute(project_code, as_of_date)
     except Exception as e:
         logger.error(
             "Retrospective diagnostics failed for %s @ %s: %s",
             project_code, as_of_date, e, exc_info=True,
         )
         raise HTTPException(500, f"Retrospective diagnostics failed: {e}")
-
-    # Determine whether this came from the cache. We don't thread a
-    # (computed|cached) flag out of find_or_compute (it returns a uniform list
-    # of dicts on purpose), but we can infer by querying find_snapshot
-    # independently. That duplicates one BQ call on misses — acceptable for
-    # the UI indicator. Could be hoisted if it shows up in profiles.
-    cache_probe = snapshots.find_snapshot(
-        project_code, as_of_date, engine_version=settings.engine_version
-    )
-    cached = bool(cache_probe) and len(cache_probe) == len(diag_rows)
 
     try:
         pacing_result = run_pacing_for_project(
