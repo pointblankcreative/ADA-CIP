@@ -86,6 +86,36 @@ export function PacingTab({
     });
   };
 
+  /**
+   * Update local pacing state after a bundle Confirm/Clear so the UI
+   * reflects the change without refetching. Mirrors the backend's parent
+   * vs child rule: parents have non-NULL planned_budget (pool total),
+   * children have planned_budget=0 (the API maps NULL to 0). Apply the
+   * matching confirmed or suggested role accordingly.
+   */
+  const handleBundleStateChange = (
+    bundleId: string,
+    newState: "confirmed" | "suggested"
+  ) => {
+    if (!data) return;
+    setData({
+      ...data,
+      lines: data.lines.map((l: PacingLine) => {
+        if (l.bundle_id !== bundleId) return l;
+        const isChild = l.planned_budget === 0;
+        const newRole =
+          newState === "confirmed"
+            ? isChild
+              ? "confirmed_child"
+              : "confirmed_parent"
+            : isChild
+              ? "suggested_child"
+              : "suggested_parent";
+        return { ...l, bundle_role: newRole };
+      }),
+    });
+  };
+
   if (loading) {
     return (
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -152,7 +182,10 @@ export function PacingTab({
             <LineRow
               key={line.line_id}
               line={line}
+              code={code}
+              asOfDate={asOfDate}
               onNameUpdate={handleNameUpdate}
+              onBundleStateChange={handleBundleStateChange}
             />
           ))}
         </div>
@@ -170,10 +203,23 @@ export function PacingTab({
 
 function LineRow({
   line,
+  code,
+  asOfDate,
   onNameUpdate,
+  onBundleStateChange,
 }: {
   line: PacingLine;
+  /** Project code, needed for bundle Confirm/Clear API calls. */
+  code: string;
+  /** Set in retrospective mode — disables interactive bundle buttons. */
+  asOfDate?: string;
   onNameUpdate: (lineId: string, newName: string) => void;
+  /** Called after a successful bundle Confirm/Clear API call so the
+   *  parent state updates without a re-fetch. */
+  onBundleStateChange: (
+    bundleId: string,
+    newState: "confirmed" | "suggested"
+  ) => void;
 }) {
   const isCompleted = line.line_status === "completed";
   const status = pacingStatus(line.pacing_percentage);
@@ -187,6 +233,39 @@ function LineRow({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Bundle Confirm / Clear (ADAC-54 follow-up). Disabled in retrospective
+  // mode — past snapshots are read-only.
+  const [bundleSaving, setBundleSaving] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
+
+  const handleBundleConfirm = async () => {
+    if (!line.bundle_id) return;
+    setBundleSaving(true);
+    setBundleError(null);
+    try {
+      await api.bundles.confirm(code, line.bundle_id);
+      onBundleStateChange(line.bundle_id, "confirmed");
+    } catch (e) {
+      setBundleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBundleSaving(false);
+    }
+  };
+
+  const handleBundleClear = async () => {
+    if (!line.bundle_id) return;
+    setBundleSaving(true);
+    setBundleError(null);
+    try {
+      await api.bundles.clearOverride(code, line.bundle_id);
+      onBundleStateChange(line.bundle_id, "suggested");
+    } catch (e) {
+      setBundleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBundleSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -297,22 +376,57 @@ function LineRow({
                 </span>
               )}
               {bundleParent && bundleMemberCount > 0 && (
-                <span
-                  className={cn(
-                    "rounded border px-1.5 py-0.5 text-[10px] font-medium",
-                    line.bundle_role === "suggested_parent"
-                      ? "border-dashed border-amber-500/40 bg-amber-500/10 text-amber-300"
-                      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                <>
+                  <span
+                    className={cn(
+                      "rounded border px-1.5 py-0.5 text-[10px] font-medium",
+                      line.bundle_role === "suggested_parent"
+                        ? "border-dashed border-amber-500/40 bg-amber-500/10 text-amber-300"
+                        : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    )}
+                    title={
+                      line.bundle_role === "suggested_parent"
+                        ? "Suggested bundle — the media plan's merged Budget cell grouped these lines. Confirm to lock in for this and future syncs."
+                        : "Confirmed bundle — locked in by user. Clear to revert to the parser's suggestion."
+                    }
+                  >
+                    {line.bundle_role === "suggested_parent" ? "Suggested " : ""}
+                    Bundle · {bundleMemberCount + 1} lines
+                  </span>
+                  {/* Confirm / Clear buttons (ADAC-54 follow-up).
+                      Suppressed in retrospective mode — past snapshots
+                      are read-only. */}
+                  {!asOfDate && line.bundle_role === "suggested_parent" && (
+                    <button
+                      type="button"
+                      onClick={handleBundleConfirm}
+                      disabled={bundleSaving}
+                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                      title="Lock this bundle in. Persists across re-syncs."
+                    >
+                      {bundleSaving ? "Confirming…" : "Confirm"}
+                    </button>
                   )}
-                  title={
-                    line.bundle_role === "suggested_parent"
-                      ? "Suggested bundle — the media plan's merged Budget cell grouped these lines. Confirm in the plan to lock in."
-                      : "Confirmed bundle"
-                  }
-                >
-                  {line.bundle_role === "suggested_parent" ? "Suggested " : ""}
-                  Bundle · {bundleMemberCount + 1} lines
-                </span>
+                  {!asOfDate && line.bundle_role === "confirmed_parent" && (
+                    <button
+                      type="button"
+                      onClick={handleBundleClear}
+                      disabled={bundleSaving}
+                      className="rounded border border-slate-600 bg-slate-800/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                      title="Revert to the parser's suggestion. Next sync re-decides from the spreadsheet."
+                    >
+                      {bundleSaving ? "Clearing…" : "Clear"}
+                    </button>
+                  )}
+                  {bundleError && (
+                    <span
+                      className="text-[10px] text-red-400"
+                      title={bundleError}
+                    >
+                      Bundle action failed
+                    </span>
+                  )}
+                </>
               )}
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">

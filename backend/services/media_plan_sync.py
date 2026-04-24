@@ -1563,6 +1563,11 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         # Apply any saved audience_name overrides so manual edits survive re-sync
         _apply_audience_overrides(mtl, project_code)
 
+        # Apply user-confirmed bundle states so Confirm survives re-sync.
+        # ADAC-54 follow-up: parser's bundle suggestions get overwritten with
+        # the user's locked-in choice on each sync.
+        _apply_bundle_overrides(mtl, project_code)
+
         # Re-apply FFS wizard state for lines that survived the sync
         _restore_ffs_state(mtl, project_code, ffs_snapshot)
     finally:
@@ -1756,6 +1761,84 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
         pass  # Table doesn't exist yet
     except Exception as e:
         logger.warning("  Could not cleanup stale overrides: %s", e)
+
+
+def _apply_bundle_overrides(mtl: bigquery.Client, project_code: str) -> None:
+    """Re-apply saved bundle confirmations after a fresh sync.
+
+    The parser detects bundles from merged Budget cells and emits them as
+    ``suggested_parent`` / ``suggested_child``. Once a user clicks Confirm in
+    the UI, an override row is written to ``media_plan_bundle_overrides``
+    keyed on (project_code, bundle_id). On every subsequent sync we
+    overwrite the parser's suggestions with the user's confirmation so the
+    bundle stays locked in.
+
+    bundle_id stability is good enough for this: it's
+    ``{project_code}-{platform_id}-{first_line_code_sans_hash}`` and only
+    changes if the first member's line_code changes. If the source plan
+    drifts that far, the override becomes orphaned and the cleanup step
+    below removes it on the next sync — at which point the user re-confirms
+    the new shape.
+
+    Mirrors ``_apply_audience_overrides`` in structure: apply, then clean
+    up rows whose bundle_id no longer exists in media_plan_lines.
+    """
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+
+    # Apply: any line in a bundle that has a 'confirmed_parent' override gets
+    # promoted from 'suggested_*' to 'confirmed_*'. The CASE on budget
+    # distinguishes parents (budget IS NOT NULL — they hold the pool total)
+    # from children (budget IS NULL by design — see schema.sql comment on
+    # media_plan_lines.bundle_id).
+    sql_apply = f"""
+        UPDATE {prefix}.media_plan_lines` l
+        SET l.bundle_role = CASE
+              WHEN l.budget IS NULL THEN 'confirmed_child'
+              ELSE 'confirmed_parent'
+            END
+        FROM {prefix}.media_plan_bundle_overrides` o
+        WHERE l.project_code = o.project_code
+          AND l.bundle_id   = o.bundle_id
+          AND l.project_code = @pc
+          AND o.bundle_role = 'confirmed_parent'
+    """
+
+    # Clean up overrides whose bundle no longer exists. Same pattern as
+    # _apply_audience_overrides — keeps the table from accumulating dead
+    # rows when plans drift.
+    sql_cleanup = f"""
+        DELETE FROM {prefix}.media_plan_bundle_overrides` o
+        WHERE o.project_code = @pc
+          AND NOT EXISTS (
+              SELECT 1 FROM {prefix}.media_plan_lines` l
+              WHERE l.project_code = o.project_code
+                AND l.bundle_id    = o.bundle_id
+          )
+    """
+
+    param_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+    ])
+
+    try:
+        result = mtl.query(sql_apply, job_config=param_config).result()
+        affected = result.num_dml_affected_rows or 0
+        if affected:
+            logger.info("    Applied %d bundle overrides for %s", affected, project_code)
+    except google.cloud.exceptions.NotFound:
+        logger.debug("  Bundle overrides table not found yet (first run)")
+    except Exception as e:
+        logger.warning("  Could not apply bundle overrides: %s", e)
+
+    try:
+        result = mtl.query(sql_cleanup, job_config=param_config).result()
+        cleaned = result.num_dml_affected_rows or 0
+        if cleaned:
+            logger.info("    Cleaned up %d stale bundle overrides for %s", cleaned, project_code)
+    except google.cloud.exceptions.NotFound:
+        pass
+    except Exception as e:
+        logger.warning("  Could not cleanup stale bundle overrides: %s", e)
 
 
 def _snapshot_ffs_state(mtl: bigquery.Client, project_code: str) -> list[dict]:
