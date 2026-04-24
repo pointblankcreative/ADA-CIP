@@ -137,6 +137,56 @@ class TestMatchAllMpLines:
         assert len(result) == 1
         assert result[0]["audience_name"] == "Has Code"
 
+    def test_bundled_mp_line_rejects_line_code_only_match(self):
+        """A bundled mp_line (bundle_group is not None) must NOT match a
+        bc_line via line_code alone when budgets are wildly different.
+
+        Regression guard for Squamish 25034 Flight 2 Meta: the single
+        $7,729.90 bc row was matching mp_line #02 (part of Flight 1's
+        bundle, budget=None) via the +10 line_code bonus, then emitting
+        all of Flight 1's mp_bundle members as 'Flight 2' children —
+        wildly wrong data.
+        """
+        bc_lines = [{"platform_id": "meta", "budget": 7729.90}]
+        mp_lines = [
+            # bundled child: line_code set, budget None, bundle_group set.
+            # Must NOT match — no budget proximity and bundled.
+            {
+                "platform_id": "meta", "budget": None, "line_code": "#02",
+                "audience_name": "Flight 1 Lookalike", "bundle_group": 0,
+            },
+            # bundled parent of a tiny sub-bundle: budget $2,238 vs bc $7,729.
+            # Also must NOT match — budget_diff > 50%.
+            {
+                "platform_id": "meta", "budget": 2238.19, "line_code": "#09",
+                "audience_name": "North Van Engagers", "bundle_group": 1,
+            },
+        ]
+        result = _match_all_mp_lines(bc_lines, mp_lines)
+        # Neither mp_line should be paired: the first lacks budget match
+        # (bundled + budget=None), the second is > 50% off.
+        assert result == {}, (
+            f"Expected no match for bundled mp_lines without budget proximity, "
+            f"got {result}"
+        )
+
+    def test_unbundled_mp_line_still_matches_by_line_code(self):
+        """Standalone (bundle_group is None) mp_lines retain the original
+        line_code-only fallback behaviour — no regression for projects
+        without bundles (OSSTF, 25049, etc.).
+        """
+        bc_lines = [{"platform_id": "meta", "budget": 5000}]
+        mp_lines = [
+            # Standalone, no budget but has line_code — should match.
+            {
+                "platform_id": "meta", "budget": None, "line_code": "1A",
+                "audience_name": "Teachers", "bundle_group": None,
+            },
+        ]
+        result = _match_all_mp_lines(bc_lines, mp_lines)
+        assert 0 in result
+        assert result[0]["line_code"] == "1A"
+
     def test_greedy_optimal_not_first_come(self):
         """Verify best global match wins, not first-processed bc_line.
 

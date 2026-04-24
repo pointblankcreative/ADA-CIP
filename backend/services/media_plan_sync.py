@@ -1363,8 +1363,72 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
     line_records = []
     week_records = []
 
+    # ── Bundle-rollup detection (pre-loop) ──────────────────────────
+    # When a single Blocking Chart row represents a budget pool that the
+    # media plan splits into 2+ sub-bundles (e.g. Squamish Flight 2 Meta:
+    # one $7,729.90 bc row vs three mp sub-bundles of $2,238 / $3,104 /
+    # $2,388), the bc row should be *absorbed* by the sub-bundles — we
+    # emit the sub-bundles directly instead of a single bc-rooted line.
+    # Otherwise we'd either (a) double-count budget when both emit, or
+    # (b) pair the bc row to an unrelated mp_line via weak line_code
+    # heuristic (the bug this replaces).
+    mp_by_bundle_group: dict[int, list[dict]] = {}
+    for _mp in mp_lines:
+        _bg = _mp.get("bundle_group")
+        if _bg is not None:
+            mp_by_bundle_group.setdefault(_bg, []).append(_mp)
+
+    absorbed_bc_indices: set[int] = set()
+    bundle_groups_absorbed_by: dict[int, list[int]] = {}  # bc_idx -> [bundle_groups]
+
+    for _bc_idx, _bc_line in enumerate(bc["lines"]):
+        _bc_plat = _bc_line.get("platform_id")
+        _bc_budget = _bc_line.get("budget") or 0
+        _bc_fs = _bc_line.get("flight_start") or meta.get("start_date")
+        _bc_fe = _bc_line.get("flight_end") or meta.get("end_date")
+        if not _bc_budget or not _bc_plat:
+            continue
+        # Find mp_bundles on same platform whose parent budget > 0
+        # and whose flight window fits within this bc window (if both
+        # sides have dates).
+        _candidates: list[tuple[int, float]] = []  # (bundle_group, parent_budget)
+        for _bg, _members in mp_by_bundle_group.items():
+            _parent = _members[0]
+            if _parent.get("platform_id") != _bc_plat:
+                continue
+            _parent_budget = _parent.get("budget") or 0
+            if _parent_budget <= 0:
+                continue
+            _mp_fs = _parent.get("flight_start")
+            _mp_fe = _parent.get("flight_end")
+            if _bc_fs and _mp_fs and _bc_fe and _mp_fe:
+                if not (_mp_fs >= _bc_fs and _mp_fe <= _bc_fe):
+                    continue
+            _candidates.append((_bg, _parent_budget))
+        if len(_candidates) < 2:
+            continue  # need ≥ 2 sub-bundles to justify absorption
+        _sum_bundles = sum(b for _, b in _candidates)
+        _diff = abs(_sum_bundles - _bc_budget) / _bc_budget
+        if _diff < 0.02:
+            absorbed_bc_indices.add(_bc_idx)
+            bundle_groups_absorbed_by[_bc_idx] = [bg for bg, _ in _candidates]
+            logger.info(
+                "  bc_line %d ($%.2f, %s) absorbed by %d mp sub-bundles "
+                "summing to $%.2f (diff %.2f%%)",
+                _bc_idx, _bc_budget, _bc_plat, len(_candidates),
+                _sum_bundles, _diff * 100,
+            )
+
+    absorbed_bundle_groups: set[int] = set()
+    for _groups in bundle_groups_absorbed_by.values():
+        absorbed_bundle_groups.update(_groups)
+
+    # ── bc_line loop ────────────────────────────────────────────────
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
+        if i in absorbed_bc_indices:
+            # Skip: mp sub-bundles will emit in the synthesis pass below.
+            continue
         mp_detail = mp_matches.get(i)  # pre-computed global match
         records_for_bc = _build_line_records_for_bc_line(
             bc_line=bc_line,
@@ -1401,6 +1465,76 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
                 week_records.append({
                     "id": f"{line_id}-w-{week_cursor.isoformat()}",
                     "line_id": line_id,
+                    "project_code": project_code,
+                    "week_start": week_cursor.isoformat(),
+                    "is_active": is_active,
+                })
+                week_cursor += timedelta(days=7)
+
+    # ── Synthesize bundles for mp-bundles not consumed by any bc_line ─
+    # Two reasons a mp_bundle might not have been consumed:
+    #   1. It was absorbed by a rollup bc_line (bundle_groups_absorbed_by
+    #      above) — we EXPLICITLY want to emit these, since the bc_line
+    #      was skipped.
+    #   2. The matcher rejected all its mp_lines (e.g. no bc_line had a
+    #      close-enough budget to match the bundle parent). Still emit
+    #      so the data isn't silently dropped.
+    # Either way: if the bundle's parent mp_line wasn't used as a match
+    # on any bc_line, emit the bundle standalone.
+    matched_mp_identities: set[int] = set()
+    for _mp_detail in mp_matches.values():
+        if _mp_detail:
+            matched_mp_identities.add(id(_mp_detail))
+
+    synth_idx = 0
+    for bg, members in mp_by_bundle_group.items():
+        if len(members) < 2:
+            continue  # singleton — not a real bundle
+        # Check if any member was consumed by a match
+        if any(id(m) in matched_mp_identities for m in members):
+            continue
+        parent_mp = members[0]
+        synth_idx += 1
+        synth_line_id = f"{plan_id}-synth-bundle-{synth_idx:03d}"
+
+        # Build a synthetic bc_line from the parent mp_line so we can
+        # reuse _build_line_records_for_bc_line.
+        synth_bc = {
+            "platform": parent_mp.get("platform"),
+            "platform_id": parent_mp.get("platform_id"),
+            "budget": parent_mp.get("budget"),
+            "objective_format": parent_mp.get("goal"),
+            "flight_start": parent_mp.get("flight_start"),
+            "flight_end": parent_mp.get("flight_end"),
+            "audience_name": None,  # force enrichment from mp_detail
+        }
+        synth_records = _build_line_records_for_bc_line(
+            bc_line=synth_bc,
+            mp_detail=parent_mp,
+            all_mp_lines=mp_lines,
+            plan_id=plan_id,
+            line_id=synth_line_id,
+            project_code=project_code,
+            meta=meta,
+        )
+        line_records.extend(synth_records)
+        logger.info(
+            "  Synthesized bundle from unmatched mp_bundle_group %s "
+            "(platform=%s, parent line_code=%r, %d members)",
+            bg, parent_mp.get("platform_id"),
+            parent_mp.get("line_code"), len(members),
+        )
+
+        # Weeks for synthesized bundle parent — generate from flight dates.
+        fs = parent_mp.get("flight_start") or meta.get("start_date")
+        fe = parent_mp.get("flight_end") or meta.get("end_date")
+        if fs and fe:
+            week_cursor = fs - timedelta(days=fs.weekday())
+            while week_cursor <= fe:
+                is_active = fs <= week_cursor + timedelta(days=6) and week_cursor <= fe
+                week_records.append({
+                    "id": f"{synth_line_id}-w-{week_cursor.isoformat()}",
+                    "line_id": synth_line_id,
                     "project_code": project_code,
                     "week_start": week_cursor.isoformat(),
                     "is_active": is_active,
@@ -1502,8 +1636,20 @@ def _match_all_mp_lines(
             if mp_line.get("audience_name") and (has_budget_match or mp_line.get("line_code")):
                 score += 5
 
-            # Require at least a budget match or a line_code to consider pairing
-            if score > 0 and (has_budget_match or mp_line.get("line_code")):
+            # Require at least a budget match or a line_code to consider pairing.
+            # EXCEPT: if the mp_line is part of a bundle (bundle_group is not
+            # None), require a true budget match. Pairing a bundled mp_line by
+            # line_code alone lets a bc_line absorb a mp_bundle that doesn't
+            # actually share its budget — e.g. Squamish Flight 2 Meta's
+            # $7,729.90 bc row vs Flight 1 Meta's #02 ($NULL child of a
+            # different bundle pool). That case is better handled later by
+            # rollup absorption + mp-bundle synthesis; the matcher should
+            # stay out of the way.
+            is_bundled_mp = mp_line.get("bundle_group") is not None
+            if score > 0 and (
+                has_budget_match
+                or (mp_line.get("line_code") and not is_bundled_mp)
+            ):
                 scored_pairs.append((score, bc_idx, mp_idx))
 
     # Greedy assignment by descending score
