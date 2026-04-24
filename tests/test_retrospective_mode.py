@@ -327,6 +327,177 @@ def test_find_or_compute_bypass_cache_forces_recompute(monkeypatch):
     assert len(result) == 1
 
 
+# ── retrospective router (commit 5) ─────────────────────────────────
+
+
+def test_retrospective_endpoint_returns_expected_shape(monkeypatch):
+    """Integration test over the HTTP layer: mock snapshots + pacing and
+    exercise the full request → response path."""
+    from fastapi.testclient import TestClient
+
+    from backend import main
+    from backend.routers import retrospective
+    from backend.services import snapshots as snapshots_mod
+
+    # Stub the auth middleware so tests don't need a Firebase token.
+    # Simplest: patch the middleware's dispatch to pass requests through.
+    from backend.middleware import auth as auth_mod
+
+    async def passthrough(self, request, call_next):
+        return await call_next(request)
+
+    monkeypatch.setattr(auth_mod.FirebaseAuthMiddleware, "dispatch", passthrough)
+
+    fake_rows = [
+        {
+            "id": "row-1",
+            "project_code": "25013",
+            "campaign_type": "persuasion",
+            "evaluation_date": date(2026, 3, 1),
+            "flight_day": 10,
+            "flight_total_days": 30,
+            "health_score": 81.0,
+            "health_status": "STRONG",
+            "pillars": {"distribution": {"score": 80, "status": "STRONG"}},
+            "signals": [],
+            "efficiency": {},
+            "alerts": [],
+            "platforms": ["meta"],
+            "line_ids": ["l1"],
+            "computed_at": None,
+            "spec_version": "1.1",
+            "engine_version": "sha-abc",
+        }
+    ]
+
+    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: fake_rows)
+    monkeypatch.setattr(snapshots_mod, "find_snapshot", lambda *a, **k: fake_rows)
+    monkeypatch.setattr(
+        retrospective, "run_pacing_for_project",
+        lambda *a, **k: {"project_code": "25013", "lines_processed": 3, "alerts": 0},
+    )
+    monkeypatch.setattr(retrospective.settings, "engine_version", "sha-abc")
+
+    client = TestClient(main.app)
+    resp = client.get("/api/diagnostics/as-of/2026-03-01/project/25013")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["project_code"] == "25013"
+    assert body["as_of_date"] == "2026-03-01"
+    assert body["engine_version"] == "sha-abc"
+    assert body["cached"] is True
+    assert len(body["diagnostics"]) == 1
+    assert body["diagnostics"][0]["campaign_type"] == "persuasion"
+    assert body["diagnostics"][0]["health_score"] == 81.0
+    assert body["pacing"]["lines_processed"] == 3
+
+
+def test_retrospective_endpoint_reports_cache_miss_when_computed(monkeypatch):
+    """When find_or_compute had to compute fresh (no prior cached row), the
+    response's `cached` flag should be False.
+
+    Simulates: find_or_compute returns rows (just-computed), but
+    find_snapshot (the probe) finds nothing because it ran before the write
+    was visible — or more realistically, the returned rows came from the
+    compute path. Test the probe-returns-empty case.
+    """
+    from fastapi.testclient import TestClient
+
+    from backend import main
+    from backend.routers import retrospective
+    from backend.services import snapshots as snapshots_mod
+    from backend.middleware import auth as auth_mod
+
+    async def passthrough(self, request, call_next):
+        return await call_next(request)
+
+    monkeypatch.setattr(auth_mod.FirebaseAuthMiddleware, "dispatch", passthrough)
+
+    fake_rows = [{
+        "id": "row-1",
+        "project_code": "25013",
+        "campaign_type": "persuasion",
+        "evaluation_date": date(2026, 3, 1),
+        "flight_day": 10,
+        "flight_total_days": 30,
+        "health_score": 70.0,
+        "health_status": "WATCH",
+        "pillars": {},
+        "signals": [],
+        "efficiency": {},
+        "alerts": [],
+        "platforms": [],
+        "line_ids": [],
+        "computed_at": None,
+        "spec_version": "1.1",
+        "engine_version": "sha-abc",
+    }]
+
+    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: fake_rows)
+    # probe returns empty → cached should be False.
+    monkeypatch.setattr(snapshots_mod, "find_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(
+        retrospective, "run_pacing_for_project",
+        lambda *a, **k: {"project_code": "25013", "lines_processed": 0, "alerts": 0},
+    )
+    monkeypatch.setattr(retrospective.settings, "engine_version", "sha-abc")
+
+    client = TestClient(main.app)
+    resp = client.get("/api/diagnostics/as-of/2026-03-01/project/25013")
+    assert resp.status_code == 200
+    assert resp.json()["cached"] is False
+
+
+def test_retrospective_endpoint_rejects_bad_date():
+    """FastAPI's date path-converter should 422 on malformed input before our
+    handler runs, so we don't have to validate dates ourselves."""
+    from fastapi.testclient import TestClient
+    from backend import main
+
+    client = TestClient(main.app)
+    resp = client.get("/api/diagnostics/as-of/not-a-date/project/25013")
+    assert resp.status_code == 422
+
+
+def test_retrospective_endpoint_skip_writes_on_pacing(monkeypatch):
+    """Regression guard: the endpoint MUST pass skip_writes=True to pacing —
+    otherwise a retrospective request would pollute budget_tracking and fire
+    Slack alerts about yesterday's state."""
+    from fastapi.testclient import TestClient
+
+    from backend import main
+    from backend.routers import retrospective
+    from backend.services import snapshots as snapshots_mod
+    from backend.middleware import auth as auth_mod
+
+    async def passthrough(self, request, call_next):
+        return await call_next(request)
+
+    monkeypatch.setattr(auth_mod.FirebaseAuthMiddleware, "dispatch", passthrough)
+
+    captured_kwargs = {}
+
+    def fake_pacing(project_code, as_of_date, **kwargs):
+        captured_kwargs.update(kwargs)
+        captured_kwargs["project_code"] = project_code
+        captured_kwargs["as_of_date"] = as_of_date
+        return {"project_code": project_code, "lines_processed": 0, "alerts": 0}
+
+    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: [])
+    monkeypatch.setattr(snapshots_mod, "find_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(retrospective, "run_pacing_for_project", fake_pacing)
+
+    client = TestClient(main.app)
+    resp = client.get("/api/diagnostics/as-of/2026-03-01/project/25013")
+    assert resp.status_code == 200
+    assert captured_kwargs["skip_writes"] is True, (
+        "Retrospective endpoint must pass skip_writes=True to pacing to avoid "
+        "corrupting budget_tracking with reconstructed rows."
+    )
+    assert captured_kwargs["as_of_date"] == date(2026, 3, 1)
+
+
 def test_pacing_default_skip_writes_false_still_writes():
     """Regression guard: live callers (skip_writes default=False) continue to
     write to budget_tracking. This is the current-pipeline behaviour — we'd
