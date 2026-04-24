@@ -24,6 +24,19 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.config import settings
+
+
+def _current_engine_version() -> str:
+    """Read the engine version from settings at construction time.
+
+    Indirected through a function (rather than using `settings.engine_version`
+    directly in a default_factory) so tests can monkeypatch
+    `backend.services.diagnostics.models._current_engine_version` without
+    having to mutate the settings singleton.
+    """
+    return settings.engine_version
+
 
 # ── Enums ───────────────────────────────────────────────────────────
 
@@ -147,6 +160,14 @@ class DiagnosticOutput(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc)
     )
     spec_version: str = "1.1"
+    # engine_version is an orthogonal discriminator from spec_version:
+    # spec_version tracks the scoring spec (human-tagged, changes rarely),
+    # engine_version tracks the code SHA (auto, changes every deploy).
+    # Sourced from settings at construction time so tests can override by
+    # patching settings.engine_version.
+    engine_version: str = Field(
+        default_factory=lambda: _current_engine_version()
+    )
 
     def compute_health_score(self) -> None:
         """Weighted average of pillar scores → health score."""
@@ -207,6 +228,7 @@ class DiagnosticOutput(BaseModel):
             "line_ids": self.line_ids,
             "computed_at": self.computed_at.isoformat(),
             "spec_version": self.spec_version,
+            "engine_version": self.engine_version,
         }
 
 

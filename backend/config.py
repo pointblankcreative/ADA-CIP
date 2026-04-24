@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     backend_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:3000"
 
+    # Engine version — git SHA injected by Cloud Build as ENGINE_VERSION env var.
+    # Used to tag rows in fact_diagnostic_signals so Retrospective Mode can
+    # differentiate outputs from different engine versions. Falls back to "dev"
+    # in local development. Rows written before ADAC-51 shipped are tagged
+    # "Pre-ADA" via a one-time backfill.
+    engine_version: str = "dev"
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
