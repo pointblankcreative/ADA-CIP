@@ -264,7 +264,10 @@ def run_daily_pipeline() -> dict:
         from backend.services.diagnostics.engine import run_all_diagnostics
 
         t2b = time.time()
-        diag_result = run_all_diagnostics()
+        # ``evaluation_date`` became required in ADAC-51 commit 2. The daily
+        # pipeline's semantic is "score today", so pass ``date.today()``
+        # explicitly rather than relying on an implicit default.
+        diag_result = run_all_diagnostics(date.today())
         results["stages"]["diagnostics"] = {
             "status": "success",
             "projects_processed": diag_result.get("projects_processed", 0),

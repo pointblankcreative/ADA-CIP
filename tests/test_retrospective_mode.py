@@ -93,3 +93,25 @@ def test_settings_engine_version_reads_from_env(monkeypatch):
     monkeypatch.setenv("ENGINE_VERSION", "sha-deadbeef")
     s = Settings()
     assert s.engine_version == "sha-deadbeef"
+
+
+# ── evaluation_date is required (commit 2) ──────────────────────────
+
+
+def test_run_diagnostics_for_project_requires_evaluation_date():
+    """Callers must explicitly supply evaluation_date.
+
+    Locked in by ADAC-51 commit 2. The previous ``= None`` default let callers
+    silently score "today-shaped" results even in retrospective contexts — the
+    new contract forces a conscious decision at every call site.
+    """
+    from backend.services.diagnostics.engine import run_diagnostics_for_project
+    with pytest.raises(TypeError, match="evaluation_date"):
+        run_diagnostics_for_project("25013")  # type: ignore[call-arg]
+
+
+def test_run_all_diagnostics_requires_evaluation_date():
+    """Same contract applies to the sweep entry point."""
+    from backend.services.diagnostics.engine import run_all_diagnostics
+    with pytest.raises(TypeError, match="evaluation_date"):
+        run_all_diagnostics()  # type: ignore[call-arg]

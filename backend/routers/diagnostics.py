@@ -167,9 +167,15 @@ async def get_diagnostic_history(
 
 @router.post("/{project_code}/run")
 async def run_diagnostics(project_code: str):
-    """Manually trigger diagnostic computation for a project."""
+    """Manually trigger diagnostic computation for a project as of today.
+
+    For a date-specific replay, use the retrospective endpoint shipped in
+    ADAC-51 commit 5 (``GET /api/diagnostics/as-of/{as_of_date}/project/{code}``).
+    """
     try:
-        outputs = run_diagnostics_for_project(project_code)
+        # ``evaluation_date`` became required in ADAC-51 commit 2. The manual-run
+        # semantic is "score right now", so pass ``date.today()`` explicitly.
+        outputs = run_diagnostics_for_project(project_code, date.today())
     except Exception as e:
         logger.error("Diagnostic run failed for %s: %s", project_code, e, exc_info=True)
         raise HTTPException(500, f"Diagnostic run failed: {e}")
