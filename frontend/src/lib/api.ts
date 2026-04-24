@@ -549,15 +549,40 @@ export interface DiagnosticRunResponse {
   }>;
 }
 
+/* ── Retrospective Mode (ADAC-51) ── */
+
+export interface RetrospectivePacingSummary {
+  project_code: string;
+  lines_processed: number;
+  alerts: number;
+}
+
+export interface RetrospectiveResponse {
+  project_code: string;
+  as_of_date: string; // YYYY-MM-DD
+  engine_version: string;
+  cached: boolean;
+  diagnostics: DiagnosticOutput[];
+  pacing: RetrospectivePacingSummary;
+}
+
 export const api = {
   projects: {
     list: () => apiFetch<Project[]>("/api/projects/"),
     get: (code: string) => apiFetch<Project>(`/api/projects/${code}`),
   },
   pacing: {
-    get: (code: string) => apiFetch<PacingResponse>(`/api/pacing/${code}`),
-    history: (code: string, days = 60) =>
-      apiFetch<PacingHistoryResponse>(`/api/pacing/${code}/history?days=${days}`),
+    get: (code: string, asOfDate?: string) =>
+      apiFetch<PacingResponse>(
+        `/api/pacing/${code}${asOfDate ? `?as_of_date=${asOfDate}` : ""}`
+      ),
+    history: (code: string, days = 60, asOfDate?: string) => {
+      const qs = new URLSearchParams({ days: String(days) });
+      if (asOfDate) qs.set("as_of_date", asOfDate);
+      return apiFetch<PacingHistoryResponse>(
+        `/api/pacing/${code}/history?${qs}`
+      );
+    },
     run: (code: string) =>
       apiFetch(`/api/pacing/${code}/run`, { method: "POST" }),
   },
@@ -599,9 +624,10 @@ export const api = {
       apiFetch<DiagnosticOutput[]>(
         `/api/diagnostics/${code}${date ? `?date=${date}` : ""}`
       ),
-    history: (code: string, days = 30, campaignType?: string) => {
+    history: (code: string, days = 30, campaignType?: string, asOfDate?: string) => {
       const qs = new URLSearchParams({ days: String(days) });
       if (campaignType) qs.set("campaign_type", campaignType);
+      if (asOfDate) qs.set("as_of_date", asOfDate);
       return apiFetch<DiagnosticHistoryPoint[]>(
         `/api/diagnostics/${code}/history?${qs}`
       );
@@ -610,6 +636,17 @@ export const api = {
       apiFetch<DiagnosticRunResponse>(`/api/diagnostics/${code}/run`, {
         method: "POST",
       }),
+  },
+  retrospective: {
+    /**
+     * Replay diagnostics + pacing for a past date.
+     * `asOfDate` must be ISO YYYY-MM-DD (the format Next.js extracts from
+     * the URL path segment on the matching frontend route).
+     */
+    get: (code: string, asOfDate: string) =>
+      apiFetch<RetrospectiveResponse>(
+        `/api/diagnostics/as-of/${asOfDate}/project/${code}`
+      ),
   },
   ffs: {
     list: (code: string) => apiFetch<FFSEntry[]>(`/api/ffs/${code}`),
