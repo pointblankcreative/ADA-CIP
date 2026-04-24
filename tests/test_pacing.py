@@ -17,7 +17,8 @@ class TestCountActiveDays:
         flight_end = tomorrow + timedelta(days=21)
         weeks = [{"week_start": tomorrow.isoformat(), "is_active": True}]
 
-        total, elapsed = _count_active_days(weeks, tomorrow, flight_end)
+        # ADAC-51 commit 3: _count_active_days now takes as_of_date explicitly.
+        total, elapsed = _count_active_days(weeks, tomorrow, flight_end, date.today())
         # elapsed should be 0 since the flight hasn't started
         assert elapsed == 0
 
@@ -27,7 +28,7 @@ class TestCountActiveDays:
         flight_end = today + timedelta(days=21)
         weeks = [{"week_start": today.isoformat(), "is_active": True}]
 
-        total, elapsed = _count_active_days(weeks, today, flight_end)
+        total, elapsed = _count_active_days(weeks, today, flight_end, today)
         assert elapsed == 1
 
     def test_flight_completed(self):
@@ -36,7 +37,7 @@ class TestCountActiveDays:
         end = date.today() - timedelta(days=1)
         weeks = [{"week_start": start.isoformat(), "is_active": True}]
 
-        total, elapsed = _count_active_days(weeks, start, end)
+        total, elapsed = _count_active_days(weeks, start, end, date.today())
         assert elapsed == total
 
 
@@ -95,7 +96,8 @@ class TestLineStatus:
             mock_bq.run_query.side_effect = mock_run_query
 
             from backend.services.pacing import run_pacing_for_project
-            run_pacing_for_project("TEST01")
+            # ADAC-51 commit 3: as_of_date now required.
+            run_pacing_for_project("TEST01", date.today())
 
         return captured_rows[0] if captured_rows else None
 
@@ -202,7 +204,7 @@ class TestLineStatus:
             mock_bq.run_query.side_effect = mock_run_query
 
             from backend.services.pacing import run_pacing_for_project
-            run_pacing_for_project("TEST_PAUSE")
+            run_pacing_for_project("TEST_PAUSE", date.today())
 
         assert len(captured_rows) > 0, "No tracking rows written"
         row = captured_rows[0]
@@ -273,7 +275,7 @@ class TestBundleAwarePacing:
             mock_bq.run_query.side_effect = mock_run_query
 
             from backend.services.pacing import run_pacing_for_project
-            run_pacing_for_project("BND_TEST")
+            run_pacing_for_project("BND_TEST", date.today())
 
         return captured_rows
 
