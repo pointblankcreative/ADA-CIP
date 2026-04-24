@@ -189,6 +189,144 @@ def test_pacing_skip_writes_suppresses_budget_tracking_and_alerts():
         mock_write_alerts.assert_not_called()
 
 
+# ── snapshots service (commit 4) ────────────────────────────────────
+
+
+def test_find_snapshot_returns_empty_on_miss(monkeypatch):
+    """A miss returns an empty list, not None. Callers can then decide to
+    recompute without having to special-case None."""
+    from backend.services import snapshots
+
+    captured = {}
+
+    def mock_run_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(snapshots.bq, "run_query", mock_run_query)
+    monkeypatch.setattr(snapshots.bq, "string_param", lambda *a, **k: ("string", a, k))
+    monkeypatch.setattr(snapshots.bq, "date_param", lambda *a, **k: ("date", a, k))
+    monkeypatch.setattr(snapshots.bq, "table", lambda n: f"`dummy.{n}`")
+
+    rows = snapshots.find_snapshot("25013", date(2026, 4, 15), engine_version="sha-abc")
+    assert rows == []
+    # Sanity: the query filters on all three key parts.
+    assert "project_code" in captured["sql"]
+    assert "evaluation_date" in captured["sql"]
+    assert "engine_version" in captured["sql"]
+
+
+def test_find_snapshot_returns_latest_per_campaign_type(monkeypatch):
+    """When multiple rows exist for the same (project, date, version, type),
+    the query picks the latest computed_at via ROW_NUMBER."""
+    from backend.services import snapshots
+
+    expected_rows = [
+        {"campaign_type": "persuasion", "health_score": 81.0, "engine_version": "sha-abc"},
+        {"campaign_type": "conversion", "health_score": 65.0, "engine_version": "sha-abc"},
+    ]
+
+    monkeypatch.setattr(snapshots.bq, "run_query", lambda sql, params: expected_rows)
+    monkeypatch.setattr(snapshots.bq, "string_param", lambda *a, **k: object())
+    monkeypatch.setattr(snapshots.bq, "date_param", lambda *a, **k: object())
+    monkeypatch.setattr(snapshots.bq, "table", lambda n: f"`dummy.{n}`")
+
+    rows = snapshots.find_snapshot("25013", date(2026, 4, 15), engine_version="sha-abc")
+    assert len(rows) == 2
+    assert rows[0]["campaign_type"] == "persuasion"
+    assert rows[1]["campaign_type"] == "conversion"
+
+
+def test_find_snapshot_defaults_to_current_engine_version(monkeypatch):
+    """When engine_version is None, the helper uses settings.engine_version.
+
+    This is the common caller intent — 'give me the cache hit if I've
+    computed this date with today's code'.
+    """
+    from backend.services import snapshots
+
+    monkeypatch.setattr(models, "_current_engine_version", lambda: "sha-live-deploy")
+    # The settings singleton doesn't auto-update when _current_engine_version
+    # changes, so also patch settings.engine_version for this test.
+    monkeypatch.setattr(snapshots.settings, "engine_version", "sha-live-deploy")
+
+    captured_params = {}
+
+    def mock_run_query(sql, params):
+        for p in params:
+            # Each param is (kind, (name, value), {}) from the lambdas above.
+            if p[0] == "string" and p[1][0] == "engine_version":
+                captured_params["engine_version"] = p[1][1]
+        return []
+
+    monkeypatch.setattr(snapshots.bq, "run_query", mock_run_query)
+    monkeypatch.setattr(snapshots.bq, "string_param", lambda name, value: ("string", (name, value), {}))
+    monkeypatch.setattr(snapshots.bq, "date_param", lambda name, value: ("date", (name, value), {}))
+    monkeypatch.setattr(snapshots.bq, "table", lambda n: f"`dummy.{n}`")
+
+    snapshots.find_snapshot("25013", date(2026, 4, 15))  # no engine_version
+    assert captured_params["engine_version"] == "sha-live-deploy"
+
+
+def test_find_or_compute_hits_cache(monkeypatch):
+    """Cache hit path: find_snapshot returns rows, compute_and_store is never called."""
+    from backend.services import snapshots
+
+    cached = [{"campaign_type": "persuasion", "health_score": 81.0}]
+    monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: cached)
+    # compute_and_store must NOT be called — explode if it is.
+    monkeypatch.setattr(
+        snapshots, "compute_and_store",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not recompute on hit")),
+    )
+
+    result = snapshots.find_or_compute("25013", date(2026, 4, 15))
+    assert result == cached
+
+
+def test_find_or_compute_computes_on_miss(monkeypatch):
+    """Cache miss path: compute_and_store is called, its output is serialized via to_bq_row."""
+    from backend.services import snapshots
+
+    monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: [])
+
+    fake_output = _make_output(engine_version="sha-abc")
+
+    calls = []
+
+    def fake_compute(project_code, as_of_date):
+        calls.append((project_code, as_of_date))
+        return [fake_output]
+
+    monkeypatch.setattr(snapshots, "compute_and_store", fake_compute)
+
+    result = snapshots.find_or_compute("25013", date(2026, 4, 15))
+
+    assert len(calls) == 1
+    assert calls[0] == ("25013", date(2026, 4, 15))
+    assert len(result) == 1
+    assert result[0]["project_code"] == "25013"
+    assert result[0]["engine_version"] == "sha-abc"
+
+
+def test_find_or_compute_bypass_cache_forces_recompute(monkeypatch):
+    """bypass_cache=True skips find_snapshot entirely — used by the ADAC-37
+    batch backfill so it's immune to stale cache hits."""
+    from backend.services import snapshots
+
+    # find_snapshot MUST NOT be called when bypass_cache=True. Explode if it is.
+    def forbidden(*args, **kwargs):
+        raise AssertionError("find_snapshot must not be called when bypass_cache=True")
+
+    monkeypatch.setattr(snapshots, "find_snapshot", forbidden)
+    monkeypatch.setattr(snapshots, "compute_and_store", lambda *a, **k: [_make_output()])
+
+    # Should not raise even though find_snapshot would blow up.
+    result = snapshots.find_or_compute("25013", date(2026, 4, 15), bypass_cache=True)
+    assert len(result) == 1
+
+
 def test_pacing_default_skip_writes_false_still_writes():
     """Regression guard: live callers (skip_writes default=False) continue to
     write to budget_tracking. This is the current-pipeline behaviour — we'd
