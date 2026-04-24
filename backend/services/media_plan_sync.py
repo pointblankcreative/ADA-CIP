@@ -496,6 +496,11 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         # / rejected once a user acts in the UI — PR 5).
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_id STRING",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_role STRING",
+        # Bundle children carry bundle_id but budget IS NULL — the parent row
+        # holds the pool total. Make budget nullable so BQ's NOT NULL constraint
+        # doesn't reject child inserts. (The original schema.sql had
+        # `budget NUMERIC NOT NULL`.)
+        f"ALTER TABLE {prefix}.media_plan_lines` ALTER COLUMN budget DROP NOT NULL",
         # Bug 3 (ADAC-18): audience_name overrides table
         f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
             project_code STRING,

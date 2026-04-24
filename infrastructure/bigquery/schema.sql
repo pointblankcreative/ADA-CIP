@@ -129,7 +129,10 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
   landing_page STRING,
   pricing_model STRING,
   bid_rate NUMERIC,
-  budget NUMERIC NOT NULL,
+  -- Nullable: bundle children (bundle_role='suggested_child' / 'confirmed_child')
+  -- carry bundle_id but NULL budget so SUM(budget) GROUP BY bundle_id
+  -- returns the pool total on the parent row without double-counting.
+  budget NUMERIC,
   estimated_impressions INT64,
   frequency_cap STRING,
   geo_targeting STRING,
