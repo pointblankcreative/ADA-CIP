@@ -737,16 +737,21 @@ def _parse_media_plan_tab(
     if ref_year is None:
         ref_year = date.today().year
 
-    # Find the header row by word-level presence. We search the whole tab
-    # (not just the first 15 rows) because some plans — e.g. Squamish's
-    # "Combined Plan for Frazer" — have substantial preamble (flight
-    # summaries, Blocking Chart refs) before the header. We check for
-    # word-level presence rather than a fixed substring because headers
-    # in the wild often have whitespace or newlines around separators
-    # (e.g. "Site / Network", "Campaign Type/\nObjective") which break
-    # a naive substring match like `"site/network" in row_text`.
+    # Find the header row by word-level presence. Search EVERY row
+    # (from row 0 through the end of the tab):
+    #   - Most plans have Client / Project / Run-Dates metadata at rows
+    #     0–3 and the header starting at row 4+, but some don't.
+    #     Squamish's "Combined Plan for Frazer" puts the header at row 0
+    #     with no preamble — starting the search at row 4 skipped past it.
+    #   - Some plans have long preamble (summary blocks, Blocking Chart
+    #     refs) that pushes the header past row 14 — can't cap the
+    #     search at row 14 either.
+    # We check for word-level presence rather than a fixed substring
+    # because headers often have whitespace or newlines around
+    # separators (e.g. "Site / Network", "Campaign Type/\nObjective"),
+    # which break a naive substring match like `"site/network" in row_text`.
     header_row_idx = None
-    for r in range(4, len(all_data)):
+    for r in range(len(all_data)):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
         has_site_network = "site" in row_text and "network" in row_text
         has_goal_start = "goal" in row_text and "start" in row_text
