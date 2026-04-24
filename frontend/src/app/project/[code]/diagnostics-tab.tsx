@@ -55,7 +55,31 @@ function statusBarFill(status: DiagnosticStatus): string {
   return "bg-slate-600";
 }
 
-export function DiagnosticsTab({ code }: { code: string }) {
+export interface RetrospectiveMetadata {
+  cached: boolean;
+  engineVersion: string;
+}
+
+export function DiagnosticsTab({
+  code,
+  asOfDate,
+  onRetrospectiveMetadata,
+}: {
+  code: string;
+  /**
+   * When provided, fetch from the retrospective endpoint
+   * (`/api/diagnostics/as-of/{asOfDate}/project/{code}`) instead of the
+   * live latest-snapshot endpoint. Used by Retrospective Mode page
+   * (ADAC-51 commit 7). Re-run affordance is suppressed in retro mode.
+   */
+  asOfDate?: string;
+  /**
+   * Optional callback invoked when retrospective metadata (cached flag +
+   * engine version) is available. Lets the retro page surface those bits
+   * in its banner without doing a separate fetch.
+   */
+  onRetrospectiveMetadata?: (meta: RetrospectiveMetadata) => void;
+}) {
   const [outputs, setOutputs] = useState<DiagnosticOutput[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -63,20 +87,35 @@ export function DiagnosticsTab({ code }: { code: string }) {
 
   const load = () => {
     setLoading(true);
-    api.diagnostics
-      .get(code)
-      .then((data) => {
-        setOutputs(data);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
+    if (asOfDate) {
+      api.retrospective
+        .get(code, asOfDate)
+        .then((resp) => {
+          setOutputs(resp.diagnostics);
+          setError(null);
+          onRetrospectiveMetadata?.({
+            cached: resp.cached,
+            engineVersion: resp.engine_version,
+          });
+        })
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setLoading(false));
+    } else {
+      api.diagnostics
+        .get(code)
+        .then((data) => {
+          setOutputs(data);
+          setError(null);
+        })
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setLoading(false));
+    }
   };
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
+  }, [code, asOfDate]);
 
   const handleRun = async () => {
     setRunning(true);
@@ -115,39 +154,62 @@ export function DiagnosticsTab({ code }: { code: string }) {
       <Card className="flex flex-col items-center gap-4 py-12">
         <Activity className="h-10 w-10 text-slate-500" />
         <div className="text-center">
-          <p className="text-slate-300">No diagnostic results yet for this project.</p>
-          <p className="mt-1 text-xs text-slate-500">
-            Diagnostics run automatically as part of the daily pipeline, or you
-            can trigger a run now.
-          </p>
+          {asOfDate ? (
+            <>
+              <p className="text-slate-300">
+                No diagnostic data available for this project on {asOfDate}.
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                The campaign may not have been active on that date, or the
+                project had no media plan yet.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-slate-300">No diagnostic results yet for this project.</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Diagnostics run automatically as part of the daily pipeline, or you
+                can trigger a run now.
+              </p>
+            </>
+          )}
         </div>
         {error && (
           <p className="text-xs text-red-400">{error}</p>
         )}
-        <button
-          onClick={handleRun}
-          disabled={running}
-          className="flex items-center gap-2 rounded-md bg-brand-600/20 px-4 py-2 text-sm font-medium text-brand-300 hover:bg-brand-600/30 disabled:opacity-50"
-        >
-          <Play className="h-3.5 w-3.5" />
-          {running ? "Running…" : "Run diagnostic now"}
-        </button>
+        {/* Re-run affordance suppressed in retro mode: there's nothing
+            actionable since the engine already auto-computes on miss via
+            the retrospective endpoint. */}
+        {!asOfDate && (
+          <button
+            onClick={handleRun}
+            disabled={running}
+            className="flex items-center gap-2 rounded-md bg-brand-600/20 px-4 py-2 text-sm font-medium text-brand-300 hover:bg-brand-600/30 disabled:opacity-50"
+          >
+            <Play className="h-3.5 w-3.5" />
+            {running ? "Running…" : "Run diagnostic now"}
+          </button>
+        )}
       </Card>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
-        <button
-          onClick={handleRun}
-          disabled={running}
-          className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-        >
-          <Play className="h-3 w-3" />
-          {running ? "Running…" : "Re-run"}
-        </button>
-      </div>
+      {/* Re-run is meaningless in retro mode (the date is fixed; the
+          retrospective endpoint already auto-computes on cache miss). */}
+      {!asOfDate && (
+        <div className="flex items-center justify-end">
+          <button
+            onClick={handleRun}
+            disabled={running}
+            className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            <Play className="h-3 w-3" />
+            {running ? "Running…" : "Re-run"}
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">

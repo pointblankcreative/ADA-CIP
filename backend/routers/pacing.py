@@ -20,8 +20,25 @@ def _float(v, default=0.0) -> float:
 
 
 @router.get("/{project_code}", response_model=PacingResponse)
-async def get_pacing(project_code: str):
-    """Return the latest pacing snapshot from budget_tracking for a project."""
+async def get_pacing(
+    project_code: str,
+    as_of_date: date | None = Query(
+        None,
+        description=(
+            "Pin the response to a specific historical date instead of the "
+            "latest budget_tracking row. Used by the Retrospective Mode "
+            "frontend (ADAC-51 commit 7) to render the pacing snapshot for "
+            "a past date. Defaults to the most recent row when omitted, "
+            "matching the live page's contract."
+        ),
+    ),
+):
+    """Return the pacing snapshot from budget_tracking for a project.
+
+    By default returns the most recent row. When ``as_of_date`` is supplied,
+    returns the row for that specific date (or empty if no daily-pipeline run
+    landed for that date). Used by Retrospective Mode for historical replay.
+    """
 
     project_sql = f"""
         SELECT project_code, net_budget
@@ -33,6 +50,20 @@ async def get_pacing(project_code: str):
         raise HTTPException(404, f"Project {project_code} not found")
 
     net_budget = _float(projects[0].get("net_budget"))
+
+    # Retrospective Mode (ADAC-51): when as_of_date is supplied, pin the date
+    # filter to that specific row. Otherwise fall back to the latest row, which
+    # is the live page's contract.
+    if as_of_date is not None:
+        date_filter = "AND bt.date = @as_of_date"
+        date_params = [bq.date_param("as_of_date", as_of_date)]
+    else:
+        date_filter = (
+            "AND bt.date = ("
+            f"SELECT MAX(date) FROM {bq.table('budget_tracking')} "
+            "WHERE project_code = @project_code)"
+        )
+        date_params = []
 
     tracking_sql = f"""
         WITH mpl_dedup AS (
@@ -74,13 +105,13 @@ async def get_pacing(project_code: str):
         FROM {bq.table('budget_tracking')} bt
         LEFT JOIN mpl_dedup mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
-            AND bt.date = (
-                SELECT MAX(date) FROM {bq.table('budget_tracking')}
-                WHERE project_code = @project_code
-            )
+            {date_filter}
         ORDER BY bt.platform_id, bt.bundle_id, bt.line_code
     """
-    rows = bq.run_query(tracking_sql, [bq.string_param("project_code", project_code)])
+    rows = bq.run_query(
+        tracking_sql,
+        [bq.string_param("project_code", project_code), *date_params],
+    )
 
     if not rows:
         return PacingResponse(

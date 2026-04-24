@@ -120,20 +120,28 @@ def find_or_compute(
     as_of_date: date,
     engine_version: Optional[str] = None,
     bypass_cache: bool = False,
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Cache-or-compute for a single (project_code, as_of_date) replay.
 
-    Returns a list of dicts matching the BigQuery row shape of
-    fact_diagnostic_signals. The retrospective router (ADAC-51 commit 5)
-    calls ``routers.diagnostics._row_to_diagnostic`` on each dict to get
-    the API response shape.
+    Returns ``(rows, was_cached)`` where:
+      - ``rows`` is a list of dicts matching the BigQuery row shape of
+        fact_diagnostic_signals (0..2 items; empty if the project has no
+        media plan / no derivable flight on ``as_of_date``).
+      - ``was_cached`` is ``True`` iff ``rows`` came from an existing cache
+        hit rather than a fresh compute. The retrospective router surfaces
+        this as the ``cached`` field in its response so the UI can show
+        "just computed" vs "cached" indicators accurately.
 
-    Empty list is returned if the project has no media plan / no derivable
-    flight on ``as_of_date``.
+    Why a tuple instead of a probe-after-the-fact: ``compute_and_store``
+    writes to fact_diagnostic_signals via the engine's ``_store_results``,
+    so any subsequent ``find_snapshot`` probe would find the just-written
+    row and always report True. The cache-state signal has to come from
+    inside this function.
 
     ``bypass_cache=True`` forces a recompute even if a cached row exists.
     Used by the ADAC-37 historical backfill (commit 10) so batch runs under
-    a specific engine_version always get fresh results.
+    a specific engine_version always get fresh results. In that case
+    ``was_cached`` is always False (we never even check).
     """
     version = engine_version or settings.engine_version
 
@@ -144,7 +152,7 @@ def find_or_compute(
                 "Snapshot cache hit: %s @ %s (engine_version=%s, rows=%d)",
                 project_code, as_of_date, version, len(cached),
             )
-            return cached
+            return cached, True
 
     logger.info(
         "Snapshot cache miss, computing: %s @ %s (engine_version=%s, bypass=%s)",
@@ -154,4 +162,4 @@ def find_or_compute(
     # Return the in-memory outputs serialized to the same dict shape BQ would
     # return. This keeps the caller's response-shaping path uniform whether
     # we hit the cache or computed fresh.
-    return [output.to_bq_row() for output in outputs]
+    return [output.to_bq_row() for output in outputs], False

@@ -270,7 +270,8 @@ def test_find_snapshot_defaults_to_current_engine_version(monkeypatch):
 
 
 def test_find_or_compute_hits_cache(monkeypatch):
-    """Cache hit path: find_snapshot returns rows, compute_and_store is never called."""
+    """Cache hit path: find_snapshot returns rows, compute_and_store is never
+    called, and the returned was_cached flag is True."""
     from backend.services import snapshots
 
     cached = [{"campaign_type": "persuasion", "health_score": 81.0}]
@@ -281,12 +282,21 @@ def test_find_or_compute_hits_cache(monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not recompute on hit")),
     )
 
-    result = snapshots.find_or_compute("25013", date(2026, 4, 15))
-    assert result == cached
+    rows, was_cached = snapshots.find_or_compute("25013", date(2026, 4, 15))
+    assert rows == cached
+    assert was_cached is True
 
 
 def test_find_or_compute_computes_on_miss(monkeypatch):
-    """Cache miss path: compute_and_store is called, its output is serialized via to_bq_row."""
+    """Cache miss path: compute_and_store is called, its output is serialized
+    via to_bq_row, and was_cached is False.
+
+    Regression guard for the bug surfaced on the first staging test of the
+    retrospective endpoint: the router used to probe find_snapshot AFTER
+    find_or_compute, which always found the just-written row and reported
+    cached=True even on fresh computes. The fix was to return was_cached
+    from this function directly — tested here.
+    """
     from backend.services import snapshots
 
     monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: [])
@@ -301,18 +311,20 @@ def test_find_or_compute_computes_on_miss(monkeypatch):
 
     monkeypatch.setattr(snapshots, "compute_and_store", fake_compute)
 
-    result = snapshots.find_or_compute("25013", date(2026, 4, 15))
+    rows, was_cached = snapshots.find_or_compute("25013", date(2026, 4, 15))
 
     assert len(calls) == 1
     assert calls[0] == ("25013", date(2026, 4, 15))
-    assert len(result) == 1
-    assert result[0]["project_code"] == "25013"
-    assert result[0]["engine_version"] == "sha-abc"
+    assert len(rows) == 1
+    assert rows[0]["project_code"] == "25013"
+    assert rows[0]["engine_version"] == "sha-abc"
+    assert was_cached is False
 
 
 def test_find_or_compute_bypass_cache_forces_recompute(monkeypatch):
     """bypass_cache=True skips find_snapshot entirely — used by the ADAC-37
-    batch backfill so it's immune to stale cache hits."""
+    batch backfill so it's immune to stale cache hits. was_cached is always
+    False in this path (we never checked the cache)."""
     from backend.services import snapshots
 
     # find_snapshot MUST NOT be called when bypass_cache=True. Explode if it is.
@@ -323,8 +335,11 @@ def test_find_or_compute_bypass_cache_forces_recompute(monkeypatch):
     monkeypatch.setattr(snapshots, "compute_and_store", lambda *a, **k: [_make_output()])
 
     # Should not raise even though find_snapshot would blow up.
-    result = snapshots.find_or_compute("25013", date(2026, 4, 15), bypass_cache=True)
-    assert len(result) == 1
+    rows, was_cached = snapshots.find_or_compute(
+        "25013", date(2026, 4, 15), bypass_cache=True,
+    )
+    assert len(rows) == 1
+    assert was_cached is False
 
 
 # ── retrospective router (commit 5) ─────────────────────────────────
@@ -370,8 +385,8 @@ def test_retrospective_endpoint_returns_expected_shape(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: fake_rows)
-    monkeypatch.setattr(snapshots_mod, "find_snapshot", lambda *a, **k: fake_rows)
+    # find_or_compute returns (rows, was_cached). True = came from cache.
+    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: (fake_rows, True))
     monkeypatch.setattr(
         retrospective, "run_pacing_for_project",
         lambda *a, **k: {"project_code": "25013", "lines_processed": 3, "alerts": 0},
@@ -397,10 +412,9 @@ def test_retrospective_endpoint_reports_cache_miss_when_computed(monkeypatch):
     """When find_or_compute had to compute fresh (no prior cached row), the
     response's `cached` flag should be False.
 
-    Simulates: find_or_compute returns rows (just-computed), but
-    find_snapshot (the probe) finds nothing because it ran before the write
-    was visible — or more realistically, the returned rows came from the
-    compute path. Test the probe-returns-empty case.
+    Regression guard for the bug where the router used a post-compute
+    probe and always saw the just-written row — reporting cached=True even
+    on fresh computes. find_or_compute now returns was_cached directly.
     """
     from fastapi.testclient import TestClient
 
@@ -434,9 +448,8 @@ def test_retrospective_endpoint_reports_cache_miss_when_computed(monkeypatch):
         "engine_version": "sha-abc",
     }]
 
-    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: fake_rows)
-    # probe returns empty → cached should be False.
-    monkeypatch.setattr(snapshots_mod, "find_snapshot", lambda *a, **k: [])
+    # find_or_compute returns (rows, was_cached=False) → "fresh compute".
+    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: (fake_rows, False))
     monkeypatch.setattr(
         retrospective, "run_pacing_for_project",
         lambda *a, **k: {"project_code": "25013", "lines_processed": 0, "alerts": 0},
@@ -484,8 +497,7 @@ def test_retrospective_endpoint_skip_writes_on_pacing(monkeypatch):
         captured_kwargs["as_of_date"] = as_of_date
         return {"project_code": project_code, "lines_processed": 0, "alerts": 0}
 
-    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: [])
-    monkeypatch.setattr(snapshots_mod, "find_snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: ([], False))
     monkeypatch.setattr(retrospective, "run_pacing_for_project", fake_pacing)
 
     client = TestClient(main.app)

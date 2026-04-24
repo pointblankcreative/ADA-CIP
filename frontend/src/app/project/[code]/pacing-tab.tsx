@@ -52,17 +52,29 @@ function isBundleParent(line: PacingLine): boolean {
   );
 }
 
-export function PacingTab({ code }: { code: string }) {
+export function PacingTab({
+  code,
+  asOfDate,
+}: {
+  code: string;
+  /**
+   * When provided, fetch the budget_tracking row for this specific date
+   * instead of the most recent one. Used by the Retrospective Mode page
+   * (ADAC-51 commit 7). Inline-edit affordances and "as of today" nuances
+   * are suppressed in retro mode since the view is point-in-time read-only.
+   */
+  asOfDate?: string;
+}) {
   const [data, setData] = useState<PacingResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.pacing
-      .get(code)
+      .get(code, asOfDate)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [code]);
+  }, [code, asOfDate]);
 
   const handleNameUpdate = (lineId: string, newName: string) => {
     if (!data) return;
