@@ -230,7 +230,10 @@ def run_daily_pipeline() -> dict:
     logger.info("=== Daily Pipeline: Stage 2 — Pacing ===")
     try:
         t2 = time.time()
-        pacing_result = run_all_pacing()
+        # ``as_of_date`` became required in ADAC-51 commit 3. The daily
+        # pipeline's semantic is 'pace today', so pass ``date.today()``
+        # explicitly.
+        pacing_result = run_all_pacing(date.today())
         results["stages"]["pacing"] = {
             "status": "success",
             "projects_processed": pacing_result.get("projects_processed", 0),
@@ -264,7 +267,10 @@ def run_daily_pipeline() -> dict:
         from backend.services.diagnostics.engine import run_all_diagnostics
 
         t2b = time.time()
-        diag_result = run_all_diagnostics()
+        # ``evaluation_date`` became required in ADAC-51 commit 2. The daily
+        # pipeline's semantic is "score today", so pass ``date.today()``
+        # explicitly rather than relying on an implicit default.
+        diag_result = run_all_diagnostics(date.today())
         results["stages"]["diagnostics"] = {
             "status": "success",
             "projects_processed": diag_result.get("projects_processed", 0),

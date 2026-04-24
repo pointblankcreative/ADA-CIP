@@ -48,13 +48,16 @@ def _count_active_days(
     blocking_weeks: list[dict],
     flight_start: date,
     flight_end: date,
+    as_of_date: date,
 ) -> tuple[int, int]:
-    """Return (total_active_days, elapsed_active_days up to today).
+    """Return (total_active_days, elapsed_active_days up to ``as_of_date``).
 
     Each blocking_chart_weeks row represents a 7-day window starting at
-    week_start. We clamp to the flight start/end and to today.
+    week_start. We clamp to the flight start/end and to ``as_of_date`` (in
+    live mode this is today; in retrospective replay it's the replay date
+    so elapsed never peeks past the snapshot point).
     """
-    today = date.today()
+    today = as_of_date
     total_active = 0
     elapsed_active = 0
 
@@ -163,12 +166,27 @@ def _generate_alerts(
     return alerts
 
 
-def run_pacing_for_project(project_code: str) -> dict:
-    """Calculate pacing for every media plan line in a project.
+def run_pacing_for_project(
+    project_code: str,
+    as_of_date: date,
+    skip_writes: bool = False,
+) -> dict:
+    """Calculate pacing for every media plan line in a project as of ``as_of_date``.
+
+    ``as_of_date`` is REQUIRED (as of ADAC-51 commit 3). Live callers pass
+    ``date.today()``; retrospective callers pass the replay date so spend
+    queries, elapsed-active-days, and the `today < flight_start` branching
+    stay consistent with the point-in-time view.
+
+    ``skip_writes=True`` short-circuits both the ``budget_tracking`` write
+    and the alert write. Retrospective callers set this so a replay doesn't
+    pollute live tracking history or fire Slack alerts about yesterday's
+    state. See ``backend.services.snapshots`` (ADAC-51 commit 4) for the
+    find-or-compute wrapper that uses this.
 
     Returns a summary dict with line-level results and any alerts generated.
     """
-    today = date.today()
+    today = as_of_date
 
     # ── 1. Fetch media plan lines for this project ──────────────────
     # Deduplicate: if old sync versions weren't cleaned up, multiple rows
@@ -250,6 +268,10 @@ def run_pacing_for_project(project_code: str) -> dict:
             bq.string_param("platform_id", pid),
         ]
 
+        # All spend queries carry an ``AND date <= @as_of_date`` clamp so
+        # retrospective replay never peeks past the snapshot point.
+        # In live mode this is a no-op (fact_digital_daily has no future rows).
+        params.append(bq.date_param("as_of_date", today))
         if fs is not None and fe is not None:
             group_spend_sql = f"""
                 SELECT SUM(spend) AS total_spend
@@ -258,6 +280,7 @@ def run_pacing_for_project(project_code: str) -> dict:
                     AND platform_id = @platform_id
                     AND date >= @flight_start
                     AND date <= @flight_end
+                    AND date <= @as_of_date
             """
             params.append(bq.date_param("flight_start", fs))
             params.append(bq.date_param("flight_end", fe))
@@ -268,6 +291,7 @@ def run_pacing_for_project(project_code: str) -> dict:
                 FROM {bq.table('fact_digital_daily')}
                 WHERE project_code = @project_code
                     AND platform_id = @platform_id
+                    AND date <= @as_of_date
             """
 
         rows_result = bq.run_query(group_spend_sql, params)
@@ -283,6 +307,7 @@ def run_pacing_for_project(project_code: str) -> dict:
             lc_params = [
                 bq.string_param("project_code", project_code),
                 bq.string_param("line_code", lc),
+                bq.date_param("as_of_date", today),
             ]
             if fs is not None and fe is not None:
                 lc_sql = f"""
@@ -292,6 +317,7 @@ def run_pacing_for_project(project_code: str) -> dict:
                         AND @line_code IN UNNEST(line_codes)
                         AND date >= @flight_start
                         AND date <= @flight_end
+                        AND date <= @as_of_date
                         AND spend > 0
                 """
                 lc_params.append(bq.date_param("flight_start", fs))
@@ -302,6 +328,7 @@ def run_pacing_for_project(project_code: str) -> dict:
                     FROM {bq.table('vw_fact_digital_daily')}
                     WHERE project_code = @project_code
                         AND @line_code IN UNNEST(line_codes)
+                        AND date <= @as_of_date
                         AND spend > 0
                 """
             lc_rows = bq.run_query(lc_sql, lc_params)
@@ -352,6 +379,7 @@ def run_pacing_for_project(project_code: str) -> dict:
         bundle_params = [
             bq.string_param("project_code", project_code),
             bq.array_param("member_codes", "STRING", member_codes),
+            bq.date_param("as_of_date", today),
         ]
         if pfs is not None and pfe is not None:
             bundle_sql = f"""
@@ -364,6 +392,7 @@ def run_pacing_for_project(project_code: str) -> dict:
                   )
                   AND date >= @flight_start
                   AND date <= @flight_end
+                  AND date <= @as_of_date
                   AND spend > 0
             """
             bundle_params.append(bq.date_param("flight_start", pfs))
@@ -377,6 +406,7 @@ def run_pacing_for_project(project_code: str) -> dict:
                     SELECT 1 FROM UNNEST(line_codes) AS lc
                     WHERE lc IN UNNEST(@member_codes)
                   )
+                  AND date <= @as_of_date
                   AND spend > 0
             """
         bundle_rows = bq.run_query(bundle_sql, bundle_params)
@@ -418,7 +448,7 @@ def run_pacing_for_project(project_code: str) -> dict:
 
         if weeks:
             total_active_days, elapsed_active_days = _count_active_days(
-                weeks, flight_start, flight_end
+                weeks, flight_start, flight_end, today
             )
         else:
             # No blocking chart — fall back to full flight as active
@@ -528,11 +558,15 @@ def run_pacing_for_project(project_code: str) -> dict:
         })
 
     # ── 5. Write to budget_tracking ─────────────────────────────────
-    if tracking_rows:
+    # Retrospective replay uses skip_writes=True: we don't want a snapshot
+    # reconstruction to backfill budget_tracking with reconstructed rows
+    # (the live pipeline's row for that date is the source of truth), and
+    # we don't want to page anyone about last week's pacing via Slack.
+    if tracking_rows and not skip_writes:
         _write_budget_tracking(project_code, today, tracking_rows)
 
     # ── 6. Write alerts ─────────────────────────────────────────────
-    if all_alerts:
+    if all_alerts and not skip_writes:
         _write_alerts(all_alerts)
 
     logger.info(
@@ -690,8 +724,13 @@ def _write_alerts(alerts: list[dict]) -> None:
         mtl.close()
 
 
-def run_all_active() -> dict:
-    """Run pacing for every active project that has a current media plan."""
+def run_all_active(as_of_date: date, skip_writes: bool = False) -> dict:
+    """Run pacing for every active project that has a current media plan.
+
+    ``as_of_date`` is REQUIRED (as of ADAC-51 commit 3). Live callers pass
+    ``date.today()``; retrospective batch callers pass the replay date.
+    ``skip_writes`` is forwarded to each per-project call.
+    """
     projects_sql = f"""
         SELECT DISTINCT p.project_code
         FROM {bq.table('dim_projects')} p
@@ -704,7 +743,7 @@ def run_all_active() -> dict:
     for row in projects:
         code = row["project_code"]
         try:
-            r = run_pacing_for_project(code)
+            r = run_pacing_for_project(code, as_of_date, skip_writes=skip_writes)
             results.append(r)
         except (gcp_exceptions.GoogleCloudError, ValueError, KeyError) as e:
             logger.error("Pacing failed for project %s (continuing to process remaining projects): %s", code, e, exc_info=True)

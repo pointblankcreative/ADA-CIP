@@ -666,7 +666,13 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_diagnostic_signals` (
   platforms JSON,                              -- ["facebook", "stackadapt"]
   line_ids JSON,                               -- media plan line IDs included
   computed_at TIMESTAMP NOT NULL,
-  spec_version STRING NOT NULL                 -- "1.1"
+  spec_version STRING NOT NULL,                -- "1.1" — scoring-spec tag (human)
+  -- Orthogonal code-SHA tag: every row written knows which engine build
+  -- produced it. Enables Retrospective Mode (ADAC-51) to differentiate cached
+  -- outputs across deploys. Live BQ treats this as NULLABLE because it was
+  -- added via ALTER TABLE; greenfield deployments enforce NOT NULL.
+  -- Historical rows prior to ADAC-51 ship were backfilled with 'Pre-ADA'.
+  engine_version STRING NOT NULL
 )
 PARTITION BY evaluation_date
 CLUSTER BY project_code, campaign_type

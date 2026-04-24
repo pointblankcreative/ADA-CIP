@@ -182,8 +182,22 @@ async def get_pacing(project_code: str):
 async def get_pacing_history(
     project_code: str,
     days: int = Query(60, ge=7, le=365),
+    as_of_date: date | None = Query(
+        None,
+        description=(
+            "Anchor the history window at this date instead of today. "
+            "Required by Retrospective Mode (ADAC-51) so a past-snapshot view "
+            "can show the trailing N days ending at the replay date rather "
+            "than today. Defaults to today when omitted."
+        ),
+    ),
 ):
-    """Return daily pacing snapshots from budget_tracking for historical trend."""
+    """Return daily pacing snapshots from budget_tracking for historical trend.
+
+    Window is ``[as_of_date - days, as_of_date]``. In live mode ``as_of_date``
+    defaults to today; in retrospective mode it's the replay date.
+    """
+    anchor = as_of_date or date.today()
     project_sql = f"""
         SELECT project_code
         FROM {bq.table('dim_projects')}
@@ -197,12 +211,14 @@ async def get_pacing_history(
         SELECT date, line_id, pacing_percentage
         FROM {bq.table('budget_tracking')}
         WHERE project_code = @project_code
-            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
+            AND date >= DATE_SUB(@anchor, INTERVAL @days DAY)
+            AND date <= @anchor
         ORDER BY date ASC, line_id
     """
     rows = bq.run_query(sql, [
         bq.string_param("project_code", project_code),
         bq.scalar_param("days", "INT64", days),
+        bq.date_param("anchor", anchor),
     ])
     return PacingHistoryResponse(
         project_code=project_code,
@@ -219,13 +235,17 @@ async def get_pacing_history(
 
 @router.post("/run")
 async def run_pacing():
-    """Trigger pacing calculation for all active projects with media plans."""
-    result = run_all_active()
+    """Trigger pacing calculation for all active projects with media plans.
+
+    Always runs 'as of today'. For a historical replay, use the snapshot
+    endpoint shipped in ADAC-51 commit 5.
+    """
+    result = run_all_active(date.today())
     return result
 
 
 @router.post("/{project_code}/run")
 async def run_pacing_single(project_code: str):
-    """Trigger pacing calculation for a single project."""
-    result = run_pacing_for_project(project_code)
+    """Trigger pacing calculation for a single project as of today."""
+    result = run_pacing_for_project(project_code, date.today())
     return result
