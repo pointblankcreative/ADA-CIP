@@ -80,6 +80,12 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, list[str]]:
                 FROM {bq.table('media_plan_lines')}
                 WHERE project_code = @project_code
                   AND objective IS NOT NULL
+                  -- Plan-id-aware dedup guard (see _query_media_plan in
+                  -- backend/services/diagnostics/engine.py for context).
+                  AND plan_id IN (
+                      SELECT plan_id FROM {bq.table('media_plans')}
+                      WHERE project_code = @project_code AND is_current = TRUE
+                  )
             ) WHERE _rn = 1
         """
         rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
