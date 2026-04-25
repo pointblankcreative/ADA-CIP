@@ -68,16 +68,22 @@ def _health_computer_for(campaign_type: CampaignType):
 
 def run_diagnostics_for_project(
     project_code: str,
-    evaluation_date: date | None = None,
+    evaluation_date: date,
 ) -> list[DiagnosticOutput]:
-    """Run diagnostic evaluation for a single project.
+    """Run diagnostic evaluation for a single project as of ``evaluation_date``.
 
     Returns a list of DiagnosticOutput objects — one per campaign type present
     in the project's media plan. Pure projects return a single-element list;
     mixed projects return two elements (persuasion + conversion).
     Returns an empty list if the project has no media plan or no derivable flight.
+
+    ``evaluation_date`` is REQUIRED as of ADAC-51 commit 2. It was previously
+    optional (defaulting to ``date.today()``), but the default made it easy for
+    callers to silently drop the date and produce "today-shaped" results even
+    in retrospective contexts. Live daily callers must now pass ``date.today()``
+    explicitly; retrospective callers pass the replay date.
     """
-    eval_date = evaluation_date or date.today()
+    eval_date = evaluation_date
     results: list[DiagnosticOutput] = []
 
     # Step 1: Query the media plan and partition lines by campaign type.
@@ -161,12 +167,17 @@ def run_diagnostics_for_project(
     return results
 
 
-def run_all_diagnostics(evaluation_date: date | None = None) -> dict:
-    """Run diagnostics for all active projects.
+def run_all_diagnostics(evaluation_date: date) -> dict:
+    """Run diagnostics for all active projects as of ``evaluation_date``.
 
-    Called from daily_job.py. Returns a summary dict.
+    Called from daily_job.py (passes ``date.today()``) and from the Phase 0
+    validation batch in ADAC-51 commit 9 (passes each historical date in the
+    sweep window). ``evaluation_date`` is REQUIRED — see the docstring on
+    ``run_diagnostics_for_project`` for the rationale.
+
+    Returns a summary dict.
     """
-    eval_date = evaluation_date or date.today()
+    eval_date = evaluation_date
     projects = _get_active_projects()
     summary = {
         "projects_processed": 0,
@@ -253,6 +264,16 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
                    ) AS _rn
             FROM {bq.table('media_plan_lines')}
             WHERE project_code = @project_code
+              -- Guard against historical pre-2026-04-12 syncs that wrote
+              -- new line_ids without purging old plan_ids' rows. Without
+              -- this filter, the dedup CTE would let stale plan_ids
+              -- through and inflate budgets / line counts (e.g. 26009
+              -- showed 17 inflated lines instead of 3). See
+              -- scripts/cleanup_stale_plan_lines.sql for context.
+              AND plan_id IN (
+                  SELECT plan_id FROM {bq.table('media_plans')}
+                  WHERE project_code = @project_code AND is_current = TRUE
+              )
         ) WHERE _rn = 1
     """
     rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])

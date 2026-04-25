@@ -47,6 +47,12 @@ def _detect_project_objective(project_code: str) -> str:
                        ) AS _rn
                 FROM {bq.table('media_plan_lines')}
                 WHERE project_code = @pc AND objective IS NOT NULL
+                  -- Plan-id-aware dedup guard (see _query_media_plan in
+                  -- backend/services/diagnostics/engine.py for context).
+                  AND plan_id IN (
+                      SELECT plan_id FROM {bq.table('media_plans')}
+                      WHERE project_code = @pc AND is_current = TRUE
+                  )
             ) WHERE _rn = 1
         """
         mp_rows = bq.run_query(mp_sql, [bq.string_param("pc", project_code)])

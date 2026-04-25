@@ -129,7 +129,10 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
   landing_page STRING,
   pricing_model STRING,
   bid_rate NUMERIC,
-  budget NUMERIC NOT NULL,
+  -- Nullable: bundle children (bundle_role='suggested_child' / 'confirmed_child')
+  -- carry bundle_id but NULL budget so SUM(budget) GROUP BY bundle_id
+  -- returns the pool total on the parent row without double-counting.
+  budget NUMERIC,
   estimated_impressions INT64,
   frequency_cap STRING,
   geo_targeting STRING,
@@ -153,6 +156,43 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
 )
 OPTIONS(
   description='Individual line items from media plans. Maps to actual campaigns via line_code.'
+);
+
+
+-- Bundle override table (ADAC-54 follow-up: Confirm/Clear UX).
+-- Persists user decisions about whether a parser-suggested bundle is real, so
+-- the choice survives re-syncs (which regenerate line_ids and re-run the
+-- parser's bundle detection from scratch).
+--
+-- Keyed on (project_code, bundle_id). bundle_id is computed by
+-- _compute_bundle_id in services/media_plan_sync.py as
+-- "{project_code}-{platform_id}-{first_line_code_sans_hash}" — stable across
+-- syncs as long as the first member's line_code is unchanged. If the source
+-- spreadsheet changes such that the bundle's first member shifts, the override
+-- becomes orphaned and the parser's fresh suggestion takes effect.
+--
+-- Applied at the end of every sync_media_plan run (after lines are written)
+-- by overwriting media_plan_lines.bundle_role for matching parents/children.
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_bundle_overrides` (
+  project_code STRING NOT NULL,
+  bundle_id STRING NOT NULL,
+  -- Override TYPE — distinct from per-line bundle_role on media_plan_lines.
+  --   'confirmed_parent'  user accepted the parser's suggestion. Apply step
+  --                       promotes parents/children to 'confirmed_*'.
+  --   'rejected'          user rejected the suggestion. Apply step writes
+  --                       'rejected' to every member's bundle_role. Pacing
+  --                       treats rejected lines as not-parents and
+  --                       not-children: former parent becomes a standalone
+  --                       with the pool budget; children with NULL budgets
+  --                       fall through the budget<=0 skip and disappear.
+  --   NOT PRESENT         override cleared — parser's suggestion stands.
+  bundle_role STRING NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  updated_by STRING                              -- PB email from IAP header
+)
+CLUSTER BY project_code
+OPTIONS(
+  description='User-confirmed bundle state. Overrides what the parser detects on each media plan sync. Keyed on (project_code, bundle_id). ADAC-54 follow-up Confirm/Clear UX.'
 );
 
 
@@ -663,7 +703,13 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_diagnostic_signals` (
   platforms JSON,                              -- ["facebook", "stackadapt"]
   line_ids JSON,                               -- media plan line IDs included
   computed_at TIMESTAMP NOT NULL,
-  spec_version STRING NOT NULL                 -- "1.1"
+  spec_version STRING NOT NULL,                -- "1.1" — scoring-spec tag (human)
+  -- Orthogonal code-SHA tag: every row written knows which engine build
+  -- produced it. Enables Retrospective Mode (ADAC-51) to differentiate cached
+  -- outputs across deploys. Live BQ treats this as NULLABLE because it was
+  -- added via ALTER TABLE; greenfield deployments enforce NOT NULL.
+  -- Historical rows prior to ADAC-51 ship were backfilled with 'Pre-ADA'.
+  engine_version STRING NOT NULL
 )
 PARTITION BY evaluation_date
 CLUSTER BY project_code, campaign_type

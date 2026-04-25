@@ -20,8 +20,25 @@ def _float(v, default=0.0) -> float:
 
 
 @router.get("/{project_code}", response_model=PacingResponse)
-async def get_pacing(project_code: str):
-    """Return the latest pacing snapshot from budget_tracking for a project."""
+async def get_pacing(
+    project_code: str,
+    as_of_date: date | None = Query(
+        None,
+        description=(
+            "Pin the response to a specific historical date instead of the "
+            "latest budget_tracking row. Used by the Retrospective Mode "
+            "frontend (ADAC-51 commit 7) to render the pacing snapshot for "
+            "a past date. Defaults to the most recent row when omitted, "
+            "matching the live page's contract."
+        ),
+    ),
+):
+    """Return the pacing snapshot from budget_tracking for a project.
+
+    By default returns the most recent row. When ``as_of_date`` is supplied,
+    returns the row for that specific date (or empty if no daily-pipeline run
+    landed for that date). Used by Retrospective Mode for historical replay.
+    """
 
     project_sql = f"""
         SELECT project_code, net_budget
@@ -33,6 +50,20 @@ async def get_pacing(project_code: str):
         raise HTTPException(404, f"Project {project_code} not found")
 
     net_budget = _float(projects[0].get("net_budget"))
+
+    # Retrospective Mode (ADAC-51): when as_of_date is supplied, pin the date
+    # filter to that specific row. Otherwise fall back to the latest row, which
+    # is the live page's contract.
+    if as_of_date is not None:
+        date_filter = "AND bt.date = @as_of_date"
+        date_params = [bq.date_param("as_of_date", as_of_date)]
+    else:
+        date_filter = (
+            "AND bt.date = ("
+            f"SELECT MAX(date) FROM {bq.table('budget_tracking')} "
+            "WHERE project_code = @project_code)"
+        )
+        date_params = []
 
     tracking_sql = f"""
         WITH mpl_dedup AS (
@@ -48,6 +79,12 @@ async def get_pacing(project_code: str):
                     ) AS _rn
                 FROM {bq.table('media_plan_lines')}
                 WHERE project_code = @project_code
+                  -- Plan-id-aware dedup guard: only consider lines from the
+                  -- current media plan (skips historical pre-purge residue).
+                  AND plan_id IN (
+                      SELECT plan_id FROM {bq.table('media_plans')}
+                      WHERE project_code = @project_code AND is_current = TRUE
+                  )
             ) WHERE _rn = 1
         )
         SELECT
@@ -74,13 +111,13 @@ async def get_pacing(project_code: str):
         FROM {bq.table('budget_tracking')} bt
         LEFT JOIN mpl_dedup mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
-            AND bt.date = (
-                SELECT MAX(date) FROM {bq.table('budget_tracking')}
-                WHERE project_code = @project_code
-            )
+            {date_filter}
         ORDER BY bt.platform_id, bt.bundle_id, bt.line_code
     """
-    rows = bq.run_query(tracking_sql, [bq.string_param("project_code", project_code)])
+    rows = bq.run_query(
+        tracking_sql,
+        [bq.string_param("project_code", project_code), *date_params],
+    )
 
     if not rows:
         return PacingResponse(
@@ -99,23 +136,37 @@ async def get_pacing(project_code: str):
     bundle_ids = list({r.get("bundle_id") for r in rows if r.get("bundle_id")})
     bundle_members_by_id: dict[str, list[BundleMember]] = {}
     if bundle_ids:
+        # Filter to "child-like" rows. For suggested/confirmed bundles the
+        # role itself is the discriminator. For rejected bundles every member
+        # carries bundle_role='rejected' (no parent/child split), so we use
+        # the budget convention — children have NULL budget by design — to
+        # exclude the former parent. This is what lets the frontend render
+        # the rejected-state badge + Clear button on the parent's row.
         members_sql = f"""
             WITH mpl_dedup AS (
                 SELECT * EXCEPT(_rn) FROM (
                     SELECT
-                        line_id, line_code, audience_name, bundle_id, bundle_role,
+                        line_id, line_code, audience_name, bundle_id, bundle_role, budget,
                         ROW_NUMBER() OVER (
                             PARTITION BY line_id
                             ORDER BY sync_version DESC
                         ) AS _rn
                     FROM {bq.table('media_plan_lines')}
                     WHERE project_code = @project_code
+                      -- Plan-id-aware dedup guard (see _query_media_plan).
+                      AND plan_id IN (
+                          SELECT plan_id FROM {bq.table('media_plans')}
+                          WHERE project_code = @project_code AND is_current = TRUE
+                      )
                 ) WHERE _rn = 1
             )
             SELECT bundle_id, line_id, line_code, audience_name
             FROM mpl_dedup
             WHERE bundle_id IN UNNEST(@bundle_ids)
-              AND bundle_role IN ('suggested_child', 'confirmed_child')
+              AND (
+                bundle_role IN ('suggested_child', 'confirmed_child')
+                OR (bundle_role = 'rejected' AND budget IS NULL)
+              )
             ORDER BY bundle_id, line_id
         """
         member_rows = bq.run_query(
@@ -182,8 +233,22 @@ async def get_pacing(project_code: str):
 async def get_pacing_history(
     project_code: str,
     days: int = Query(60, ge=7, le=365),
+    as_of_date: date | None = Query(
+        None,
+        description=(
+            "Anchor the history window at this date instead of today. "
+            "Required by Retrospective Mode (ADAC-51) so a past-snapshot view "
+            "can show the trailing N days ending at the replay date rather "
+            "than today. Defaults to today when omitted."
+        ),
+    ),
 ):
-    """Return daily pacing snapshots from budget_tracking for historical trend."""
+    """Return daily pacing snapshots from budget_tracking for historical trend.
+
+    Window is ``[as_of_date - days, as_of_date]``. In live mode ``as_of_date``
+    defaults to today; in retrospective mode it's the replay date.
+    """
+    anchor = as_of_date or date.today()
     project_sql = f"""
         SELECT project_code
         FROM {bq.table('dim_projects')}
@@ -197,12 +262,14 @@ async def get_pacing_history(
         SELECT date, line_id, pacing_percentage
         FROM {bq.table('budget_tracking')}
         WHERE project_code = @project_code
-            AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
+            AND date >= DATE_SUB(@anchor, INTERVAL @days DAY)
+            AND date <= @anchor
         ORDER BY date ASC, line_id
     """
     rows = bq.run_query(sql, [
         bq.string_param("project_code", project_code),
         bq.scalar_param("days", "INT64", days),
+        bq.date_param("anchor", anchor),
     ])
     return PacingHistoryResponse(
         project_code=project_code,
@@ -219,13 +286,17 @@ async def get_pacing_history(
 
 @router.post("/run")
 async def run_pacing():
-    """Trigger pacing calculation for all active projects with media plans."""
-    result = run_all_active()
+    """Trigger pacing calculation for all active projects with media plans.
+
+    Always runs 'as of today'. For a historical replay, use the snapshot
+    endpoint shipped in ADAC-51 commit 5.
+    """
+    result = run_all_active(date.today())
     return result
 
 
 @router.post("/{project_code}/run")
 async def run_pacing_single(project_code: str):
-    """Trigger pacing calculation for a single project."""
-    result = run_pacing_for_project(project_code)
+    """Trigger pacing calculation for a single project as of today."""
+    result = run_pacing_for_project(project_code, date.today())
     return result

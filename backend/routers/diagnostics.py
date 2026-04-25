@@ -125,8 +125,22 @@ async def get_diagnostic_history(
     project_code: str,
     days: int = Query(30, ge=1, le=365),
     campaign_type: str | None = Query(None),
+    as_of_date: date | None = Query(
+        None,
+        description=(
+            "Anchor the history window at this date instead of today. "
+            "Required by Retrospective Mode (ADAC-51) so a past-snapshot view "
+            "can show the trailing N days ending at the replay date rather "
+            "than today. Defaults to today when omitted."
+        ),
+    ),
 ):
-    """Return health + pillar score history for sparklines."""
+    """Return health + pillar score history for sparklines.
+
+    Window is ``[as_of_date - days, as_of_date]``. In live mode the anchor
+    defaults to today; in retrospective mode it's the replay date.
+    """
+    anchor = as_of_date or date.today()
     sql = f"""
         SELECT
             evaluation_date,
@@ -136,11 +150,13 @@ async def get_diagnostic_history(
             pillars
         FROM {bq.table('fact_diagnostic_signals')}
         WHERE project_code = @project_code
-          AND evaluation_date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
+          AND evaluation_date >= DATE_SUB(@anchor, INTERVAL @days DAY)
+          AND evaluation_date <= @anchor
     """
     params = [
         bq.string_param("project_code", project_code),
         bq.scalar_param("days", "INT64", days),
+        bq.date_param("anchor", anchor),
     ]
     if campaign_type:
         sql += "\n  AND campaign_type = @campaign_type"
@@ -167,9 +183,15 @@ async def get_diagnostic_history(
 
 @router.post("/{project_code}/run")
 async def run_diagnostics(project_code: str):
-    """Manually trigger diagnostic computation for a project."""
+    """Manually trigger diagnostic computation for a project as of today.
+
+    For a date-specific replay, use the retrospective endpoint shipped in
+    ADAC-51 commit 5 (``GET /api/diagnostics/as-of/{as_of_date}/project/{code}``).
+    """
     try:
-        outputs = run_diagnostics_for_project(project_code)
+        # ``evaluation_date`` became required in ADAC-51 commit 2. The manual-run
+        # semantic is "score right now", so pass ``date.today()`` explicitly.
+        outputs = run_diagnostics_for_project(project_code, date.today())
     except Exception as e:
         logger.error("Diagnostic run failed for %s: %s", project_code, e, exc_info=True)
         raise HTTPException(500, f"Diagnostic run failed: {e}")

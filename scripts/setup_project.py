@@ -15,7 +15,7 @@ import argparse
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from google.cloud import bigquery
 
@@ -117,7 +117,9 @@ def setup_project(
         logger.info("=== Step 4: Run pacing for %s ===", code)
         try:
             from backend.services.pacing import run_pacing_for_project
-            p_result = run_pacing_for_project(code)
+            # ``as_of_date`` became required in ADAC-51 commit 3. Setup
+            # semantic is 'pace as of now'.
+            p_result = run_pacing_for_project(code, date.today())
             results["steps"]["pacing"] = {
                 "status": "success",
                 "lines_processed": p_result.get("lines_processed", 0),

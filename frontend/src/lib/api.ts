@@ -549,15 +549,40 @@ export interface DiagnosticRunResponse {
   }>;
 }
 
+/* ── Retrospective Mode (ADAC-51) ── */
+
+export interface RetrospectivePacingSummary {
+  project_code: string;
+  lines_processed: number;
+  alerts: number;
+}
+
+export interface RetrospectiveResponse {
+  project_code: string;
+  as_of_date: string; // YYYY-MM-DD
+  engine_version: string;
+  cached: boolean;
+  diagnostics: DiagnosticOutput[];
+  pacing: RetrospectivePacingSummary;
+}
+
 export const api = {
   projects: {
     list: () => apiFetch<Project[]>("/api/projects/"),
     get: (code: string) => apiFetch<Project>(`/api/projects/${code}`),
   },
   pacing: {
-    get: (code: string) => apiFetch<PacingResponse>(`/api/pacing/${code}`),
-    history: (code: string, days = 60) =>
-      apiFetch<PacingHistoryResponse>(`/api/pacing/${code}/history?days=${days}`),
+    get: (code: string, asOfDate?: string) =>
+      apiFetch<PacingResponse>(
+        `/api/pacing/${code}${asOfDate ? `?as_of_date=${asOfDate}` : ""}`
+      ),
+    history: (code: string, days = 60, asOfDate?: string) => {
+      const qs = new URLSearchParams({ days: String(days) });
+      if (asOfDate) qs.set("as_of_date", asOfDate);
+      return apiFetch<PacingHistoryResponse>(
+        `/api/pacing/${code}/history?${qs}`
+      );
+    },
     run: (code: string) =>
       apiFetch(`/api/pacing/${code}/run`, { method: "POST" }),
   },
@@ -599,9 +624,10 @@ export const api = {
       apiFetch<DiagnosticOutput[]>(
         `/api/diagnostics/${code}${date ? `?date=${date}` : ""}`
       ),
-    history: (code: string, days = 30, campaignType?: string) => {
+    history: (code: string, days = 30, campaignType?: string, asOfDate?: string) => {
       const qs = new URLSearchParams({ days: String(days) });
       if (campaignType) qs.set("campaign_type", campaignType);
+      if (asOfDate) qs.set("as_of_date", asOfDate);
       return apiFetch<DiagnosticHistoryPoint[]>(
         `/api/diagnostics/${code}/history?${qs}`
       );
@@ -610,6 +636,17 @@ export const api = {
       apiFetch<DiagnosticRunResponse>(`/api/diagnostics/${code}/run`, {
         method: "POST",
       }),
+  },
+  retrospective: {
+    /**
+     * Replay diagnostics + pacing for a past date.
+     * `asOfDate` must be ISO YYYY-MM-DD (the format Next.js extracts from
+     * the URL path segment on the matching frontend route).
+     */
+    get: (code: string, asOfDate: string) =>
+      apiFetch<RetrospectiveResponse>(
+        `/api/diagnostics/as-of/${asOfDate}/project/${code}`
+      ),
   },
   ffs: {
     list: (code: string) => apiFetch<FFSEntry[]>(`/api/ffs/${code}`),
@@ -642,6 +679,38 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ clear: true }),
       }),
+  },
+  bundles: {
+    /**
+     * Lock in a parser-suggested bundle as user-confirmed (ADAC-54 follow-up).
+     * Survives subsequent media plan re-syncs via media_plan_bundle_overrides.
+     */
+    confirm: (projectCode: string, bundleId: string) =>
+      apiFetch<{ status: string; project_code: string; bundle_id: string; members_updated: number }>(
+        `/api/admin/bundles/${encodeURIComponent(bundleId)}/confirm?project_code=${projectCode}`,
+        { method: "POST" }
+      ),
+    /**
+     * Clear any saved override for this bundle, reverting live lines to the
+     * parser's "suggested" state. Next sync re-decides from the spreadsheet.
+     */
+    clearOverride: (projectCode: string, bundleId: string) =>
+      apiFetch<{ status: string; project_code: string; bundle_id: string }>(
+        `/api/admin/bundles/${encodeURIComponent(bundleId)}/override?project_code=${projectCode}`,
+        { method: "DELETE" }
+      ),
+    /**
+     * Mark a parser-suggested bundle as user-rejected. The former parent
+     * shows up as a standalone with the pool budget, while children whose
+     * budgets were zeroed by the parser fall through pacing's budget<=0
+     * skip and disappear from the dashboard. Re-syncs preserve the
+     * rejection via media_plan_bundle_overrides.
+     */
+    reject: (projectCode: string, bundleId: string) =>
+      apiFetch<{ status: string; project_code: string; bundle_id: string; members_updated: number }>(
+        `/api/admin/bundles/${encodeURIComponent(bundleId)}/reject?project_code=${projectCode}`,
+        { method: "POST" }
+      ),
   },
   ga4: {
     properties: () => apiFetch<GA4Property[]>("/api/ga4/properties"),

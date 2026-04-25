@@ -496,6 +496,11 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         # / rejected once a user acts in the UI — PR 5).
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_id STRING",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS bundle_role STRING",
+        # Bundle children carry bundle_id but budget IS NULL — the parent row
+        # holds the pool total. Make budget nullable so BQ's NOT NULL constraint
+        # doesn't reject child inserts. (The original schema.sql had
+        # `budget NUMERIC NOT NULL`.)
+        f"ALTER TABLE {prefix}.media_plan_lines` ALTER COLUMN budget DROP NOT NULL",
         # Bug 3 (ADAC-18): audience_name overrides table
         f"""CREATE TABLE IF NOT EXISTS {prefix}.media_plan_line_overrides` (
             project_code STRING,
@@ -737,15 +742,49 @@ def _parse_media_plan_tab(
     if ref_year is None:
         ref_year = date.today().year
 
-    # Find header row by looking for "Site/Network" or "Goal"
+    # Find the header row by word-level presence. Search EVERY row
+    # (from row 0 through the end of the tab):
+    #   - Most plans have Client / Project / Run-Dates metadata at rows
+    #     0–3 and the header starting at row 4+, but some don't.
+    #     Squamish's "Combined Plan for Frazer" puts the header at row 0
+    #     with no preamble — starting the search at row 4 skipped past it.
+    #   - Some plans have long preamble (summary blocks, Blocking Chart
+    #     refs) that pushes the header past row 14 — can't cap the
+    #     search at row 14 either.
+    # We check for word-level presence rather than a fixed substring
+    # because headers often have whitespace or newlines around
+    # separators (e.g. "Site / Network", "Campaign Type/\nObjective"),
+    # which break a naive substring match like `"site/network" in row_text`.
     header_row_idx = None
-    for r in range(4, min(15, len(all_data))):
+    for r in range(len(all_data)):
         row_text = " ".join(c.strip().lower() for c in all_data[r])
-        if "site/network" in row_text or ("goal" in row_text and "start" in row_text):
+        has_site_network = "site" in row_text and "network" in row_text
+        has_goal_start = "goal" in row_text and "start" in row_text
+        has_start_end = "start date" in row_text and "end date" in row_text
+        if has_site_network or has_goal_start or has_start_end:
             header_row_idx = r
+            logger.info(
+                "  Media Plan tab header row located at row %d: %r",
+                r,
+                [c[:40] for c in all_data[r] if c.strip()],
+            )
             break
     if header_row_idx is None:
-        logger.warning("Could not find header row in Media Plan tab")
+        # Diagnostic dump: print the first 30 rows with non-empty content so
+        # we can see what the parser is actually looking at when it can't
+        # find a header. Each row truncated to 200 chars to keep logs sane.
+        sample = []
+        for i, row in enumerate(all_data[:30]):
+            non_empty = [c for c in row if c.strip()]
+            if non_empty:
+                joined = " | ".join(non_empty)
+                sample.append(f"row {i}: {joined[:200]!r}")
+        logger.warning(
+            "Could not find header row in Media Plan tab. "
+            "len(all_data)=%d; first non-empty rows:\n%s",
+            len(all_data),
+            "\n".join(sample) if sample else "(all rows empty)",
+        )
         return []
 
     headers = all_data[header_row_idx]
@@ -1170,6 +1209,10 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         _skip_words = {"example", "template", "sample"}
 
         try:
+            # Normalise the tab_name override for title-match comparison.
+            _requested_tab_lower = (
+                tab_name.strip().lower() if tab_name else None
+            )
             for ws in ss.worksheets():
                 title_lower = ws.title.lower()
                 # Skip example/template tabs
@@ -1179,6 +1222,18 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
                 if "blocking" in title_lower and "chart" in title_lower:
                     blocking_ws = ws
                 elif "media plan" in title_lower or title_lower == "media plan":
+                    media_plan_tabs.append(ws)
+                # Fix: when the caller (or dim_projects.media_plan_tab_name)
+                # specifies a canonical tab that doesn't contain "media plan"
+                # in its title (e.g. Squamish's "Combined Plan for Frazer"),
+                # still include it. Without this, the processing loop's
+                # tab_name filter silently drops every discovered tab and
+                # zero mp_lines get parsed.
+                elif _requested_tab_lower and title_lower.strip() == _requested_tab_lower:
+                    logger.info(
+                        "  Including tab by explicit tab_name override: %r",
+                        ws.title,
+                    )
                     media_plan_tabs.append(ws)
         except gspread.exceptions.APIError as e:
             logger.error("Sheets API error listing tabs: %s", e)
@@ -1308,8 +1363,72 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
     line_records = []
     week_records = []
 
+    # ── Bundle-rollup detection (pre-loop) ──────────────────────────
+    # When a single Blocking Chart row represents a budget pool that the
+    # media plan splits into 2+ sub-bundles (e.g. Squamish Flight 2 Meta:
+    # one $7,729.90 bc row vs three mp sub-bundles of $2,238 / $3,104 /
+    # $2,388), the bc row should be *absorbed* by the sub-bundles — we
+    # emit the sub-bundles directly instead of a single bc-rooted line.
+    # Otherwise we'd either (a) double-count budget when both emit, or
+    # (b) pair the bc row to an unrelated mp_line via weak line_code
+    # heuristic (the bug this replaces).
+    mp_by_bundle_group: dict[int, list[dict]] = {}
+    for _mp in mp_lines:
+        _bg = _mp.get("bundle_group")
+        if _bg is not None:
+            mp_by_bundle_group.setdefault(_bg, []).append(_mp)
+
+    absorbed_bc_indices: set[int] = set()
+    bundle_groups_absorbed_by: dict[int, list[int]] = {}  # bc_idx -> [bundle_groups]
+
+    for _bc_idx, _bc_line in enumerate(bc["lines"]):
+        _bc_plat = _bc_line.get("platform_id")
+        _bc_budget = _bc_line.get("budget") or 0
+        _bc_fs = _bc_line.get("flight_start") or meta.get("start_date")
+        _bc_fe = _bc_line.get("flight_end") or meta.get("end_date")
+        if not _bc_budget or not _bc_plat:
+            continue
+        # Find mp_bundles on same platform whose parent budget > 0
+        # and whose flight window fits within this bc window (if both
+        # sides have dates).
+        _candidates: list[tuple[int, float]] = []  # (bundle_group, parent_budget)
+        for _bg, _members in mp_by_bundle_group.items():
+            _parent = _members[0]
+            if _parent.get("platform_id") != _bc_plat:
+                continue
+            _parent_budget = _parent.get("budget") or 0
+            if _parent_budget <= 0:
+                continue
+            _mp_fs = _parent.get("flight_start")
+            _mp_fe = _parent.get("flight_end")
+            if _bc_fs and _mp_fs and _bc_fe and _mp_fe:
+                if not (_mp_fs >= _bc_fs and _mp_fe <= _bc_fe):
+                    continue
+            _candidates.append((_bg, _parent_budget))
+        if len(_candidates) < 2:
+            continue  # need ≥ 2 sub-bundles to justify absorption
+        _sum_bundles = sum(b for _, b in _candidates)
+        _diff = abs(_sum_bundles - _bc_budget) / _bc_budget
+        if _diff < 0.02:
+            absorbed_bc_indices.add(_bc_idx)
+            bundle_groups_absorbed_by[_bc_idx] = [bg for bg, _ in _candidates]
+            logger.info(
+                "  bc_line %d ($%.2f, %s) absorbed by %d mp sub-bundles "
+                "summing to $%.2f (diff %.2f%%)",
+                _bc_idx, _bc_budget, _bc_plat, len(_candidates),
+                _sum_bundles, _diff * 100,
+            )
+
+    absorbed_bundle_groups: set[int] = set()
+    for _groups in bundle_groups_absorbed_by.values():
+        absorbed_bundle_groups.update(_groups)
+
+    # ── bc_line loop ────────────────────────────────────────────────
     for i, bc_line in enumerate(bc["lines"]):
         line_id = f"{plan_id}-line-{i:03d}"
+        if i in absorbed_bc_indices:
+            # Skip: mp sub-bundles will emit in the synthesis pass below.
+            continue
         mp_detail = mp_matches.get(i)  # pre-computed global match
         records_for_bc = _build_line_records_for_bc_line(
             bc_line=bc_line,
@@ -1352,6 +1471,76 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
                 })
                 week_cursor += timedelta(days=7)
 
+    # ── Synthesize bundles for mp-bundles not consumed by any bc_line ─
+    # Two reasons a mp_bundle might not have been consumed:
+    #   1. It was absorbed by a rollup bc_line (bundle_groups_absorbed_by
+    #      above) — we EXPLICITLY want to emit these, since the bc_line
+    #      was skipped.
+    #   2. The matcher rejected all its mp_lines (e.g. no bc_line had a
+    #      close-enough budget to match the bundle parent). Still emit
+    #      so the data isn't silently dropped.
+    # Either way: if the bundle's parent mp_line wasn't used as a match
+    # on any bc_line, emit the bundle standalone.
+    matched_mp_identities: set[int] = set()
+    for _mp_detail in mp_matches.values():
+        if _mp_detail:
+            matched_mp_identities.add(id(_mp_detail))
+
+    synth_idx = 0
+    for bg, members in mp_by_bundle_group.items():
+        if len(members) < 2:
+            continue  # singleton — not a real bundle
+        # Check if any member was consumed by a match
+        if any(id(m) in matched_mp_identities for m in members):
+            continue
+        parent_mp = members[0]
+        synth_idx += 1
+        synth_line_id = f"{plan_id}-synth-bundle-{synth_idx:03d}"
+
+        # Build a synthetic bc_line from the parent mp_line so we can
+        # reuse _build_line_records_for_bc_line.
+        synth_bc = {
+            "platform": parent_mp.get("platform"),
+            "platform_id": parent_mp.get("platform_id"),
+            "budget": parent_mp.get("budget"),
+            "objective_format": parent_mp.get("goal"),
+            "flight_start": parent_mp.get("flight_start"),
+            "flight_end": parent_mp.get("flight_end"),
+            "audience_name": None,  # force enrichment from mp_detail
+        }
+        synth_records = _build_line_records_for_bc_line(
+            bc_line=synth_bc,
+            mp_detail=parent_mp,
+            all_mp_lines=mp_lines,
+            plan_id=plan_id,
+            line_id=synth_line_id,
+            project_code=project_code,
+            meta=meta,
+        )
+        line_records.extend(synth_records)
+        logger.info(
+            "  Synthesized bundle from unmatched mp_bundle_group %s "
+            "(platform=%s, parent line_code=%r, %d members)",
+            bg, parent_mp.get("platform_id"),
+            parent_mp.get("line_code"), len(members),
+        )
+
+        # Weeks for synthesized bundle parent — generate from flight dates.
+        fs = parent_mp.get("flight_start") or meta.get("start_date")
+        fe = parent_mp.get("flight_end") or meta.get("end_date")
+        if fs and fe:
+            week_cursor = fs - timedelta(days=fs.weekday())
+            while week_cursor <= fe:
+                is_active = fs <= week_cursor + timedelta(days=6) and week_cursor <= fe
+                week_records.append({
+                    "id": f"{synth_line_id}-w-{week_cursor.isoformat()}",
+                    "line_id": synth_line_id,
+                    "project_code": project_code,
+                    "week_start": week_cursor.isoformat(),
+                    "is_active": is_active,
+                })
+                week_cursor += timedelta(days=7)
+
     # ── Write to BigQuery ───────────────────────────────────────────
     mtl = _mtl_client()
     try:
@@ -1373,6 +1562,11 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
         # Apply any saved audience_name overrides so manual edits survive re-sync
         _apply_audience_overrides(mtl, project_code)
+
+        # Apply user-confirmed bundle states so Confirm survives re-sync.
+        # ADAC-54 follow-up: parser's bundle suggestions get overwritten with
+        # the user's locked-in choice on each sync.
+        _apply_bundle_overrides(mtl, project_code)
 
         # Re-apply FFS wizard state for lines that survived the sync
         _restore_ffs_state(mtl, project_code, ffs_snapshot)
@@ -1447,8 +1641,20 @@ def _match_all_mp_lines(
             if mp_line.get("audience_name") and (has_budget_match or mp_line.get("line_code")):
                 score += 5
 
-            # Require at least a budget match or a line_code to consider pairing
-            if score > 0 and (has_budget_match or mp_line.get("line_code")):
+            # Require at least a budget match or a line_code to consider pairing.
+            # EXCEPT: if the mp_line is part of a bundle (bundle_group is not
+            # None), require a true budget match. Pairing a bundled mp_line by
+            # line_code alone lets a bc_line absorb a mp_bundle that doesn't
+            # actually share its budget — e.g. Squamish Flight 2 Meta's
+            # $7,729.90 bc row vs Flight 1 Meta's #02 ($NULL child of a
+            # different bundle pool). That case is better handled later by
+            # rollup absorption + mp-bundle synthesis; the matcher should
+            # stay out of the way.
+            is_bundled_mp = mp_line.get("bundle_group") is not None
+            if score > 0 and (
+                has_budget_match
+                or (mp_line.get("line_code") and not is_bundled_mp)
+            ):
                 scored_pairs.append((score, bc_idx, mp_idx))
 
     # Greedy assignment by descending score
@@ -1555,6 +1761,99 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
         pass  # Table doesn't exist yet
     except Exception as e:
         logger.warning("  Could not cleanup stale overrides: %s", e)
+
+
+def _apply_bundle_overrides(mtl: bigquery.Client, project_code: str) -> None:
+    """Re-apply saved bundle confirmations and rejections after a fresh sync.
+
+    The parser detects bundles from merged Budget cells and emits them as
+    ``suggested_parent`` / ``suggested_child``. Once a user clicks Confirm or
+    Reject in the UI, an override row is written to
+    ``media_plan_bundle_overrides`` keyed on (project_code, bundle_id). On
+    every subsequent sync we overwrite the parser's suggestions with the
+    user's decision so the bundle state stays locked in.
+
+    Override types stored in ``media_plan_bundle_overrides.bundle_role``:
+
+    - ``'confirmed_parent'`` — user confirmed the suggestion is real. Parent
+      and child roles get promoted from ``'suggested_*'`` to
+      ``'confirmed_*'``.
+    - ``'rejected'``         — user rejected the suggestion. Every member's
+      role becomes ``'rejected'`` regardless of budget. The pacing service
+      treats rejected lines as not-parents and not-children: the former
+      parent shows up as a standalone with the pool budget, while children
+      whose budgets were zeroed by the parser fall through pacing's
+      ``budget<=0`` skip and disappear from the dashboard. Documented in
+      the Reject button tooltip on the frontend.
+
+    bundle_id stability is good enough for this: it's
+    ``{project_code}-{platform_id}-{first_line_code_sans_hash}`` and only
+    changes if the first member's line_code changes. If the source plan
+    drifts that far, the override becomes orphaned and the cleanup step
+    below removes it on the next sync — at which point the user re-confirms
+    or re-rejects the new shape.
+
+    Mirrors ``_apply_audience_overrides`` in structure: apply, then clean
+    up rows whose bundle_id no longer exists in media_plan_lines.
+    """
+    prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+
+    # Apply: any line whose bundle_id matches an override gets its
+    # bundle_role rewritten based on the override TYPE. A 'rejected' override
+    # collapses every member to 'rejected' (no parent/child distinction).
+    # A 'confirmed_parent' override promotes parents and children separately
+    # using the budget-IS-NULL split (parents hold the pool total, children
+    # have NULL budgets by design — see schema.sql comment on bundle_id).
+    sql_apply = f"""
+        UPDATE {prefix}.media_plan_lines` l
+        SET l.bundle_role = CASE
+              WHEN o.bundle_role = 'rejected' THEN 'rejected'
+              WHEN l.budget IS NULL THEN 'confirmed_child'
+              ELSE 'confirmed_parent'
+            END
+        FROM {prefix}.media_plan_bundle_overrides` o
+        WHERE l.project_code = o.project_code
+          AND l.bundle_id   = o.bundle_id
+          AND l.project_code = @pc
+          AND o.bundle_role IN ('confirmed_parent', 'rejected')
+    """
+
+    # Clean up overrides whose bundle no longer exists. Same pattern as
+    # _apply_audience_overrides — keeps the table from accumulating dead
+    # rows when plans drift.
+    sql_cleanup = f"""
+        DELETE FROM {prefix}.media_plan_bundle_overrides` o
+        WHERE o.project_code = @pc
+          AND NOT EXISTS (
+              SELECT 1 FROM {prefix}.media_plan_lines` l
+              WHERE l.project_code = o.project_code
+                AND l.bundle_id    = o.bundle_id
+          )
+    """
+
+    param_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+    ])
+
+    try:
+        result = mtl.query(sql_apply, job_config=param_config).result()
+        affected = result.num_dml_affected_rows or 0
+        if affected:
+            logger.info("    Applied %d bundle overrides for %s", affected, project_code)
+    except google.cloud.exceptions.NotFound:
+        logger.debug("  Bundle overrides table not found yet (first run)")
+    except Exception as e:
+        logger.warning("  Could not apply bundle overrides: %s", e)
+
+    try:
+        result = mtl.query(sql_cleanup, job_config=param_config).result()
+        cleaned = result.num_dml_affected_rows or 0
+        if cleaned:
+            logger.info("    Cleaned up %d stale bundle overrides for %s", cleaned, project_code)
+    except google.cloud.exceptions.NotFound:
+        pass
+    except Exception as e:
+        logger.warning("  Could not cleanup stale bundle overrides: %s", e)
 
 
 def _snapshot_ffs_state(mtl: bigquery.Client, project_code: str) -> list[dict]:
