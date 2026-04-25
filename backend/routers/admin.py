@@ -580,6 +580,85 @@ async def clear_bundle_override(
     }
 
 
+@router.post("/bundles/{bundle_id}/reject")
+async def reject_bundle(
+    bundle_id: str,
+    request: Request,
+    project_code: str = Query(..., description="The project owning this bundle"),
+):
+    """Mark a parser-suggested bundle as user-rejected (ADAC follow-up).
+
+    Writes (project_code, bundle_id, 'rejected') to the override table and
+    immediately sets every member's ``bundle_role`` to ``'rejected'`` so the
+    UI updates without waiting for a sync. Persists across re-syncs via
+    ``_apply_bundle_overrides`` in ``services/media_plan_sync.py``.
+
+    Behaviour the user gets (option 3 from the design doc): the former parent
+    line becomes a standalone with the full pool budget. The former children,
+    whose budgets were zeroed by the parser when the bundle was first
+    detected, fall through pacing's ``budget <= 0`` skip and disappear from
+    the dashboard. The Reject button tooltip on the frontend explains this
+    behaviour. If the user wants the children back as standalones with their
+    own budgets, they un-merge the source sheet's Budget cells and re-sync.
+    """
+    member_count = _verify_bundle_exists(project_code, bundle_id)
+    updated_by = _resolve_user_email(request)
+
+    # MERGE into the override table — single source of truth across syncs.
+    # The override row's bundle_role is the override TYPE ('confirmed_parent'
+    # or 'rejected'), not the per-line role written to media_plan_lines.
+    bq.run_query(
+        f"""
+        MERGE {bq.table('media_plan_bundle_overrides')} t
+        USING (
+            SELECT
+                @pc AS project_code,
+                @bid AS bundle_id,
+                'rejected' AS bundle_role,
+                CURRENT_TIMESTAMP() AS updated_at,
+                @updated_by AS updated_by
+        ) s
+        ON t.project_code = s.project_code AND t.bundle_id = s.bundle_id
+        WHEN MATCHED THEN UPDATE SET
+            bundle_role = s.bundle_role,
+            updated_at = s.updated_at,
+            updated_by = s.updated_by
+        WHEN NOT MATCHED THEN INSERT
+            (project_code, bundle_id, bundle_role, updated_at, updated_by)
+            VALUES (s.project_code, s.bundle_id, s.bundle_role, s.updated_at, s.updated_by)
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+            bq.string_param("updated_by", updated_by or ""),
+        ],
+    )
+
+    # Update live lines: every member gets bundle_role='rejected', regardless
+    # of whether it was previously a parent or child. The pacing service
+    # treats 'rejected' as not-parent / not-child — parents fall through to
+    # standalone pacing with the pool budget; children with NULL budgets get
+    # filtered out by the budget<=0 skip.
+    bq.run_query(
+        f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET bundle_role = 'rejected'
+        WHERE project_code = @pc AND bundle_id = @bid
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+        ],
+    )
+
+    return {
+        "status": "rejected",
+        "project_code": project_code,
+        "bundle_id": bundle_id,
+        "members_updated": member_count,
+    }
+
+
 @router.post("/creative-aliases")
 async def create_creative_alias(body: dict):
     """Create a manual creative variant alias for ad name grouping."""

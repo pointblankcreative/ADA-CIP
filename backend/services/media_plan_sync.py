@@ -1764,35 +1764,50 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
 
 
 def _apply_bundle_overrides(mtl: bigquery.Client, project_code: str) -> None:
-    """Re-apply saved bundle confirmations after a fresh sync.
+    """Re-apply saved bundle confirmations and rejections after a fresh sync.
 
     The parser detects bundles from merged Budget cells and emits them as
-    ``suggested_parent`` / ``suggested_child``. Once a user clicks Confirm in
-    the UI, an override row is written to ``media_plan_bundle_overrides``
-    keyed on (project_code, bundle_id). On every subsequent sync we
-    overwrite the parser's suggestions with the user's confirmation so the
-    bundle stays locked in.
+    ``suggested_parent`` / ``suggested_child``. Once a user clicks Confirm or
+    Reject in the UI, an override row is written to
+    ``media_plan_bundle_overrides`` keyed on (project_code, bundle_id). On
+    every subsequent sync we overwrite the parser's suggestions with the
+    user's decision so the bundle state stays locked in.
+
+    Override types stored in ``media_plan_bundle_overrides.bundle_role``:
+
+    - ``'confirmed_parent'`` — user confirmed the suggestion is real. Parent
+      and child roles get promoted from ``'suggested_*'`` to
+      ``'confirmed_*'``.
+    - ``'rejected'``         — user rejected the suggestion. Every member's
+      role becomes ``'rejected'`` regardless of budget. The pacing service
+      treats rejected lines as not-parents and not-children: the former
+      parent shows up as a standalone with the pool budget, while children
+      whose budgets were zeroed by the parser fall through pacing's
+      ``budget<=0`` skip and disappear from the dashboard. Documented in
+      the Reject button tooltip on the frontend.
 
     bundle_id stability is good enough for this: it's
     ``{project_code}-{platform_id}-{first_line_code_sans_hash}`` and only
     changes if the first member's line_code changes. If the source plan
     drifts that far, the override becomes orphaned and the cleanup step
     below removes it on the next sync — at which point the user re-confirms
-    the new shape.
+    or re-rejects the new shape.
 
     Mirrors ``_apply_audience_overrides`` in structure: apply, then clean
     up rows whose bundle_id no longer exists in media_plan_lines.
     """
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
 
-    # Apply: any line in a bundle that has a 'confirmed_parent' override gets
-    # promoted from 'suggested_*' to 'confirmed_*'. The CASE on budget
-    # distinguishes parents (budget IS NOT NULL — they hold the pool total)
-    # from children (budget IS NULL by design — see schema.sql comment on
-    # media_plan_lines.bundle_id).
+    # Apply: any line whose bundle_id matches an override gets its
+    # bundle_role rewritten based on the override TYPE. A 'rejected' override
+    # collapses every member to 'rejected' (no parent/child distinction).
+    # A 'confirmed_parent' override promotes parents and children separately
+    # using the budget-IS-NULL split (parents hold the pool total, children
+    # have NULL budgets by design — see schema.sql comment on bundle_id).
     sql_apply = f"""
         UPDATE {prefix}.media_plan_lines` l
         SET l.bundle_role = CASE
+              WHEN o.bundle_role = 'rejected' THEN 'rejected'
               WHEN l.budget IS NULL THEN 'confirmed_child'
               ELSE 'confirmed_parent'
             END
@@ -1800,7 +1815,7 @@ def _apply_bundle_overrides(mtl: bigquery.Client, project_code: str) -> None:
         WHERE l.project_code = o.project_code
           AND l.bundle_id   = o.bundle_id
           AND l.project_code = @pc
-          AND o.bundle_role = 'confirmed_parent'
+          AND o.bundle_role IN ('confirmed_parent', 'rejected')
     """
 
     # Clean up overrides whose bundle no longer exists. Same pattern as

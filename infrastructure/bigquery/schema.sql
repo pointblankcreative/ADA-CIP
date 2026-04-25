@@ -176,10 +176,16 @@ OPTIONS(
 CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_bundle_overrides` (
   project_code STRING NOT NULL,
   bundle_id STRING NOT NULL,
-  -- Always one of: 'confirmed_parent' (lock the suggestion) or NOT PRESENT
-  -- (clear the override, let the parser decide). Reject was deferred —
-  -- see Asana ticket; the natural workflow is to un-merge cells in the
-  -- source sheet and re-sync.
+  -- Override TYPE — distinct from per-line bundle_role on media_plan_lines.
+  --   'confirmed_parent'  user accepted the parser's suggestion. Apply step
+  --                       promotes parents/children to 'confirmed_*'.
+  --   'rejected'          user rejected the suggestion. Apply step writes
+  --                       'rejected' to every member's bundle_role. Pacing
+  --                       treats rejected lines as not-parents and
+  --                       not-children: former parent becomes a standalone
+  --                       with the pool budget; children with NULL budgets
+  --                       fall through the budget<=0 skip and disappear.
+  --   NOT PRESENT         override cleared — parser's suggestion stands.
   bundle_role STRING NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   updated_by STRING                              -- PB email from IAP header

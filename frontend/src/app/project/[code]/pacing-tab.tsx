@@ -52,6 +52,19 @@ function isBundleParent(line: PacingLine): boolean {
   );
 }
 
+/**
+ * Rejected lines surface in pacing data with bundle_role='rejected'. Pacing
+ * treats them as not-parents and not-children: the former parent shows up
+ * as a standalone (with the pool budget) and children with NULL budgets get
+ * dropped before this row is rendered. We still render the parent's row so
+ * the user can Clear the override to revert.
+ */
+function isRejectedBundleParent(line: PacingLine): boolean {
+  // A rejected member is a parent (still has the pool budget) iff its
+  // planned_budget is non-zero. Children get filtered out upstream.
+  return line.bundle_role === "rejected" && line.planned_budget > 0;
+}
+
 export function PacingTab({
   code,
   asOfDate,
@@ -87,21 +100,28 @@ export function PacingTab({
   };
 
   /**
-   * Update local pacing state after a bundle Confirm/Clear so the UI
-   * reflects the change without refetching. Mirrors the backend's parent
-   * vs child rule: parents have non-NULL planned_budget (pool total),
-   * children have planned_budget=0 (the API maps NULL to 0). Apply the
-   * matching confirmed or suggested role accordingly.
+   * Update local pacing state after a bundle Confirm / Reject / Clear so
+   * the UI reflects the change without refetching. Mirrors the backend's
+   * parent vs child rule: parents have non-NULL planned_budget (pool
+   * total), children have planned_budget=0 (the API maps NULL to 0).
+   *
+   * State machine:
+   *   - "confirmed" → confirmed_parent / confirmed_child
+   *   - "suggested" → suggested_parent / suggested_child   (Clear from any state)
+   *   - "rejected"  → every member becomes 'rejected'      (Reject)
    */
   const handleBundleStateChange = (
     bundleId: string,
-    newState: "confirmed" | "suggested"
+    newState: "confirmed" | "suggested" | "rejected"
   ) => {
     if (!data) return;
     setData({
       ...data,
       lines: data.lines.map((l: PacingLine) => {
         if (l.bundle_id !== bundleId) return l;
+        if (newState === "rejected") {
+          return { ...l, bundle_role: "rejected" as const };
+        }
         const isChild = l.planned_budget === 0;
         const newRole =
           newState === "confirmed"
@@ -214,11 +234,11 @@ function LineRow({
   /** Set in retrospective mode — disables interactive bundle buttons. */
   asOfDate?: string;
   onNameUpdate: (lineId: string, newName: string) => void;
-  /** Called after a successful bundle Confirm/Clear API call so the
+  /** Called after a successful bundle Confirm/Reject/Clear API call so the
    *  parent state updates without a re-fetch. */
   onBundleStateChange: (
     bundleId: string,
-    newState: "confirmed" | "suggested"
+    newState: "confirmed" | "suggested" | "rejected"
   ) => void;
 }) {
   const isCompleted = line.line_status === "completed";
@@ -234,8 +254,8 @@ function LineRow({
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Bundle Confirm / Clear (ADAC-54 follow-up). Disabled in retrospective
-  // mode — past snapshots are read-only.
+  // Bundle Confirm / Reject / Clear (ADAC-54 follow-up + Reject UX).
+  // Disabled in retrospective mode — past snapshots are read-only.
   const [bundleSaving, setBundleSaving] = useState(false);
   const [bundleError, setBundleError] = useState<string | null>(null);
 
@@ -246,6 +266,20 @@ function LineRow({
     try {
       await api.bundles.confirm(code, line.bundle_id);
       onBundleStateChange(line.bundle_id, "confirmed");
+    } catch (e) {
+      setBundleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBundleSaving(false);
+    }
+  };
+
+  const handleBundleReject = async () => {
+    if (!line.bundle_id) return;
+    setBundleSaving(true);
+    setBundleError(null);
+    try {
+      await api.bundles.reject(code, line.bundle_id);
+      onBundleStateChange(line.bundle_id, "rejected");
     } catch (e) {
       setBundleError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -282,6 +316,7 @@ function LineRow({
       ? `${formatShortDate(line.flight_start)} — ${formatShortDate(line.flight_end)}`
       : null;
   const bundleParent = isBundleParent(line);
+  const bundleRejected = isRejectedBundleParent(line);
   const bundleMemberCount = line.bundle_members?.length ?? 0;
   const [bundleExpanded, setBundleExpanded] = useState(false);
 
@@ -375,49 +410,68 @@ function LineRow({
                   {line.line_code}
                 </span>
               )}
-              {bundleParent && bundleMemberCount > 0 && (
+              {(bundleParent || bundleRejected) && bundleMemberCount > 0 && (
                 <>
                   <span
                     className={cn(
                       "rounded border px-1.5 py-0.5 text-[10px] font-medium",
-                      line.bundle_role === "suggested_parent"
-                        ? "border-dashed border-amber-500/40 bg-amber-500/10 text-amber-300"
-                        : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                      line.bundle_role === "suggested_parent" &&
+                        "border-dashed border-amber-500/40 bg-amber-500/10 text-amber-300",
+                      line.bundle_role === "confirmed_parent" &&
+                        "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+                      line.bundle_role === "rejected" &&
+                        "border-dashed border-slate-600 bg-slate-800/50 text-slate-400"
                     )}
                     title={
                       line.bundle_role === "suggested_parent"
-                        ? "Suggested bundle — the media plan's merged Budget cell grouped these lines. Confirm to lock in for this and future syncs."
-                        : "Confirmed bundle — locked in by user. Clear to revert to the parser's suggestion."
+                        ? "Suggested bundle — the media plan's merged Budget cell grouped these lines. Confirm to lock in for this and future syncs, or Reject to treat the parent as a standalone."
+                        : line.bundle_role === "confirmed_parent"
+                        ? "Confirmed bundle — locked in by user. Clear to revert to the parser's suggestion."
+                        : "Rejected bundle — treated as a standalone with the pool budget. Children are hidden from pacing because their budgets were zeroed by the parser. Clear to revert to the parser's suggestion."
                     }
                   >
-                    {line.bundle_role === "suggested_parent" ? "Suggested " : ""}
+                    {line.bundle_role === "suggested_parent" && "Suggested "}
+                    {line.bundle_role === "rejected" && "Rejected "}
                     Bundle · {bundleMemberCount + 1} lines
                   </span>
-                  {/* Confirm / Clear buttons (ADAC-54 follow-up).
+                  {/* Confirm / Reject / Clear buttons (ADAC-54 follow-up + Reject UX).
                       Suppressed in retrospective mode — past snapshots
                       are read-only. */}
                   {!asOfDate && line.bundle_role === "suggested_parent" && (
-                    <button
-                      type="button"
-                      onClick={handleBundleConfirm}
-                      disabled={bundleSaving}
-                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
-                      title="Lock this bundle in. Persists across re-syncs."
-                    >
-                      {bundleSaving ? "Confirming…" : "Confirm"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleBundleConfirm}
+                        disabled={bundleSaving}
+                        className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                        title="Lock this bundle in. Persists across re-syncs."
+                      >
+                        {bundleSaving ? "Confirming…" : "Confirm"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleBundleReject}
+                        disabled={bundleSaving}
+                        className="rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                        title="Treat the parent line as a standalone with the pool budget. Children are hidden from pacing because the parser zeroed their budgets when it detected the bundle. To restore children with their own budgets, un-merge the source sheet's Budget cells and re-sync."
+                      >
+                        {bundleSaving ? "Rejecting…" : "Reject"}
+                      </button>
+                    </>
                   )}
-                  {!asOfDate && line.bundle_role === "confirmed_parent" && (
-                    <button
-                      type="button"
-                      onClick={handleBundleClear}
-                      disabled={bundleSaving}
-                      className="rounded border border-slate-600 bg-slate-800/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-                      title="Revert to the parser's suggestion. Next sync re-decides from the spreadsheet."
-                    >
-                      {bundleSaving ? "Clearing…" : "Clear"}
-                    </button>
-                  )}
+                  {!asOfDate &&
+                    (line.bundle_role === "confirmed_parent" ||
+                      line.bundle_role === "rejected") && (
+                      <button
+                        type="button"
+                        onClick={handleBundleClear}
+                        disabled={bundleSaving}
+                        className="rounded border border-slate-600 bg-slate-800/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                        title="Revert to the parser's suggestion. Next sync re-decides from the spreadsheet."
+                      >
+                        {bundleSaving ? "Clearing…" : "Clear"}
+                      </button>
+                    )}
                   {bundleError && (
                     <span
                       className="text-[10px] text-red-400"
@@ -493,8 +547,10 @@ function LineRow({
       </div>
 
       {/* PR 5: bundle members (CBO-style shared budget). Parent row carries
-          the pacing signal; the audiences below share this pool. */}
-      {bundleParent && bundleMemberCount > 0 && (
+          the pacing signal; the audiences below share this pool. Rejected
+          bundles also render the expandable list so the user can see which
+          audiences were hidden from pacing — Reject UX. */}
+      {(bundleParent || bundleRejected) && bundleMemberCount > 0 && (
         <div className="mt-3 border-t border-slate-800/60 pt-2">
           <button
             onClick={() => setBundleExpanded((v) => !v)}
@@ -502,8 +558,10 @@ function LineRow({
           >
             <span>
               {bundleExpanded ? "Hide" : "Show"} {bundleMemberCount} other{" "}
-              {bundleMemberCount === 1 ? "audience" : "audiences"} sharing this
-              budget
+              {bundleMemberCount === 1 ? "audience" : "audiences"}{" "}
+              {bundleRejected
+                ? "hidden from pacing (rejected bundle)"
+                : "sharing this budget"}
             </span>
             <svg
               xmlns="http://www.w3.org/2000/svg"

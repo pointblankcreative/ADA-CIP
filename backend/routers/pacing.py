@@ -130,11 +130,17 @@ async def get_pacing(
     bundle_ids = list({r.get("bundle_id") for r in rows if r.get("bundle_id")})
     bundle_members_by_id: dict[str, list[BundleMember]] = {}
     if bundle_ids:
+        # Filter to "child-like" rows. For suggested/confirmed bundles the
+        # role itself is the discriminator. For rejected bundles every member
+        # carries bundle_role='rejected' (no parent/child split), so we use
+        # the budget convention — children have NULL budget by design — to
+        # exclude the former parent. This is what lets the frontend render
+        # the rejected-state badge + Clear button on the parent's row.
         members_sql = f"""
             WITH mpl_dedup AS (
                 SELECT * EXCEPT(_rn) FROM (
                     SELECT
-                        line_id, line_code, audience_name, bundle_id, bundle_role,
+                        line_id, line_code, audience_name, bundle_id, bundle_role, budget,
                         ROW_NUMBER() OVER (
                             PARTITION BY line_id
                             ORDER BY sync_version DESC
@@ -146,7 +152,10 @@ async def get_pacing(
             SELECT bundle_id, line_id, line_code, audience_name
             FROM mpl_dedup
             WHERE bundle_id IN UNNEST(@bundle_ids)
-              AND bundle_role IN ('suggested_child', 'confirmed_child')
+              AND (
+                bundle_role IN ('suggested_child', 'confirmed_child')
+                OR (bundle_role = 'rejected' AND budget IS NULL)
+              )
             ORDER BY bundle_id, line_id
         """
         member_rows = bq.run_query(
