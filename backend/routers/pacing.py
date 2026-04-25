@@ -79,6 +79,12 @@ async def get_pacing(
                     ) AS _rn
                 FROM {bq.table('media_plan_lines')}
                 WHERE project_code = @project_code
+                  -- Plan-id-aware dedup guard: only consider lines from the
+                  -- current media plan (skips historical pre-purge residue).
+                  AND plan_id IN (
+                      SELECT plan_id FROM {bq.table('media_plans')}
+                      WHERE project_code = @project_code AND is_current = TRUE
+                  )
             ) WHERE _rn = 1
         )
         SELECT
@@ -147,6 +153,11 @@ async def get_pacing(
                         ) AS _rn
                     FROM {bq.table('media_plan_lines')}
                     WHERE project_code = @project_code
+                      -- Plan-id-aware dedup guard (see _query_media_plan).
+                      AND plan_id IN (
+                          SELECT plan_id FROM {bq.table('media_plans')}
+                          WHERE project_code = @project_code AND is_current = TRUE
+                      )
                 ) WHERE _rn = 1
             )
             SELECT bundle_id, line_id, line_code, audience_name

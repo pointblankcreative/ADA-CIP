@@ -52,6 +52,12 @@ def list_entries(project_code: str) -> list[dict]:
             FROM {bq.table('media_plan_lines')}
             WHERE project_code = @project_code
               AND ffs_entry_id IS NOT NULL
+              -- Plan-id-aware dedup guard (see _query_media_plan in
+              -- backend/services/diagnostics/engine.py for context).
+              AND plan_id IN (
+                  SELECT plan_id FROM {bq.table('media_plans')}
+                  WHERE project_code = @project_code AND is_current = TRUE
+              )
           )
           WHERE rn = 1
           GROUP BY ffs_entry_id
@@ -99,6 +105,12 @@ def get_entry(project_code: str, entry_id: str) -> dict | None:
             FROM {bq.table('media_plan_lines')}
             WHERE project_code = @project_code
               AND ffs_entry_id = @entry_id
+              -- Plan-id-aware dedup guard (see _query_media_plan in
+              -- backend/services/diagnostics/engine.py for context).
+              AND plan_id IN (
+                  SELECT plan_id FROM {bq.table('media_plans')}
+                  WHERE project_code = @project_code AND is_current = TRUE
+              )
           )
           WHERE rn = 1
           GROUP BY ffs_entry_id
