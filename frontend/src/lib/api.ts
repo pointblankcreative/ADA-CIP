@@ -680,6 +680,38 @@ export const api = {
         body: JSON.stringify({ clear: true }),
       }),
   },
+  bundles: {
+    /**
+     * Lock in a parser-suggested bundle as user-confirmed (ADAC-54 follow-up).
+     * Survives subsequent media plan re-syncs via media_plan_bundle_overrides.
+     */
+    confirm: (projectCode: string, bundleId: string) =>
+      apiFetch<{ status: string; project_code: string; bundle_id: string; members_updated: number }>(
+        `/api/admin/bundles/${encodeURIComponent(bundleId)}/confirm?project_code=${projectCode}`,
+        { method: "POST" }
+      ),
+    /**
+     * Clear any saved override for this bundle, reverting live lines to the
+     * parser's "suggested" state. Next sync re-decides from the spreadsheet.
+     */
+    clearOverride: (projectCode: string, bundleId: string) =>
+      apiFetch<{ status: string; project_code: string; bundle_id: string }>(
+        `/api/admin/bundles/${encodeURIComponent(bundleId)}/override?project_code=${projectCode}`,
+        { method: "DELETE" }
+      ),
+    /**
+     * Mark a parser-suggested bundle as user-rejected. The former parent
+     * shows up as a standalone with the pool budget, while children whose
+     * budgets were zeroed by the parser fall through pacing's budget<=0
+     * skip and disappear from the dashboard. Re-syncs preserve the
+     * rejection via media_plan_bundle_overrides.
+     */
+    reject: (projectCode: string, bundleId: string) =>
+      apiFetch<{ status: string; project_code: string; bundle_id: string; members_updated: number }>(
+        `/api/admin/bundles/${encodeURIComponent(bundleId)}/reject?project_code=${projectCode}`,
+        { method: "POST" }
+      ),
+  },
   ga4: {
     properties: () => apiFetch<GA4Property[]>("/api/ga4/properties"),
     urls: (code: string) => apiFetch<GA4Url[]>(`/api/ga4/${code}/urls`),

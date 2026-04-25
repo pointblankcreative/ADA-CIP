@@ -264,6 +264,16 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
                    ) AS _rn
             FROM {bq.table('media_plan_lines')}
             WHERE project_code = @project_code
+              -- Guard against historical pre-2026-04-12 syncs that wrote
+              -- new line_ids without purging old plan_ids' rows. Without
+              -- this filter, the dedup CTE would let stale plan_ids
+              -- through and inflate budgets / line counts (e.g. 26009
+              -- showed 17 inflated lines instead of 3). See
+              -- scripts/cleanup_stale_plan_lines.sql for context.
+              AND plan_id IN (
+                  SELECT plan_id FROM {bq.table('media_plans')}
+                  WHERE project_code = @project_code AND is_current = TRUE
+              )
         ) WHERE _rn = 1
     """
     rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])

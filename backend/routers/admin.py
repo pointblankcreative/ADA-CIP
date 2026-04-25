@@ -2,7 +2,7 @@ import logging
 import re
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
 
 from backend.models.projects import (
@@ -399,6 +399,264 @@ async def update_media_plan_line(line_id: str, body: MediaPlanLineUpdate):
         ])
 
     return {"status": "updated", "line_id": line_id, "audience_name": body.audience_name}
+
+
+# ── Bundle override endpoints (ADAC-54 follow-up) ────────────────────
+#
+# Two endpoints, one for each user action surfaced in the Pacing tab's
+# bundle badge:
+#
+#   POST   /api/admin/bundles/{bundle_id}/confirm   — lock the parser's
+#       bundle suggestion in. Writes 'confirmed_parent' to the override
+#       table and updates the live media_plan_lines rows so the change is
+#       visible without waiting for the next sync.
+#
+#   DELETE /api/admin/bundles/{bundle_id}/override — clear any override.
+#       The next sync re-decides based on the current spreadsheet. Today's
+#       live rows are reverted to 'suggested_*' so the UI reflects the
+#       reset immediately.
+#
+# Reject was deferred: the parser zeros out children's budgets when it
+# detects a bundle, so "treat as standalone" can't be reconstructed
+# without re-syncing. The natural workflow for that case is to un-merge
+# Budget cells in the source sheet and re-sync. See Asana follow-up.
+#
+# Permissions: matches the audience_name endpoint above — no application-
+# level role check, IAP at Cloud Run is the gate. A future "proper RBAC"
+# pass should hit all admin endpoints together rather than picking off
+# one at a time.
+
+
+def _resolve_user_email(request: Request) -> str | None:
+    """Pull the IAP-attached user email if available; None for the dev stub."""
+    user = getattr(request.state, "user", None) or {}
+    return user.get("email") if isinstance(user, dict) else None
+
+
+def _verify_bundle_exists(project_code: str, bundle_id: str) -> int:
+    """Return the count of media_plan_lines rows in this bundle, raising
+    404 if zero. Catches typos in the URL and prevents an MERGE that
+    would write an override referencing nothing."""
+    rows = bq.run_query(
+        f"""
+        SELECT COUNT(*) AS n
+        FROM {bq.table('media_plan_lines')}
+        WHERE project_code = @pc
+          AND bundle_id = @bid
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+        ],
+    )
+    n = int(rows[0]["n"]) if rows else 0
+    if n == 0:
+        raise HTTPException(
+            404,
+            f"No media plan lines found for bundle {bundle_id} in project {project_code}",
+        )
+    return n
+
+
+@router.post("/bundles/{bundle_id}/confirm")
+async def confirm_bundle(
+    bundle_id: str,
+    request: Request,
+    project_code: str = Query(..., description="The project owning this bundle"),
+):
+    """Lock in the parser's bundle suggestion as user-confirmed.
+
+    Writes (project_code, bundle_id, 'confirmed_parent') to the override
+    table and immediately updates the live ``media_plan_lines`` rows so
+    the user sees the result without waiting for a sync. The override
+    survives subsequent syncs — see ``_apply_bundle_overrides`` in
+    ``services/media_plan_sync.py``.
+    """
+    member_count = _verify_bundle_exists(project_code, bundle_id)
+    updated_by = _resolve_user_email(request)
+
+    # MERGE into the override table — single source of truth across syncs.
+    bq.run_query(
+        f"""
+        MERGE {bq.table('media_plan_bundle_overrides')} t
+        USING (
+            SELECT
+                @pc AS project_code,
+                @bid AS bundle_id,
+                'confirmed_parent' AS bundle_role,
+                CURRENT_TIMESTAMP() AS updated_at,
+                @updated_by AS updated_by
+        ) s
+        ON t.project_code = s.project_code AND t.bundle_id = s.bundle_id
+        WHEN MATCHED THEN UPDATE SET
+            bundle_role = s.bundle_role,
+            updated_at = s.updated_at,
+            updated_by = s.updated_by
+        WHEN NOT MATCHED THEN INSERT
+            (project_code, bundle_id, bundle_role, updated_at, updated_by)
+            VALUES (s.project_code, s.bundle_id, s.bundle_role, s.updated_at, s.updated_by)
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+            bq.string_param("updated_by", updated_by or ""),
+        ],
+    )
+
+    # Mirror the apply logic from media_plan_sync._apply_bundle_overrides:
+    # parents have non-NULL budget (pool total), children have NULL.
+    bq.run_query(
+        f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET bundle_role = CASE
+              WHEN budget IS NULL THEN 'confirmed_child'
+              ELSE 'confirmed_parent'
+            END
+        WHERE project_code = @pc AND bundle_id = @bid
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+        ],
+    )
+
+    return {
+        "status": "confirmed",
+        "project_code": project_code,
+        "bundle_id": bundle_id,
+        "members_updated": member_count,
+    }
+
+
+@router.delete("/bundles/{bundle_id}/override")
+async def clear_bundle_override(
+    bundle_id: str,
+    project_code: str = Query(..., description="The project owning this bundle"),
+):
+    """Clear any saved override for this bundle.
+
+    The next sync will re-decide whether this is a bundle based on the
+    current spreadsheet (re-reads merged Budget cells). Live
+    ``media_plan_lines`` rows are reverted to ``suggested_*`` immediately
+    so the UI reflects the reset without a re-sync. If the user wants the
+    parser's suggestion to permanently change, the underlying source
+    sheet is the right place to edit.
+    """
+    _verify_bundle_exists(project_code, bundle_id)
+
+    # Drop the override row (no-op if it never existed).
+    bq.run_query(
+        f"""
+        DELETE FROM {bq.table('media_plan_bundle_overrides')}
+        WHERE project_code = @pc AND bundle_id = @bid
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+        ],
+    )
+
+    # Revert live lines to the parser's "suggested" state. Same parent/child
+    # split rule as the apply path.
+    bq.run_query(
+        f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET bundle_role = CASE
+              WHEN budget IS NULL THEN 'suggested_child'
+              ELSE 'suggested_parent'
+            END
+        WHERE project_code = @pc AND bundle_id = @bid
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+        ],
+    )
+
+    return {
+        "status": "cleared",
+        "project_code": project_code,
+        "bundle_id": bundle_id,
+    }
+
+
+@router.post("/bundles/{bundle_id}/reject")
+async def reject_bundle(
+    bundle_id: str,
+    request: Request,
+    project_code: str = Query(..., description="The project owning this bundle"),
+):
+    """Mark a parser-suggested bundle as user-rejected (ADAC follow-up).
+
+    Writes (project_code, bundle_id, 'rejected') to the override table and
+    immediately sets every member's ``bundle_role`` to ``'rejected'`` so the
+    UI updates without waiting for a sync. Persists across re-syncs via
+    ``_apply_bundle_overrides`` in ``services/media_plan_sync.py``.
+
+    Behaviour the user gets (option 3 from the design doc): the former parent
+    line becomes a standalone with the full pool budget. The former children,
+    whose budgets were zeroed by the parser when the bundle was first
+    detected, fall through pacing's ``budget <= 0`` skip and disappear from
+    the dashboard. The Reject button tooltip on the frontend explains this
+    behaviour. If the user wants the children back as standalones with their
+    own budgets, they un-merge the source sheet's Budget cells and re-sync.
+    """
+    member_count = _verify_bundle_exists(project_code, bundle_id)
+    updated_by = _resolve_user_email(request)
+
+    # MERGE into the override table — single source of truth across syncs.
+    # The override row's bundle_role is the override TYPE ('confirmed_parent'
+    # or 'rejected'), not the per-line role written to media_plan_lines.
+    bq.run_query(
+        f"""
+        MERGE {bq.table('media_plan_bundle_overrides')} t
+        USING (
+            SELECT
+                @pc AS project_code,
+                @bid AS bundle_id,
+                'rejected' AS bundle_role,
+                CURRENT_TIMESTAMP() AS updated_at,
+                @updated_by AS updated_by
+        ) s
+        ON t.project_code = s.project_code AND t.bundle_id = s.bundle_id
+        WHEN MATCHED THEN UPDATE SET
+            bundle_role = s.bundle_role,
+            updated_at = s.updated_at,
+            updated_by = s.updated_by
+        WHEN NOT MATCHED THEN INSERT
+            (project_code, bundle_id, bundle_role, updated_at, updated_by)
+            VALUES (s.project_code, s.bundle_id, s.bundle_role, s.updated_at, s.updated_by)
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+            bq.string_param("updated_by", updated_by or ""),
+        ],
+    )
+
+    # Update live lines: every member gets bundle_role='rejected', regardless
+    # of whether it was previously a parent or child. The pacing service
+    # treats 'rejected' as not-parent / not-child — parents fall through to
+    # standalone pacing with the pool budget; children with NULL budgets get
+    # filtered out by the budget<=0 skip.
+    bq.run_query(
+        f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET bundle_role = 'rejected'
+        WHERE project_code = @pc AND bundle_id = @bid
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("bid", bundle_id),
+        ],
+    )
+
+    return {
+        "status": "rejected",
+        "project_code": project_code,
+        "bundle_id": bundle_id,
+        "members_updated": member_count,
+    }
 
 
 @router.post("/creative-aliases")
