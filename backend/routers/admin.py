@@ -389,6 +389,263 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
     }
 
 
+# ── Multi-plan: project_media_plans CRUD ─────────────────────────────
+#
+# Phases of a multi-flight campaign each get their own row here. The
+# /sync-all endpoint iterates them in display order and runs sync_media_plan
+# per sheet — see backend/services/media_plan_sync.py::sync_all_for_project.
+# Soft-delete (is_active=FALSE) is the default so retrospective replay can
+# still read closed phases' data; ?hard=true is reserved for future use.
+
+
+class ProjectPlanCreate(BaseModel):
+    """Request body for adding a media plan sheet to a project."""
+    sheet_url_or_id: str
+    phase_label: str | None = None
+    display_order: int | None = None
+    auto_sync: bool = True
+
+    @field_validator("phase_label")
+    @classmethod
+    def _strip_phase_label(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+
+class ProjectPlanUpdate(BaseModel):
+    """Patch body for an existing project_media_plans row."""
+    phase_label: str | None = None
+    display_order: int | None = None
+    is_active: bool | None = None
+
+
+def _list_plans_for_project(project_code: str) -> list[dict]:
+    """Return every project_media_plans row for a project, ordered for display.
+
+    Includes inactive rows so the UI can show retired phases struck-through;
+    the dedup guard already filters them out of pacing/diagnostics queries.
+    """
+    rows = bq.run_query(
+        f"""
+        SELECT pmp.sheet_id,
+               pmp.phase_label,
+               pmp.display_order,
+               pmp.is_active,
+               pmp.created_at,
+               mp.last_synced_at,
+               mp.line_count
+        FROM {bq.table('project_media_plans')} pmp
+        LEFT JOIN (
+            SELECT mp.sheet_id,
+                   mp.project_code,
+                   mp.synced_at AS last_synced_at,
+                   (SELECT COUNT(*)
+                      FROM {bq.table('media_plan_lines')} l
+                     WHERE l.plan_id = mp.plan_id) AS line_count
+            FROM {bq.table('media_plans')} mp
+            WHERE mp.is_current = TRUE
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY mp.project_code, mp.sheet_id
+                ORDER BY mp.synced_at DESC
+            ) = 1
+        ) mp
+          ON mp.project_code = pmp.project_code
+         AND mp.sheet_id     = pmp.sheet_id
+        WHERE pmp.project_code = @pc
+        ORDER BY pmp.is_active DESC,
+                 pmp.display_order NULLS LAST,
+                 pmp.created_at ASC
+        """,
+        [bq.string_param("pc", project_code)],
+    )
+    return [
+        {
+            "sheet_id": r["sheet_id"],
+            "phase_label": r.get("phase_label"),
+            "display_order": r.get("display_order"),
+            "is_active": bool(r.get("is_active", True)),
+            "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            "last_synced_at": str(r["last_synced_at"]) if r.get("last_synced_at") else None,
+            "line_count": int(r["line_count"]) if r.get("line_count") is not None else 0,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/projects/{project_code}/plans")
+async def admin_list_project_plans(project_code: str):
+    """Return every media plan registered against ``project_code``."""
+    return {"project_code": project_code, "plans": _list_plans_for_project(project_code)}
+
+
+@router.post("/projects/{project_code}/plans")
+async def admin_add_project_plan(project_code: str, body: ProjectPlanCreate):
+    """Add a media plan sheet to a project. Optionally syncs it immediately."""
+    sheet_id = _extract_sheet_id(body.sheet_url_or_id)
+    if not sheet_id:
+        raise HTTPException(status_code=400, detail="Could not parse sheet ID from input")
+
+    # If display_order is not provided, append after the current max.
+    display_order = body.display_order
+    if display_order is None:
+        rows = bq.run_query(
+            f"""
+            SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+            FROM {bq.table('project_media_plans')}
+            WHERE project_code = @pc
+            """,
+            [bq.string_param("pc", project_code)],
+        )
+        display_order = int(rows[0]["next_order"]) if rows else 1
+
+    bq.run_query(
+        f"""
+        MERGE {bq.table('project_media_plans')} t
+        USING (
+            SELECT @pc AS project_code, @sheet_id AS sheet_id
+        ) s
+          ON t.project_code = s.project_code
+         AND t.sheet_id   = s.sheet_id
+        WHEN MATCHED THEN UPDATE SET
+            phase_label    = @phase_label,
+            display_order  = @display_order,
+            is_active      = TRUE
+        WHEN NOT MATCHED THEN
+            INSERT (project_code, sheet_id, phase_label, display_order, is_active, created_at)
+            VALUES (s.project_code, s.sheet_id, @phase_label, @display_order, TRUE, CURRENT_TIMESTAMP())
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("sheet_id", sheet_id),
+            bq.string_param("phase_label", body.phase_label or ""),
+            bq.scalar_param("display_order", "INT64", display_order),
+        ],
+    )
+    # phase_label="" is what we pass when the user sent NULL — normalise back
+    # to NULL in storage so the SELECT path returns a clean Python None.
+    if not body.phase_label:
+        bq.run_query(
+            f"""
+            UPDATE {bq.table('project_media_plans')}
+            SET phase_label = NULL
+            WHERE project_code = @pc AND sheet_id = @sheet_id
+            """,
+            [bq.string_param("pc", project_code), bq.string_param("sheet_id", sheet_id)],
+        )
+
+    sync_result: dict | None = None
+    if body.auto_sync:
+        try:
+            sync_result = sync_media_plan(sheet_id=sheet_id, project_code=project_code)
+            sync_result.setdefault("status", "success")
+        except Exception as e:
+            logger.warning("Auto-sync after add-plan failed for %s/%s: %s", project_code, sheet_id, e)
+            sync_result = {"status": "error", "message": str(e)}
+
+    return {
+        "status": "added",
+        "project_code": project_code,
+        "sheet_id": sheet_id,
+        "phase_label": body.phase_label,
+        "display_order": display_order,
+        "sync_result": sync_result,
+        "plans": _list_plans_for_project(project_code),
+    }
+
+
+@router.put("/projects/{project_code}/plans/{sheet_id}")
+async def admin_update_project_plan(
+    project_code: str,
+    sheet_id: str,
+    body: ProjectPlanUpdate,
+):
+    """Patch a project_media_plans row (phase_label, display_order, is_active)."""
+    sets: list[str] = []
+    params: list = [
+        bq.string_param("pc", project_code),
+        bq.string_param("sheet_id", sheet_id),
+    ]
+    if body.phase_label is not None:
+        sets.append("phase_label = @phase_label")
+        params.append(bq.string_param("phase_label", body.phase_label.strip()))
+    if body.display_order is not None:
+        sets.append("display_order = @display_order")
+        params.append(bq.scalar_param("display_order", "INT64", body.display_order))
+    if body.is_active is not None:
+        sets.append("is_active = @is_active")
+        params.append(bq.scalar_param("is_active", "BOOL", body.is_active))
+
+    if not sets:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    bq.run_query(
+        f"""
+        UPDATE {bq.table('project_media_plans')}
+        SET {', '.join(sets)}
+        WHERE project_code = @pc AND sheet_id = @sheet_id
+        """,
+        params,
+    )
+    return {
+        "status": "updated",
+        "project_code": project_code,
+        "sheet_id": sheet_id,
+        "plans": _list_plans_for_project(project_code),
+    }
+
+
+@router.delete("/projects/{project_code}/plans/{sheet_id}")
+async def admin_remove_project_plan(
+    project_code: str,
+    sheet_id: str,
+    hard: bool = Query(False, description="If true, hard-delete the row (loses retrospective access). Default soft-deletes via is_active=FALSE."),
+):
+    """Soft-delete a plan (is_active=FALSE) by default; ``?hard=true`` removes the row.
+
+    Soft delete is the default because retrospective replay re-runs pacing
+    against historical media_plan_lines, which would no longer be reachable
+    if the join table row disappears. Hard delete is reserved for cleaning
+    up rows added by mistake.
+    """
+    if hard:
+        bq.run_query(
+            f"""
+            DELETE FROM {bq.table('project_media_plans')}
+            WHERE project_code = @pc AND sheet_id = @sheet_id
+            """,
+            [bq.string_param("pc", project_code), bq.string_param("sheet_id", sheet_id)],
+        )
+        return {
+            "status": "deleted",
+            "project_code": project_code,
+            "sheet_id": sheet_id,
+            "plans": _list_plans_for_project(project_code),
+        }
+
+    bq.run_query(
+        f"""
+        UPDATE {bq.table('project_media_plans')}
+        SET is_active = FALSE
+        WHERE project_code = @pc AND sheet_id = @sheet_id
+        """,
+        [bq.string_param("pc", project_code), bq.string_param("sheet_id", sheet_id)],
+    )
+    return {
+        "status": "retired",
+        "project_code": project_code,
+        "sheet_id": sheet_id,
+        "plans": _list_plans_for_project(project_code),
+    }
+
+
+@router.post("/projects/{project_code}/sync-all")
+async def admin_sync_all_plans(project_code: str):
+    """Sync every active media plan for ``project_code`` in display order."""
+    return sync_all_for_project(project_code)
+
+
 @router.get("/ingestion-log")
 async def get_ingestion_log(limit: int = Query(20, ge=1, le=100)):
     """Return recent ingestion/transformation runs."""
