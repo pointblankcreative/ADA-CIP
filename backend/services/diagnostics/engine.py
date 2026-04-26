@@ -264,15 +264,21 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
                    ) AS _rn
             FROM {bq.table('media_plan_lines')}
             WHERE project_code = @project_code
-              -- Guard against historical pre-2026-04-12 syncs that wrote
-              -- new line_ids without purging old plan_ids' rows. Without
-              -- this filter, the dedup CTE would let stale plan_ids
-              -- through and inflate budgets / line counts (e.g. 26009
-              -- showed 17 inflated lines instead of 3). See
-              -- scripts/cleanup_stale_plan_lines.sql for context.
+              -- Plan-id-aware + multi-plan dedup guard. Restricts to lines
+              -- whose plan is current AND whose sheet is registered + active
+              -- in project_media_plans. Without this, stale plan_ids inflate
+              -- budgets and line counts (e.g. 26009 showed 17 inflated lines
+              -- instead of 3 before the original guard was added) and retired
+              -- phases would silently leak back into the engine.
               AND plan_id IN (
-                  SELECT plan_id FROM {bq.table('media_plans')}
-                  WHERE project_code = @project_code AND is_current = TRUE
+                  SELECT mp.plan_id
+                  FROM {bq.table('media_plans')} mp
+                  JOIN {bq.table('project_media_plans')} pmp
+                    ON mp.project_code = pmp.project_code
+                   AND mp.sheet_id   = pmp.sheet_id
+                  WHERE mp.project_code = @project_code
+                    AND mp.is_current   = TRUE
+                    AND pmp.is_active   = TRUE
               )
         ) WHERE _rn = 1
     """

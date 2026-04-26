@@ -12,9 +12,42 @@ from backend.models.projects import (
 )
 from backend.services import bigquery_client as bq
 from backend.services.daily_job import run_daily_pipeline
-from backend.services.media_plan_sync import sync_media_plan
+from backend.services.media_plan_sync import (
+    sync_all_for_project,
+    sync_media_plan,
+)
 from backend.services.transformation import run_transformation
 from ingestion.transformation.adset_transform import run_adset_transformation
+
+
+def _ensure_plan_registered(project_code: str, sheet_id: str) -> None:
+    """Make sure (project_code, sheet_id) exists in project_media_plans.
+
+    Idempotent — uses MERGE so calling it for an existing row is a no-op.
+    Backstops the legacy flow where the admin API only writes
+    ``dim_projects.media_plan_sheet_id``: without this, the dedup guard
+    (which JOINs through project_media_plans) would silently filter the
+    project's lines out of pacing/diagnostics.
+    """
+    if not sheet_id:
+        return
+    bq.run_query(
+        f"""
+        MERGE {bq.table('project_media_plans')} t
+        USING (
+            SELECT @pc AS project_code, @sheet_id AS sheet_id
+        ) s
+          ON t.project_code = s.project_code
+         AND t.sheet_id   = s.sheet_id
+        WHEN NOT MATCHED THEN
+            INSERT (project_code, sheet_id, phase_label, display_order, is_active, created_at)
+            VALUES (s.project_code, s.sheet_id, NULL, 1, TRUE, CURRENT_TIMESTAMP())
+        """,
+        [
+            bq.string_param("pc", project_code),
+            bq.string_param("sheet_id", sheet_id),
+        ],
+    )
 
 
 class MediaPlanLineUpdate(BaseModel):
@@ -69,6 +102,10 @@ async def api_sync_media_plan(
         if rows and rows[0].get("media_plan_tab_name"):
             tab_name = rows[0]["media_plan_tab_name"]
 
+    # Self-heal the join table so the dedup guard sees this sheet. Mirrors
+    # what the project create/update flow does so manual /sync-media-plan
+    # calls don't leave the data invisible to downstream queries.
+    _ensure_plan_registered(project_code, sheet_id)
     result = sync_media_plan(sheet_id=sheet_id, project_code=project_code, tab_name=tab_name)
     return result
 
@@ -151,10 +188,19 @@ async def admin_list_projects():
             FROM {bq.table('fact_digital_daily')}
             GROUP BY project_code
         ) s USING (project_code)
+        -- Multi-plan support (2026-04-25): media_plan_synced is TRUE when
+        -- at least one of the project's registered, active sheets has a
+        -- current media_plans row. Single-sheet projects keep the same
+        -- semantics; multi-sheet projects light up as soon as any phase
+        -- has been synced.
         LEFT JOIN (
-            SELECT project_code, plan_id
-            FROM {bq.table('media_plans')}
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY project_code ORDER BY synced_at DESC) = 1
+            SELECT mp.project_code, ANY_VALUE(mp.plan_id) AS plan_id
+            FROM {bq.table('media_plans')} mp
+            JOIN {bq.table('project_media_plans')} pmp
+              ON mp.project_code = pmp.project_code
+             AND mp.sheet_id   = pmp.sheet_id
+            WHERE mp.is_current = TRUE AND pmp.is_active = TRUE
+            GROUP BY mp.project_code
         ) mp USING (project_code)
         LEFT JOIN (
             SELECT project_code, COUNT(*) AS alert_count
@@ -248,6 +294,10 @@ async def admin_create_project(req: ProjectCreateRequest):
 
     # Optionally sync media plan
     if sheet_id:
+        # Register the sheet in project_media_plans before sync so the
+        # downstream dedup guard sees it. Without this, even a successful
+        # sync produces 0 visible lines in pacing / diagnostics.
+        _ensure_plan_registered(req.project_code, sheet_id)
         try:
             sync_result = sync_media_plan(sheet_id, req.project_code, tab_name=req.media_plan_tab_name or None)
             sync_result.setdefault("status", "success")
@@ -321,6 +371,7 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
     # Trigger media plan sync if sheet URL was updated
     if req.media_plan_sheet_url:
         sheet_id = _extract_sheet_id(req.media_plan_sheet_url)
+        _ensure_plan_registered(project_code, sheet_id)
         try:
             sync_result = sync_media_plan(sheet_id, project_code, tab_name=req.media_plan_tab_name or None)
             sync_result.setdefault("status", "success")

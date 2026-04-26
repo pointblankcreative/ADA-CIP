@@ -1183,6 +1183,155 @@ def _build_line_records_for_bc_line(
 
 # ── Sync Orchestrator ───────────────────────────────────────────────
 
+
+def _list_active_plans(project_code: str) -> list[dict]:
+    """Return active rows from project_media_plans for the given project.
+
+    Each entry is ``{"sheet_id": ..., "phase_label": ..., "display_order": ...}``
+    sorted by display_order (NULLS LAST), then created_at. Used by
+    ``sync_all_for_project`` and the admin API for the Plans section.
+
+    Falls back to an empty list when project_media_plans doesn't exist yet
+    (first run before _ensure_schema_migrations) so callers can degrade
+    gracefully to legacy single-sheet behaviour.
+    """
+    mtl = _mtl_client()
+    try:
+        _ensure_schema_migrations(mtl)
+        prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+        sql = f"""
+            SELECT sheet_id, phase_label, display_order
+            FROM {prefix}.project_media_plans`
+            WHERE project_code = @pc
+              AND is_active = TRUE
+            ORDER BY display_order NULLS LAST, created_at ASC
+        """
+        try:
+            rows = list(
+                mtl.query(
+                    sql,
+                    job_config=bigquery.QueryJobConfig(query_parameters=[
+                        bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+                    ]),
+                ).result()
+            )
+        except google.cloud.exceptions.NotFound:
+            return []
+    finally:
+        mtl.close()
+
+    return [
+        {
+            "sheet_id": r["sheet_id"],
+            "phase_label": r.get("phase_label"),
+            "display_order": r.get("display_order"),
+        }
+        for r in rows
+    ]
+
+
+def sync_all_for_project(project_code: str) -> dict:
+    """Sync every active media plan registered against ``project_code``.
+
+    Iterates ``project_media_plans`` rows in display order and calls
+    ``sync_media_plan`` for each. Each sheet is treated as a fully
+    independent sync — its own ``plan_id``, its own ``sync_version``, and
+    its own scoped delete (see ``_delete_old_versions``). One sheet failing
+    does not abort the others; per-sheet errors are returned in the summary
+    so the admin UI can surface them next to the offending row.
+
+    Returns a summary dict::
+
+        {
+            "project_code": "25013",
+            "sheets_attempted": 3,
+            "sheets_succeeded": 3,
+            "sheets_failed": 0,
+            "results": [
+                {"sheet_id": "...", "phase_label": "Phase 1",
+                 "status": "success", "lines_created": 12, ...},
+                ...
+            ],
+        }
+    """
+    plans = _list_active_plans(project_code)
+
+    if not plans:
+        # No registered plans — fall back to the legacy single-sheet column on
+        # dim_projects so existing one-sheet projects keep working even before
+        # the backfill migration runs.
+        mtl = _mtl_client()
+        try:
+            prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+            rows = list(
+                mtl.query(
+                    f"SELECT media_plan_sheet_id, media_plan_tab_name "
+                    f"FROM {prefix}.dim_projects` WHERE project_code = @pc",
+                    job_config=bigquery.QueryJobConfig(query_parameters=[
+                        bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+                    ]),
+                ).result()
+            )
+        finally:
+            mtl.close()
+        if rows and rows[0].get("media_plan_sheet_id"):
+            plans = [{
+                "sheet_id": rows[0]["media_plan_sheet_id"],
+                "phase_label": None,
+                "display_order": 1,
+                "tab_name": rows[0].get("media_plan_tab_name") or None,
+            }]
+
+    if not plans:
+        logger.info("sync_all_for_project: no active plans for %s", project_code)
+        return {
+            "project_code": project_code,
+            "sheets_attempted": 0,
+            "sheets_succeeded": 0,
+            "sheets_failed": 0,
+            "results": [],
+        }
+
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+    for plan in plans:
+        sheet_id = plan["sheet_id"]
+        phase_label = plan.get("phase_label")
+        tab_name = plan.get("tab_name")  # only set on the legacy fallback path
+        try:
+            res = sync_media_plan(
+                sheet_id=sheet_id,
+                project_code=project_code,
+                tab_name=tab_name,
+            )
+            res.setdefault("status", "success")
+            res["sheet_id"] = sheet_id
+            res["phase_label"] = phase_label
+            results.append(res)
+            succeeded += 1
+        except Exception as e:
+            logger.warning(
+                "sync_all_for_project: sheet %s for %s failed: %s",
+                sheet_id, project_code, e,
+            )
+            results.append({
+                "sheet_id": sheet_id,
+                "phase_label": phase_label,
+                "status": "error",
+                "message": str(e),
+            })
+            failed += 1
+
+    return {
+        "project_code": project_code,
+        "sheets_attempted": len(plans),
+        "sheets_succeeded": succeeded,
+        "sheets_failed": failed,
+        "results": results,
+    }
+
+
 def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = None) -> dict:
     """Sync a Google Sheets media plan into BigQuery.
 
@@ -1570,8 +1719,10 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         _write_records_with_version(mtl, "media_plan_lines", line_records, sync_version)
         _write_records_with_version(mtl, "blocking_chart_weeks", week_records, sync_version)
 
-        # Now delete old versions in a single scripting block for atomicity
-        _delete_old_versions(mtl, project_code, sync_version)
+        # Now delete old versions in a single scripting block for atomicity.
+        # Multi-plan support (2026-04-25): delete is scoped to (project_code,
+        # sheet_id) so syncing one sheet does not wipe another sheet's lines.
+        _delete_old_versions(mtl, project_code, sheet_id, sync_version)
 
         # Apply any saved audience_name overrides so manual edits survive re-sync
         _apply_audience_overrides(mtl, project_code)
@@ -1988,11 +2139,24 @@ def _write_records_with_version(
     _write_records(mtl, table_name, records)
 
 
-def _delete_old_versions(mtl: bigquery.Client, project_code: str, current_sync_version: str) -> None:
+def _delete_old_versions(
+    mtl: bigquery.Client,
+    project_code: str,
+    sheet_id: str,
+    current_sync_version: str,
+) -> None:
     """Delete old sync versions in a single BigQuery scripting block for atomicity.
 
-    This ensures that deletes are atomic and no window of missing data occurs
-    between write and delete of concurrent syncs.
+    Multi-plan scoping (2026-04-25): the delete is now scoped to
+    (project_code, sheet_id) — never just project_code — so syncing one sheet
+    does not wipe another sheet's lines for the same project. Identification
+    runs through the media_plans table, which is the only table that carries
+    sheet_id natively; lines and weeks inherit their scope via sync_version.
+
+    Also performs an orphan cleanup: media_plan_lines and blocking_chart_weeks
+    rows whose sync_version doesn't appear in ANY media_plans row for this
+    project are unreachable through the read paths anyway, but reclaiming the
+    space preserves the old code's housekeeping behaviour.
 
     Retries up to 3 times on failure. If all retries fail, raises the exception
     so the caller knows cleanup didn't happen — silently swallowing this error
@@ -2005,18 +2169,56 @@ def _delete_old_versions(mtl: bigquery.Client, project_code: str, current_sync_v
     # Use a scripting block to wrap all deletes atomically
     script = f"""
     BEGIN
-        -- Mark old media plans as non-current
+        -- Mark old media plans for THIS sheet as non-current. Other sheets'
+        -- current rows are untouched.
         UPDATE {prefix}.media_plans`
         SET is_current = FALSE
-        WHERE project_code = @pc AND sync_version != @sv AND is_current = TRUE;
+        WHERE project_code = @pc
+          AND sheet_id = @sheet_id
+          AND sync_version != @sv
+          AND is_current = TRUE;
 
-        -- Delete old media plan lines
+        -- Delete old media plan lines for THIS sheet. The sync_version IN
+        -- subquery scopes the delete to plans whose sheet_id matches; rows
+        -- belonging to other sheets keep their sync_version and survive.
         DELETE FROM {prefix}.media_plan_lines`
-        WHERE project_code = @pc AND sync_version != @sv;
+        WHERE project_code = @pc
+          AND sync_version != @sv
+          AND sync_version IN (
+            SELECT sync_version
+            FROM {prefix}.media_plans`
+            WHERE project_code = @pc AND sheet_id = @sheet_id
+          );
 
-        -- Delete old blocking chart weeks
+        -- Delete old blocking chart weeks for THIS sheet (same scoping as above).
         DELETE FROM {prefix}.blocking_chart_weeks`
-        WHERE project_code = @pc AND sync_version != @sv;
+        WHERE project_code = @pc
+          AND sync_version != @sv
+          AND sync_version IN (
+            SELECT sync_version
+            FROM {prefix}.media_plans`
+            WHERE project_code = @pc AND sheet_id = @sheet_id
+          );
+
+        -- Orphan cleanup: rows whose sync_version doesn't tie back to ANY
+        -- media_plans row for this project. Unreachable through the dedup
+        -- guard, but holds onto storage. Cross-sheet by design — these
+        -- rows belong to no sheet at all.
+        DELETE FROM {prefix}.media_plan_lines`
+        WHERE project_code = @pc
+          AND sync_version IS NOT NULL
+          AND sync_version NOT IN (
+            SELECT sync_version FROM {prefix}.media_plans`
+            WHERE project_code = @pc AND sync_version IS NOT NULL
+          );
+
+        DELETE FROM {prefix}.blocking_chart_weeks`
+        WHERE project_code = @pc
+          AND sync_version IS NOT NULL
+          AND sync_version NOT IN (
+            SELECT sync_version FROM {prefix}.media_plans`
+            WHERE project_code = @pc AND sync_version IS NOT NULL
+          );
     END;
     """
 
@@ -2027,23 +2229,27 @@ def _delete_old_versions(mtl: bigquery.Client, project_code: str, current_sync_v
                 script,
                 job_config=bigquery.QueryJobConfig(query_parameters=[
                     bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+                    bigquery.ScalarQueryParameter("sheet_id", "STRING", sheet_id),
                     bigquery.ScalarQueryParameter("sv", "STRING", current_sync_version),
                 ]),
             ).result()
-            logger.info("  Deleted old sync versions for %s", project_code)
+            logger.info(
+                "  Deleted old sync versions for %s sheet %s",
+                project_code, sheet_id,
+            )
             return
         except Exception as e:
             if attempt < max_retries:
                 logger.warning(
-                    "  Failed to delete old versions for %s (attempt %d/%d): %s",
-                    project_code, attempt, max_retries, e,
+                    "  Failed to delete old versions for %s sheet %s (attempt %d/%d): %s",
+                    project_code, sheet_id, attempt, max_retries, e,
                 )
                 time.sleep(1 * attempt)  # brief backoff
             else:
                 logger.error(
-                    "  CRITICAL: Failed to delete old sync versions for %s after %d attempts. "
+                    "  CRITICAL: Failed to delete old sync versions for %s sheet %s after %d attempts. "
                     "Duplicate media_plan_lines will exist until next successful sync. Error: %s",
-                    project_code, max_retries, e,
+                    project_code, sheet_id, max_retries, e,
                 )
                 raise
 

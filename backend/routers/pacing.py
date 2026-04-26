@@ -79,11 +79,19 @@ async def get_pacing(
                     ) AS _rn
                 FROM {bq.table('media_plan_lines')}
                 WHERE project_code = @project_code
-                  -- Plan-id-aware dedup guard: only consider lines from the
-                  -- current media plan (skips historical pre-purge residue).
+                  -- Plan-id-aware + multi-plan dedup guard: only consider
+                  -- lines from a current media plan whose sheet is still
+                  -- registered (and active) in project_media_plans. Skips
+                  -- historical pre-purge residue and retired phases alike.
                   AND plan_id IN (
-                      SELECT plan_id FROM {bq.table('media_plans')}
-                      WHERE project_code = @project_code AND is_current = TRUE
+                      SELECT mp.plan_id
+                      FROM {bq.table('media_plans')} mp
+                      JOIN {bq.table('project_media_plans')} pmp
+                        ON mp.project_code = pmp.project_code
+                       AND mp.sheet_id   = pmp.sheet_id
+                      WHERE mp.project_code = @project_code
+                        AND mp.is_current   = TRUE
+                        AND pmp.is_active   = TRUE
                   )
             ) WHERE _rn = 1
         )
@@ -153,10 +161,17 @@ async def get_pacing(
                         ) AS _rn
                     FROM {bq.table('media_plan_lines')}
                     WHERE project_code = @project_code
-                      -- Plan-id-aware dedup guard (see _query_media_plan).
+                      -- Plan-id-aware + multi-plan dedup guard (see top
+                      -- of this router for the canonical comment).
                       AND plan_id IN (
-                          SELECT plan_id FROM {bq.table('media_plans')}
-                          WHERE project_code = @project_code AND is_current = TRUE
+                          SELECT mp.plan_id
+                          FROM {bq.table('media_plans')} mp
+                          JOIN {bq.table('project_media_plans')} pmp
+                            ON mp.project_code = pmp.project_code
+                           AND mp.sheet_id   = pmp.sheet_id
+                          WHERE mp.project_code = @project_code
+                            AND mp.is_current   = TRUE
+                            AND pmp.is_active   = TRUE
                       )
                 ) WHERE _rn = 1
             )
