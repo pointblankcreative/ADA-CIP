@@ -509,6 +509,19 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
             audience_name STRING,
             updated_at TIMESTAMP
         )""",
+        # Multi-plan support (2026-04-25): join table mapping projects to one or
+        # more media plan sheets. Backfill from dim_projects.media_plan_sheet_id
+        # is handled by the live migration script
+        # (infrastructure/bigquery/migrations/2026-04-25_project_media_plans.sql);
+        # this DDL exists so dev/test environments still get the table.
+        f"""CREATE TABLE IF NOT EXISTS {prefix}.project_media_plans` (
+            project_code STRING NOT NULL,
+            sheet_id STRING NOT NULL,
+            phase_label STRING,
+            display_order INT64,
+            is_active BOOL,
+            created_at TIMESTAMP
+        )""",
     ]
     for sql in stmts:
         try:
