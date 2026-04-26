@@ -349,7 +349,14 @@ function PhaseGroup({
     <div>
       <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-4 py-3 mb-3 flex items-center justify-between gap-4">
         <div>
-          <div className="text-sm font-semibold text-white">{heading}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-sm font-semibold text-white">{heading}</div>
+            {!phase.is_active && (
+              <span className="rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                retired
+              </span>
+            )}
+          </div>
           <div className="text-[11px] text-slate-500">
             {phase.line_count} line{phase.line_count === 1 ? "" : "s"} · {formatCurrency(phase.planned_budget)} planned
           </div>

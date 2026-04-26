@@ -58,6 +58,10 @@ class PhaseSummary(BaseModel):
     planned_spend_to_date: float = 0
     actual_spend_to_date: float = 0
     pacing_percentage: float = 0
+    # True when project_media_plans.is_active for this sheet. Live mode never
+    # returns retired phases (filtered upstream); retrospective mode does, so
+    # the UI can mark them as historical.
+    is_active: bool = True
 
 
 class PacingResponse(BaseModel):

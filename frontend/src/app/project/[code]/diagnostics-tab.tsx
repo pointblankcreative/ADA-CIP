@@ -318,7 +318,14 @@ function PhaseBreakdownPanel({
               )}
             >
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-white">{heading}</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-semibold text-white">{heading}</div>
+                  {!phase.is_active && (
+                    <span className="rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                      retired
+                    </span>
+                  )}
+                </div>
                 <div className={cn("text-xs font-semibold tabular-nums", pacingColor(status))}>
                   {formatPercent(phase.pacing_percentage)}
                 </div>

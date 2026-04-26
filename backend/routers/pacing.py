@@ -66,6 +66,17 @@ async def get_pacing(
         )
         date_params = []
 
+    # Multi-plan retrospective: a phase that's been retired today
+    # (project_media_plans.is_active = FALSE) was likely active on a past
+    # date. Live mode keeps the strict filter so retired phases drop out;
+    # retrospective mode loosens it so historical replay can still attribute
+    # past lines to their phase. The strict mode is correct in live because
+    # the dedup guard's primary job is dropping stale plan_ids — the active
+    # check is incidental on the live path but load-bearing in retro.
+    pmp_active_filter = (
+        "AND pmp.is_active = TRUE" if as_of_date is None else ""
+    )
+
     tracking_sql = f"""
         WITH mpl_dedup AS (
             SELECT * EXCEPT(_rn) FROM (
@@ -79,6 +90,7 @@ async def get_pacing(
                     mp.sheet_id        AS sheet_id,
                     pmp.phase_label    AS phase_label,
                     pmp.display_order  AS phase_display_order,
+                    pmp.is_active      AS phase_is_active,
                     ROW_NUMBER() OVER (
                         PARTITION BY l.line_id
                         ORDER BY l.sync_version DESC
@@ -90,7 +102,7 @@ async def get_pacing(
                 JOIN {bq.table('project_media_plans')} pmp
                   ON mp.project_code = pmp.project_code
                  AND mp.sheet_id   = pmp.sheet_id
-                 AND pmp.is_active = TRUE
+                 {pmp_active_filter}
                 WHERE l.project_code = @project_code
             ) WHERE _rn = 1
         )
@@ -224,6 +236,9 @@ async def get_pacing(
             "sheet_id": sid,
             "phase_label": r.get("phase_label"),
             "display_order": r.get("phase_display_order"),
+            # phase_is_active is None on the live path's column read because
+            # the JOIN filters those rows out — default to True for safety.
+            "is_active": bool(r.get("phase_is_active") if r.get("phase_is_active") is not None else True),
             "line_count": 0,
             "planned_budget": 0.0,
             "planned_spend_to_date": 0.0,
@@ -249,6 +264,7 @@ async def get_pacing(
                     if p["planned_spend_to_date"]
                     else 0
                 ),
+                is_active=p["is_active"],
             )
             for p in phases_by_sheet.values()
         ],

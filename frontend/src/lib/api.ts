@@ -87,6 +87,8 @@ export interface PhaseSummary {
   planned_spend_to_date: number;
   actual_spend_to_date: number;
   pacing_percentage: number;
+  /** False only in retrospective replays where a phase has since been retired. */
+  is_active: boolean;
 }
 
 export interface PacingResponse {
