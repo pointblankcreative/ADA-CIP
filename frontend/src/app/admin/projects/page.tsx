@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -10,10 +10,13 @@ import {
   Loader2,
   Pencil,
   RotateCw,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { api, type AdminProject } from "@/lib/api";
 import { Card } from "@/components/card";
 import { formatCurrency, cn } from "@/lib/utils";
+import { PlansSection } from "./plans-section";
 
 const STATUS_STYLES: Record<string, string> = {
   active: "text-emerald-400 bg-emerald-500/15",
@@ -29,6 +32,8 @@ export default function ManageProjectsPage() {
   const [editCode, setEditCode] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // Which projects have their multi-plan section expanded.
+  const [expandedPlans, setExpandedPlans] = useState<Set<string>>(new Set());
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
@@ -89,6 +94,15 @@ export default function ManageProjectsPage() {
     } catch { /* ignore */ } finally {
       setActionLoading(null);
     }
+  }
+
+  function togglePlans(code: string) {
+    setExpandedPlans((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
   }
 
   return (
@@ -159,9 +173,10 @@ export default function ManageProjectsPage() {
             )}
             {projects.map((p) => {
               const isEditing = editCode === p.project_code;
+              const plansOpen = expandedPlans.has(p.project_code);
               return (
+                <Fragment key={p.project_code}>
                 <tr
-                  key={p.project_code}
                   className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
                 >
                   <td className="px-4 py-3">
@@ -201,11 +216,22 @@ export default function ManageProjectsPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    {p.media_plan_synced ? (
-                      <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400" />
-                    ) : (
-                      <XCircle className="mx-auto h-4 w-4 text-slate-600" />
-                    )}
+                    <button
+                      onClick={() => togglePlans(p.project_code)}
+                      className="inline-flex items-center gap-1 rounded p-1 hover:bg-slate-800/60 text-slate-400 hover:text-white"
+                      title="Manage media plan sheets"
+                    >
+                      {plansOpen ? (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      )}
+                      {p.media_plan_synced ? (
+                        <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      ) : (
+                        <XCircle className="h-4 w-4 text-slate-600" />
+                      )}
+                    </button>
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400">
                     {isEditing ? (
@@ -290,6 +316,17 @@ export default function ManageProjectsPage() {
                     </div>
                   </td>
                 </tr>
+                {plansOpen && (
+                  <tr className="bg-slate-900/40">
+                    <td colSpan={10} className="p-0">
+                      <PlansSection
+                        projectCode={p.project_code}
+                        onChange={fetchProjects}
+                      />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>

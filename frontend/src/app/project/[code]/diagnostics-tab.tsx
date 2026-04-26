@@ -16,9 +16,12 @@ import {
   type DiagnosticOutput,
   type DiagnosticSignal,
   type DiagnosticStatus,
+  type PacingResponse,
+  type PhaseSummary,
+  type PacingLine,
 } from "@/lib/api";
 import { Card } from "@/components/card";
-import { cn } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
 
 const PILLAR_LABELS: Record<string, string> = {
   distribution: "Distribution",
@@ -84,9 +87,19 @@ export function DiagnosticsTab({
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Multi-plan: pacing carries the phase mapping (sheet_id → phase_label,
+  // line_ids → phase). Fetched alongside diagnostics so the per-phase
+  // breakdown panel + signal-evidence chips render without extra round-trips.
+  const [pacing, setPacing] = useState<PacingResponse | null>(null);
+  // Active phase filter (sheet_id). null = "All phases" (aggregate view).
+  const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
+    // Pacing is fetched in parallel — failure here is non-fatal (the
+    // phase-breakdown panel just won't render).
+    api.pacing.get(code, asOfDate).then(setPacing).catch(() => setPacing(null));
+
     if (asOfDate) {
       api.retrospective
         .get(code, asOfDate)
@@ -217,14 +230,135 @@ export function DiagnosticsTab({
         </div>
       )}
 
+      {/* Multi-plan: aggregate diagnostic stays unchanged. The breakdown panel
+          shows how lines/budget split across phases, and clicking a phase
+          chip filters the signal-evidence highlight below. The aggregate
+          health score itself isn't recomputed per-phase — that would need
+          schema-level work (one fact_diagnostic_signals row per phase). */}
+      {pacing && pacing.phases && pacing.phases.length > 1 && (
+        <PhaseBreakdownPanel
+          phases={pacing.phases}
+          lines={pacing.lines}
+          activeSheetId={activeSheetId}
+          onSelect={setActiveSheetId}
+        />
+      )}
+
       {outputs.map((out) => (
-        <DiagnosticCard key={out.id} output={out} />
+        <DiagnosticCard
+          key={out.id}
+          output={out}
+          activePhaseLineIds={
+            activeSheetId && pacing
+              ? new Set(
+                  pacing.lines
+                    .filter((l) => l.sheet_id === activeSheetId)
+                    .map((l) => l.line_id),
+                )
+              : null
+          }
+        />
       ))}
     </div>
   );
 }
 
-function DiagnosticCard({ output }: { output: DiagnosticOutput }) {
+function PhaseBreakdownPanel({
+  phases,
+  lines,
+  activeSheetId,
+  onSelect,
+}: {
+  phases: PhaseSummary[];
+  lines: PacingLine[];
+  activeSheetId: string | null;
+  onSelect: (sheetId: string | null) => void;
+}) {
+  // Map sheet_id → set of line_ids so the chip can show the count even when
+  // pacing's per-phase aggregate dropped pending lines.
+  const linesBySheet = new Map<string, number>();
+  for (const l of lines) {
+    if (!l.sheet_id) continue;
+    linesBySheet.set(l.sheet_id, (linesBySheet.get(l.sheet_id) ?? 0) + 1);
+  }
+
+  return (
+    <Card className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-white">Phase breakdown</h3>
+          <p className="text-[11px] text-slate-500">
+            Aggregate health is shown below. Click a phase to highlight its lines in the signal evidence.
+          </p>
+        </div>
+        {activeSheetId && (
+          <button
+            onClick={() => onSelect(null)}
+            className="text-[11px] text-slate-400 hover:text-white"
+          >
+            Clear filter
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+        {phases.map((phase, idx) => {
+          const isActive = activeSheetId === phase.sheet_id;
+          const status = pacingStatus(phase.pacing_percentage);
+          const heading =
+            phase.phase_label ?? `Phase ${phase.display_order ?? idx + 1}`;
+          return (
+            <button
+              key={phase.sheet_id}
+              onClick={() => onSelect(isActive ? null : phase.sheet_id)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left transition-colors",
+                isActive
+                  ? "border-brand-500/60 bg-brand-500/10"
+                  : "border-slate-700/60 bg-slate-900/40 hover:border-slate-600",
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-semibold text-white">{heading}</div>
+                  {!phase.is_active && (
+                    <span className="rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                      retired
+                    </span>
+                  )}
+                </div>
+                <div className={cn("text-xs font-semibold tabular-nums", pacingColor(status))}>
+                  {formatPercent(phase.pacing_percentage)}
+                </div>
+              </div>
+              <div className="mt-1 text-[11px] text-slate-500">
+                {linesBySheet.get(phase.sheet_id) ?? phase.line_count} lines · {formatCurrency(phase.planned_budget)} planned
+              </div>
+              <div className="text-[11px] text-slate-400">
+                {formatCurrency(phase.actual_spend_to_date)} spent of {formatCurrency(phase.planned_spend_to_date)} planned to date
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function DiagnosticCard({
+  output,
+  activePhaseLineIds,
+}: {
+  output: DiagnosticOutput;
+  /**
+   * When non-null, identifies the lines belonging to the user-selected phase
+   * (multi-plan drill-down). The card surfaces an overlap chip showing how
+   * many of the diagnostic's lines fall in the chosen phase, and dims the
+   * card when the overlap is zero (the diagnostic doesn't apply to the
+   * selected phase). The aggregate score is intentionally NOT recomputed —
+   * per-phase scoring would need its own fact_diagnostic_signals row.
+   */
+  activePhaseLineIds: Set<string> | null;
+}) {
   const pillarOrder =
     output.campaign_type === "persuasion"
       ? PILLAR_ORDER_PERSUASION
@@ -234,8 +368,13 @@ function DiagnosticCard({ output }: { output: DiagnosticOutput }) {
     ? Math.min((output.flight_day / output.flight_total_days) * 100, 100)
     : 0;
 
+  const overlapCount = activePhaseLineIds
+    ? output.line_ids.filter((id) => activePhaseLineIds.has(id)).length
+    : null;
+  const dimmed = overlapCount === 0;
+
   return (
-    <Card>
+    <Card className={cn(dimmed && "opacity-50")}>
       {/* Header: health score + flight progress */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -260,6 +399,15 @@ function DiagnosticCard({ output }: { output: DiagnosticOutput }) {
           <div className="mt-1 text-xs text-slate-500">
             Day {output.flight_day} of {output.flight_total_days} · evaluated {output.evaluation_date}
           </div>
+          {overlapCount !== null && (
+            <div className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300">
+              <span className="text-slate-500">Selected phase:</span>
+              <span className="tabular-nums font-medium text-white">
+                {overlapCount} / {output.line_ids.length}
+              </span>
+              <span className="text-slate-500">lines in this diagnostic</span>
+            </div>
+          )}
         </div>
         <EfficiencyStrip efficiency={output.efficiency} />
       </div>

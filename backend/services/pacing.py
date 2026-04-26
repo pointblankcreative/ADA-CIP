@@ -192,6 +192,10 @@ def run_pacing_for_project(
     # Deduplicate: if old sync versions weren't cleaned up, multiple rows
     # per line_id can exist.  Keep only the latest sync_version per line_id
     # to prevent doubled lines and halved spend in proportional splits.
+    # Multi-plan support (2026-04-25): the JOIN through project_media_plans
+    # restricts pacing to lines whose sheet is registered + active for the
+    # project. Aggregates correctly across every active phase of a multi-flight
+    # campaign. Retired phases (is_active=FALSE) drop out without losing data.
     lines_sql = f"""
         SELECT line_id, line_code, platform_id, channel_category,
                site_network, budget, flight_start, flight_end,
@@ -213,7 +217,12 @@ def run_pacing_for_project(
                     ORDER BY l.sync_version DESC
                 ) AS _rn
             FROM {bq.table('media_plan_lines')} l
-            JOIN {bq.table('media_plans')} p ON l.plan_id = p.plan_id AND p.is_current = TRUE
+            JOIN {bq.table('media_plans')} p
+              ON l.plan_id = p.plan_id AND p.is_current = TRUE
+            JOIN {bq.table('project_media_plans')} pmp
+              ON p.project_code = pmp.project_code
+             AND p.sheet_id   = pmp.sheet_id
+             AND pmp.is_active = TRUE
             WHERE l.project_code = @project_code
                 AND l.is_traditional = FALSE
         )
@@ -731,10 +740,18 @@ def run_all_active(as_of_date: date, skip_writes: bool = False) -> dict:
     ``date.today()``; retrospective batch callers pass the replay date.
     ``skip_writes`` is forwarded to each per-project call.
     """
+    # Multi-plan support (2026-04-25): a project counts as having a media plan
+    # if at least one of its registered, active sheets has a current row in
+    # media_plans. Same JOIN shape as the per-project dedup guard.
     projects_sql = f"""
         SELECT DISTINCT p.project_code
         FROM {bq.table('dim_projects')} p
-        JOIN {bq.table('media_plans')} mp ON p.project_code = mp.project_code AND mp.is_current = TRUE
+        JOIN {bq.table('media_plans')} mp
+          ON p.project_code = mp.project_code AND mp.is_current = TRUE
+        JOIN {bq.table('project_media_plans')} pmp
+          ON mp.project_code = pmp.project_code
+         AND mp.sheet_id   = pmp.sheet_id
+         AND pmp.is_active = TRUE
         WHERE p.status IN ('active', 'in_flight')
     """
     projects = bq.run_query(projects_sql)

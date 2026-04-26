@@ -80,11 +80,17 @@ def _load_media_plan_objectives(project_code: str) -> dict[str, list[str]]:
                 FROM {bq.table('media_plan_lines')}
                 WHERE project_code = @project_code
                   AND objective IS NOT NULL
-                  -- Plan-id-aware dedup guard (see _query_media_plan in
-                  -- backend/services/diagnostics/engine.py for context).
+                  -- Plan-id-aware + multi-plan dedup guard. See
+                  -- backend/routers/pacing.py for the canonical comment.
                   AND plan_id IN (
-                      SELECT plan_id FROM {bq.table('media_plans')}
-                      WHERE project_code = @project_code AND is_current = TRUE
+                      SELECT mp.plan_id
+                      FROM {bq.table('media_plans')} mp
+                      JOIN {bq.table('project_media_plans')} pmp
+                        ON mp.project_code = pmp.project_code
+                       AND mp.sheet_id   = pmp.sheet_id
+                      WHERE mp.project_code = @project_code
+                        AND mp.is_current   = TRUE
+                        AND pmp.is_active   = TRUE
                   )
             ) WHERE _rn = 1
         """

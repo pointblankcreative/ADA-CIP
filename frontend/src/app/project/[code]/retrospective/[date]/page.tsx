@@ -149,7 +149,8 @@ export default function RetrospectivePage() {
                   <>
                     Pacing and diagnostics shown reflect this project&rsquo;s
                     state on that day. Plan and FFS configuration shown
-                    reflect today&rsquo;s values.
+                    reflect today&rsquo;s values. Retired phases are
+                    re-included so historical pacing roll-ups are complete.
                     {meta && (
                       <>
                         {" · "}
