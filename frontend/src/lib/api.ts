@@ -66,6 +66,27 @@ export interface PacingLine {
   bundle_id: string | null;
   bundle_role: BundleRole | null;
   bundle_members: BundleMember[];
+  // Multi-plan support: which sheet/phase this line belongs to. Single-plan
+  // projects get a stable sheet_id and phase_label=null. Both fields are
+  // null for legacy lines whose plan never landed in project_media_plans.
+  sheet_id: string | null;
+  phase_label: string | null;
+  phase_display_order: number | null;
+}
+
+/**
+ * One row per active sheet (project_media_plans entry), aggregated server-side
+ * so the UI can render the phase header card without recomputing totals.
+ */
+export interface PhaseSummary {
+  sheet_id: string;
+  phase_label: string | null;
+  display_order: number | null;
+  line_count: number;
+  planned_budget: number;
+  planned_spend_to_date: number;
+  actual_spend_to_date: number;
+  pacing_percentage: number;
 }
 
 export interface PacingResponse {
@@ -76,6 +97,8 @@ export interface PacingResponse {
   total_actual_to_date: number;
   overall_pacing_percentage: number;
   lines: PacingLine[];
+  /** Empty for legacy projects that haven't landed in project_media_plans. */
+  phases: PhaseSummary[];
 }
 
 export interface PacingHistoryPoint {
