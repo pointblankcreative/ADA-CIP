@@ -35,6 +35,33 @@ class LinePacing(BaseModel):
     bundle_id: str | None = None
     bundle_role: str | None = None  # suggested_parent | suggested_child | confirmed_* | rejected
     bundle_members: list[BundleMember] = []  # populated only on parent rows
+    # Multi-plan support (2026-04-25): which sheet/phase this line came from.
+    # Single-plan projects get a single phase row with phase_label=None and a
+    # stable sheet_id. The frontend groups by sheet_id and renders phase_label
+    # (or "Phase {display_order}" as a fallback) as the section header.
+    sheet_id: str | None = None
+    phase_label: str | None = None
+    phase_display_order: int | None = None
+
+
+class PhaseSummary(BaseModel):
+    """Aggregate roll-up for one phase (one project_media_plans row).
+
+    Surfaced alongside ``PacingResponse.lines`` so the UI can render the
+    phase header card without recomputing totals on the client.
+    """
+    sheet_id: str
+    phase_label: str | None = None
+    display_order: int | None = None
+    line_count: int = 0
+    planned_budget: float = 0
+    planned_spend_to_date: float = 0
+    actual_spend_to_date: float = 0
+    pacing_percentage: float = 0
+    # True when project_media_plans.is_active for this sheet. Live mode never
+    # returns retired phases (filtered upstream); retrospective mode does, so
+    # the UI can mark them as historical.
+    is_active: bool = True
 
 
 class PacingResponse(BaseModel):
@@ -46,6 +73,10 @@ class PacingResponse(BaseModel):
     overall_pacing_percentage: float = 0
     pending_line_count: int = 0  # C2: count of lines excluded from overall pacing
     lines: list[LinePacing] = []
+    # Multi-plan support (2026-04-25): one entry per active sheet, ordered for
+    # display. Single-plan projects get a one-element list. Empty when the
+    # project has no registered phases yet (legacy fallback path).
+    phases: list[PhaseSummary] = []
 
 
 class PacingHistoryPoint(BaseModel):

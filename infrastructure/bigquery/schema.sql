@@ -232,6 +232,34 @@ OPTIONS(
 );
 
 
+-- Project ↔ media-plan-sheet join table (multi-plan support).
+-- A single project can register multiple media plan sheets — e.g. a multi-flight
+-- campaign with one sheet per phase. Each row pins one sheet to one project with
+-- an optional human-readable phase label and a display order. Sync, pacing, and
+-- diagnostics aggregate across every active row for a given project.
+--
+-- Backfill: dim_projects.media_plan_sheet_id is copied into this table the first
+-- time the migration runs, so single-plan projects keep working unchanged. New
+-- projects can either continue setting media_plan_sheet_id (auto-promoted on
+-- save) or use the Plans section in the admin UI directly.
+--
+-- Keyed on (project_code, sheet_id). is_active=FALSE retires a phase without
+-- losing its history; pacing/diagnostics queries skip inactive rows but
+-- existing media_plan_lines remain queryable for retrospective replay.
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.project_media_plans` (
+  project_code   STRING    NOT NULL,
+  sheet_id       STRING    NOT NULL,
+  phase_label    STRING,                                 -- e.g. "Phase 1", "Pre-writ", "GOTV"
+  display_order  INT64,                                  -- ascending; ties broken by created_at
+  is_active      BOOL      DEFAULT TRUE,
+  created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+)
+CLUSTER BY project_code
+OPTIONS(
+  description='Join table mapping projects to one-or-more media plan sheets. Replaces the single-sheet assumption baked into dim_projects.media_plan_sheet_id. Keyed on (project_code, sheet_id).'
+);
+
+
 -- ==============================================================================
 -- FACT TABLES
 -- ==============================================================================

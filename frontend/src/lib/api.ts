@@ -66,6 +66,29 @@ export interface PacingLine {
   bundle_id: string | null;
   bundle_role: BundleRole | null;
   bundle_members: BundleMember[];
+  // Multi-plan support: which sheet/phase this line belongs to. Single-plan
+  // projects get a stable sheet_id and phase_label=null. Both fields are
+  // null for legacy lines whose plan never landed in project_media_plans.
+  sheet_id: string | null;
+  phase_label: string | null;
+  phase_display_order: number | null;
+}
+
+/**
+ * One row per active sheet (project_media_plans entry), aggregated server-side
+ * so the UI can render the phase header card without recomputing totals.
+ */
+export interface PhaseSummary {
+  sheet_id: string;
+  phase_label: string | null;
+  display_order: number | null;
+  line_count: number;
+  planned_budget: number;
+  planned_spend_to_date: number;
+  actual_spend_to_date: number;
+  pacing_percentage: number;
+  /** False only in retrospective replays where a phase has since been retired. */
+  is_active: boolean;
 }
 
 export interface PacingResponse {
@@ -76,6 +99,8 @@ export interface PacingResponse {
   total_actual_to_date: number;
   overall_pacing_percentage: number;
   lines: PacingLine[];
+  /** Empty for legacy projects that haven't landed in project_media_plans. */
+  phases: PhaseSummary[];
 }
 
 export interface PacingHistoryPoint {
@@ -276,6 +301,47 @@ export interface Alert {
   acknowledged_by: string | null;
   resolved_at: string | null;
   slack_sent: boolean;
+}
+
+/**
+ * One row in project_media_plans, optionally enriched with the most-recent
+ * media_plans sync status. Used by the admin Plans section.
+ */
+export interface ProjectPlan {
+  sheet_id: string;
+  phase_label: string | null;
+  display_order: number | null;
+  is_active: boolean;
+  created_at: string | null;
+  last_synced_at: string | null;
+  line_count: number;
+}
+
+export interface ProjectPlansResponse {
+  project_code: string;
+  plans: ProjectPlan[];
+}
+
+export interface ProjectPlanMutationResponse {
+  status: string;
+  project_code: string;
+  sheet_id: string;
+  plans: ProjectPlan[];
+  sync_result?: { status: string; message?: string; lines_created?: number } | null;
+}
+
+export interface SyncAllResponse {
+  project_code: string;
+  sheets_attempted: number;
+  sheets_succeeded: number;
+  sheets_failed: number;
+  results: Array<{
+    sheet_id: string;
+    phase_label?: string | null;
+    status: string;
+    message?: string;
+    lines_created?: number;
+  }>;
 }
 
 export interface AdminProject extends Project {
@@ -745,6 +811,51 @@ export const api = {
       let url = `/api/admin/sync-media-plan?sheet_id=${encodeURIComponent(sheetId)}&project_code=${encodeURIComponent(projectCode)}`;
       if (tabName) url += `&tab_name=${encodeURIComponent(tabName)}`;
       return apiFetch<Record<string, unknown>>(url, { method: "POST" });
+    },
+    /**
+     * Multi-plan support: list/add/update/remove the media plan sheets
+     * registered against a project. The dedup guard joins through
+     * project_media_plans (is_active=TRUE) so retired phases drop out
+     * of pacing/diagnostics without losing their data for retrospective
+     * replay. Backed by /api/admin/projects/{code}/plans.
+     */
+    plans: {
+      list: (projectCode: string) =>
+        apiFetch<ProjectPlansResponse>(
+          `/api/admin/projects/${encodeURIComponent(projectCode)}/plans`,
+        ),
+      add: (
+        projectCode: string,
+        data: {
+          sheet_url_or_id: string;
+          phase_label?: string | null;
+          display_order?: number | null;
+          auto_sync?: boolean;
+        },
+      ) =>
+        apiFetch<ProjectPlanMutationResponse>(
+          `/api/admin/projects/${encodeURIComponent(projectCode)}/plans`,
+          { method: "POST", body: JSON.stringify(data) },
+        ),
+      update: (
+        projectCode: string,
+        sheetId: string,
+        data: { phase_label?: string | null; display_order?: number | null; is_active?: boolean },
+      ) =>
+        apiFetch<ProjectPlanMutationResponse>(
+          `/api/admin/projects/${encodeURIComponent(projectCode)}/plans/${encodeURIComponent(sheetId)}`,
+          { method: "PUT", body: JSON.stringify(data) },
+        ),
+      remove: (projectCode: string, sheetId: string, hard = false) =>
+        apiFetch<ProjectPlanMutationResponse>(
+          `/api/admin/projects/${encodeURIComponent(projectCode)}/plans/${encodeURIComponent(sheetId)}${hard ? "?hard=true" : ""}`,
+          { method: "DELETE" },
+        ),
+      syncAll: (projectCode: string) =>
+        apiFetch<SyncAllResponse>(
+          `/api/admin/projects/${encodeURIComponent(projectCode)}/sync-all`,
+          { method: "POST" },
+        ),
     },
     runTransformation: (mode = "daily") =>
       apiFetch<Record<string, unknown>>(

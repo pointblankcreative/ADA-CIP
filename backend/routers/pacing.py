@@ -8,6 +8,7 @@ from backend.models.pacing import (
     PacingHistoryPoint,
     PacingHistoryResponse,
     PacingResponse,
+    PhaseSummary,
 )
 from backend.services import bigquery_client as bq
 from backend.services.pacing import run_all_active, run_pacing_for_project
@@ -65,26 +66,44 @@ async def get_pacing(
         )
         date_params = []
 
+    # Multi-plan retrospective: a phase that's been retired today
+    # (project_media_plans.is_active = FALSE) was likely active on a past
+    # date. Live mode keeps the strict filter so retired phases drop out;
+    # retrospective mode loosens it so historical replay can still attribute
+    # past lines to their phase. The strict mode is correct in live because
+    # the dedup guard's primary job is dropping stale plan_ids — the active
+    # check is incidental on the live path but load-bearing in retro.
+    pmp_active_filter = (
+        "AND pmp.is_active = TRUE" if as_of_date is None else ""
+    )
+
     tracking_sql = f"""
         WITH mpl_dedup AS (
             SELECT * EXCEPT(_rn) FROM (
                 SELECT
-                    line_id,
-                    audience_name,
-                    flight_start,
-                    flight_end,
+                    l.line_id,
+                    l.audience_name,
+                    l.flight_start,
+                    l.flight_end,
+                    -- Multi-plan: phase metadata flows from media_plans.sheet_id
+                    -- through to the join table for the human label and order.
+                    mp.sheet_id        AS sheet_id,
+                    pmp.phase_label    AS phase_label,
+                    pmp.display_order  AS phase_display_order,
+                    pmp.is_active      AS phase_is_active,
                     ROW_NUMBER() OVER (
-                        PARTITION BY line_id
-                        ORDER BY sync_version DESC
+                        PARTITION BY l.line_id
+                        ORDER BY l.sync_version DESC
                     ) AS _rn
-                FROM {bq.table('media_plan_lines')}
-                WHERE project_code = @project_code
-                  -- Plan-id-aware dedup guard: only consider lines from the
-                  -- current media plan (skips historical pre-purge residue).
-                  AND plan_id IN (
-                      SELECT plan_id FROM {bq.table('media_plans')}
-                      WHERE project_code = @project_code AND is_current = TRUE
-                  )
+                FROM {bq.table('media_plan_lines')} l
+                JOIN {bq.table('media_plans')} mp
+                  ON l.plan_id = mp.plan_id
+                 AND mp.is_current = TRUE
+                JOIN {bq.table('project_media_plans')} pmp
+                  ON mp.project_code = pmp.project_code
+                 AND mp.sheet_id   = pmp.sheet_id
+                 {pmp_active_filter}
+                WHERE l.project_code = @project_code
             ) WHERE _rn = 1
         )
         SELECT
@@ -107,12 +126,16 @@ async def get_pacing(
             bt.bundle_role,
             mpl.audience_name,
             mpl.flight_start,
-            mpl.flight_end
+            mpl.flight_end,
+            mpl.sheet_id,
+            mpl.phase_label,
+            mpl.phase_display_order
         FROM {bq.table('budget_tracking')} bt
         LEFT JOIN mpl_dedup mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
             {date_filter}
-        ORDER BY bt.platform_id, bt.bundle_id, bt.line_code
+        ORDER BY mpl.phase_display_order NULLS LAST, mpl.sheet_id,
+                 bt.platform_id, bt.bundle_id, bt.line_code
     """
     rows = bq.run_query(
         tracking_sql,
@@ -153,10 +176,17 @@ async def get_pacing(
                         ) AS _rn
                     FROM {bq.table('media_plan_lines')}
                     WHERE project_code = @project_code
-                      -- Plan-id-aware dedup guard (see _query_media_plan).
+                      -- Plan-id-aware + multi-plan dedup guard (see top
+                      -- of this router for the canonical comment).
                       AND plan_id IN (
-                          SELECT plan_id FROM {bq.table('media_plans')}
-                          WHERE project_code = @project_code AND is_current = TRUE
+                          SELECT mp.plan_id
+                          FROM {bq.table('media_plans')} mp
+                          JOIN {bq.table('project_media_plans')} pmp
+                            ON mp.project_code = pmp.project_code
+                           AND mp.sheet_id   = pmp.sheet_id
+                          WHERE mp.project_code = @project_code
+                            AND mp.is_current   = TRUE
+                            AND pmp.is_active   = TRUE
                       )
                 ) WHERE _rn = 1
             )
@@ -193,6 +223,55 @@ async def get_pacing(
     total_planned = sum(_float(r.get("planned_spend_to_date")) for r in active_rows)
     total_actual = sum(_float(r.get("actual_spend_to_date")) for r in active_rows)
 
+    # Multi-plan: aggregate per (sheet_id, phase_label, display_order). Lines
+    # with no sheet (legacy projects whose plan never landed in
+    # project_media_plans) are dropped from the phases list — the response
+    # still includes them in `lines` so nothing is hidden.
+    phases_by_sheet: dict[str, dict] = {}
+    for r in rows:
+        sid = r.get("sheet_id")
+        if not sid:
+            continue
+        bucket = phases_by_sheet.setdefault(sid, {
+            "sheet_id": sid,
+            "phase_label": r.get("phase_label"),
+            "display_order": r.get("phase_display_order"),
+            # phase_is_active is None on the live path's column read because
+            # the JOIN filters those rows out — default to True for safety.
+            "is_active": bool(r.get("phase_is_active") if r.get("phase_is_active") is not None else True),
+            "line_count": 0,
+            "planned_budget": 0.0,
+            "planned_spend_to_date": 0.0,
+            "actual_spend_to_date": 0.0,
+        })
+        bucket["line_count"] += 1
+        bucket["planned_budget"] += _float(r.get("planned_budget"))
+        bucket["planned_spend_to_date"] += _float(r.get("planned_spend_to_date"))
+        bucket["actual_spend_to_date"] += _float(r.get("actual_spend_to_date"))
+
+    phase_summaries = sorted(
+        [
+            PhaseSummary(
+                sheet_id=p["sheet_id"],
+                phase_label=p["phase_label"],
+                display_order=p["display_order"],
+                line_count=p["line_count"],
+                planned_budget=p["planned_budget"],
+                planned_spend_to_date=p["planned_spend_to_date"],
+                actual_spend_to_date=p["actual_spend_to_date"],
+                pacing_percentage=(
+                    round(p["actual_spend_to_date"] / p["planned_spend_to_date"] * 100, 1)
+                    if p["planned_spend_to_date"]
+                    else 0
+                ),
+                is_active=p["is_active"],
+            )
+            for p in phases_by_sheet.values()
+        ],
+        # NULL display_order sorts last; tie-break on phase_label for stability.
+        key=lambda s: (s.display_order is None, s.display_order or 0, s.phase_label or ""),
+    )
+
     return PacingResponse(
         project_code=project_code,
         as_of_date=as_of,
@@ -223,9 +302,13 @@ async def get_pacing(
                 bundle_id=r.get("bundle_id"),
                 bundle_role=r.get("bundle_role"),
                 bundle_members=bundle_members_by_id.get(r.get("bundle_id") or "", []),
+                sheet_id=r.get("sheet_id"),
+                phase_label=r.get("phase_label"),
+                phase_display_order=r.get("phase_display_order"),
             )
             for r in rows
         ],
+        phases=phase_summaries,
     )
 
 

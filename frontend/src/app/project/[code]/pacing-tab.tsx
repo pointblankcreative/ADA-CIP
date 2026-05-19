@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, type PacingResponse, type PacingLine, type BundleMember } from "@/lib/api";
+import { api, type PacingResponse, type PacingLine, type BundleMember, type PhaseSummary } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { OscilloscopeCard } from "@/components/oscilloscope-card";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -192,7 +192,55 @@ export function PacingTab({
         />
       </div>
 
-      {/* Per-line pacing */}
+      {/* Per-line pacing — grouped by phase when there's more than one. */}
+      <PacingLinesSection
+        data={data}
+        code={code}
+        asOfDate={asOfDate}
+        onNameUpdate={handleNameUpdate}
+        onBundleStateChange={handleBundleStateChange}
+      />
+
+      {/* Blocking chart visualization */}
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
+          As of {data.as_of_date}
+        </h3>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Render the line-by-line pacing list. Single-plan projects collapse to a flat
+ * list (matches the legacy view); multi-plan projects render a header per
+ * phase with its aggregate pacing % and a sub-list of lines beneath it.
+ *
+ * Lines whose sheet_id doesn't match any returned phase (legacy lines synced
+ * before project_media_plans existed) are bucketed under an "Unassigned"
+ * group at the bottom rather than being silently dropped.
+ */
+function PacingLinesSection({
+  data,
+  code,
+  asOfDate,
+  onNameUpdate,
+  onBundleStateChange,
+}: {
+  data: PacingResponse;
+  code: string;
+  asOfDate?: string;
+  onNameUpdate: (lineId: string, newName: string) => void;
+  onBundleStateChange: (
+    bundleId: string,
+    newState: "confirmed" | "suggested" | "rejected"
+  ) => void;
+}) {
+  const phases = data.phases ?? [];
+  const hasMultiplePhases = phases.length > 1;
+
+  if (!hasMultiplePhases) {
+    return (
       <div>
         <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
           Line-by-Line Pacing
@@ -204,22 +252,153 @@ export function PacingTab({
               line={line}
               code={code}
               asOfDate={asOfDate}
-              onNameUpdate={handleNameUpdate}
-              onBundleStateChange={handleBundleStateChange}
+              onNameUpdate={onNameUpdate}
+              onBundleStateChange={onBundleStateChange}
             />
           ))}
         </div>
       </div>
+    );
+  }
 
-      {/* Blocking chart visualization */}
-      <div>
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-          As of {data.as_of_date}
-        </h3>
+  // Multi-phase: bucket lines by sheet_id, fall back to "Unassigned" for
+  // legacy lines whose sheet didn't make it into project_media_plans.
+  const linesBySheet = new Map<string, PacingLine[]>();
+  const unassigned: PacingLine[] = [];
+  for (const line of data.lines) {
+    if (!line.sheet_id) {
+      unassigned.push(line);
+      continue;
+    }
+    const arr = linesBySheet.get(line.sheet_id);
+    if (arr) arr.push(line);
+    else linesBySheet.set(line.sheet_id, [line]);
+  }
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
+        Line-by-Line Pacing · {phases.length} phases
+      </h3>
+      <div className="mt-3 space-y-6">
+        {phases.map((phase, idx) => (
+          <PhaseGroup
+            key={phase.sheet_id}
+            phase={phase}
+            phaseNumber={idx + 1}
+            lines={linesBySheet.get(phase.sheet_id) ?? []}
+            code={code}
+            asOfDate={asOfDate}
+            onNameUpdate={onNameUpdate}
+            onBundleStateChange={onBundleStateChange}
+          />
+        ))}
+        {unassigned.length > 0 && (
+          <div>
+            <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-4 py-2 mb-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Unassigned
+              </div>
+              <div className="text-[11px] text-slate-500">
+                {unassigned.length} line{unassigned.length === 1 ? "" : "s"} from a sheet that's no longer registered against this project.
+              </div>
+            </div>
+            <div className="space-y-3">
+              {unassigned.map((line) => (
+                <LineRow
+                  key={line.line_id}
+                  line={line}
+                  code={code}
+                  asOfDate={asOfDate}
+                  onNameUpdate={onNameUpdate}
+                  onBundleStateChange={onBundleStateChange}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+function PhaseGroup({
+  phase,
+  phaseNumber,
+  lines,
+  code,
+  asOfDate,
+  onNameUpdate,
+  onBundleStateChange,
+}: {
+  phase: PhaseSummary;
+  /** 1-based index used as a fallback label when phase_label is null. */
+  phaseNumber: number;
+  lines: PacingLine[];
+  code: string;
+  asOfDate?: string;
+  onNameUpdate: (lineId: string, newName: string) => void;
+  onBundleStateChange: (
+    bundleId: string,
+    newState: "confirmed" | "suggested" | "rejected"
+  ) => void;
+}) {
+  const status = pacingStatus(phase.pacing_percentage);
+  const heading = phase.phase_label ?? `Phase ${phase.display_order ?? phaseNumber}`;
+  return (
+    <div>
+      <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-4 py-3 mb-3 flex items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="text-sm font-semibold text-white">{heading}</div>
+            {!phase.is_active && (
+              <span className="rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                retired
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] text-slate-500">
+            {phase.line_count} line{phase.line_count === 1 ? "" : "s"} · {formatCurrency(phase.planned_budget)} planned
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500">Spent</div>
+            <div className="text-sm tabular-nums text-white">
+              {formatCurrency(phase.actual_spend_to_date)}
+              <span className="text-slate-500"> / {formatCurrency(phase.planned_spend_to_date)}</span>
+            </div>
+          </div>
+          <div className={cn("text-right", pacingColor(status))}>
+            <div className="text-[10px] uppercase tracking-wider opacity-80">Pacing</div>
+            <div className="text-sm font-semibold tabular-nums">
+              {formatPercent(phase.pacing_percentage)}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {lines.length === 0 ? (
+          <div className="text-xs text-slate-500 px-4 py-3 italic">
+            No active lines in this phase yet.
+          </div>
+        ) : (
+          lines.map((line) => (
+            <LineRow
+              key={line.line_id}
+              line={line}
+              code={code}
+              asOfDate={asOfDate}
+              onNameUpdate={onNameUpdate}
+              onBundleStateChange={onBundleStateChange}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 function LineRow({
   line,
