@@ -716,3 +716,125 @@ class TestReachAggregationMultiCampaign:
         assert fb.reach == 220_000
         # Frequency: impression-weighted avg ≈ 2.333
         assert fb.frequency == pytest.approx(2.1e6 / 9e5, rel=1e-3)
+
+
+# ── Regression: GA4 query scopes by property_id only ────────────────
+
+
+class TestGA4PropertyIdScope:
+    """Regression for the GA4 wiring bug discovered during pre-launch checks.
+
+    Pre-fix: `_query_ga4` matched `session_campaign LIKE '%<url_pattern>%'`
+    against `fact_ga4_daily`, but `fact_ga4_daily` has no URL column.
+    The clause never matched, silently zeroing F3-F5 (conversion funnel)
+    and R3 (landing-page depth) signals across every project.
+
+    Post-fix: scope by `ga4_property_id` only. `url_pattern` is retained
+    on `project_ga4_urls` for documentation but is not used in the query.
+    """
+
+    def test_ga4_query_does_not_filter_by_session_campaign(
+        self, osstf_media_plan, osstf_digital_rows, osstf_adset_rows
+    ):
+        """The fact_ga4_daily query must NOT contain a session_campaign filter."""
+        from backend.services.diagnostics.engine import run_diagnostics_for_project
+        ga4_urls = [{"ga4_property_id": "GA4-123", "url_pattern": "underfunded.ca"}]
+        ga4_rows = [{
+            "sessions": 1000, "scrolls": 300, "engaged_sessions": 500,
+            "form_starts": 50, "form_submits": 25, "key_events": 20,
+        }]
+        with _EngineContext(
+            osstf_media_plan, osstf_digital_rows, osstf_adset_rows,
+            ga4_url_rows=ga4_urls, ga4_metric_rows=ga4_rows,
+        ) as ctx:
+            run_diagnostics_for_project("25042", date(2026, 4, 15))
+
+        ga4_sqls = [s for s in ctx.router.calls
+                    if "FROM `point-blank-ada.cip.fact_ga4_daily`" in s]
+        assert ga4_sqls, "Expected at least one fact_ga4_daily query"
+        for sql in ga4_sqls:
+            assert "session_campaign" not in sql, (
+                "fact_ga4_daily should be scoped by ga4_property_id only; "
+                "session_campaign LIKE '%url_pattern%' was the pre-fix bug "
+                "and the clause never matched any row."
+            )
+            assert "ga4_property_id" in sql, (
+                "fact_ga4_daily must be scoped by ga4_property_id"
+            )
+
+    def test_ga4_query_dedups_property_ids(
+        self, osstf_media_plan, osstf_digital_rows, osstf_adset_rows
+    ):
+        """Multiple url_pattern rows pointing at the same property must
+        collapse to a single OR-clause, not produce duplicate property
+        filters."""
+        from backend.services.diagnostics.engine import run_diagnostics_for_project
+        ga4_urls = [
+            {"ga4_property_id": "GA4-123", "url_pattern": "underfunded.ca/en"},
+            {"ga4_property_id": "GA4-123", "url_pattern": "underfunded.ca/fr"},
+            {"ga4_property_id": "GA4-123", "url_pattern": "sousfinances.ca"},
+        ]
+        ga4_rows = [{
+            "sessions": 1000, "scrolls": 300, "engaged_sessions": 500,
+            "form_starts": 50, "form_submits": 25, "key_events": 20,
+        }]
+        with _EngineContext(
+            osstf_media_plan, osstf_digital_rows, osstf_adset_rows,
+            ga4_url_rows=ga4_urls, ga4_metric_rows=ga4_rows,
+        ) as ctx:
+            run_diagnostics_for_project("25042", date(2026, 4, 15))
+
+        ga4_sqls = [s for s in ctx.router.calls
+                    if "FROM `point-blank-ada.cip.fact_ga4_daily`" in s]
+        assert ga4_sqls
+        # Exactly one ga4_property_id bind even though three rows came back.
+        sql = ga4_sqls[0]
+        assert sql.count("ga4_property_id = @ga4_pid_") == 1, (
+            f"Expected one property bind after dedup; got SQL:\n{sql}"
+        )
+
+    def test_ga4_query_handles_multiple_distinct_properties(
+        self, osstf_media_plan, osstf_digital_rows, osstf_adset_rows
+    ):
+        """Two distinct property ids should produce two OR-clauses."""
+        from backend.services.diagnostics.engine import run_diagnostics_for_project
+        ga4_urls = [
+            {"ga4_property_id": "GA4-123", "url_pattern": "underfunded.ca"},
+            {"ga4_property_id": "GA4-456", "url_pattern": "secondsite.ca"},
+        ]
+        ga4_rows = [{
+            "sessions": 1500, "scrolls": 400, "engaged_sessions": 700,
+            "form_starts": 60, "form_submits": 30, "key_events": 25,
+        }]
+        with _EngineContext(
+            osstf_media_plan, osstf_digital_rows, osstf_adset_rows,
+            ga4_url_rows=ga4_urls, ga4_metric_rows=ga4_rows,
+        ) as ctx:
+            run_diagnostics_for_project("25042", date(2026, 4, 15))
+
+        ga4_sqls = [s for s in ctx.router.calls
+                    if "FROM `point-blank-ada.cip.fact_ga4_daily`" in s]
+        sql = ga4_sqls[0]
+        assert sql.count("ga4_property_id = @ga4_pid_") == 2
+
+    def test_ga4_metrics_returned_when_property_matches(
+        self, osstf_media_plan, osstf_digital_rows, osstf_adset_rows
+    ):
+        """Sanity: with a configured property, GA4 metrics flow into
+        CampaignData (proves the fix doesn't accidentally zero things out).
+        """
+        from backend.services.diagnostics.engine import run_diagnostics_for_project
+        ga4_urls = [{"ga4_property_id": "530965077", "url_pattern": "underfunded.ca"}]
+        ga4_rows = [{
+            "sessions": 4574, "scrolls": 0, "engaged_sessions": 1200,
+            "form_starts": 0, "form_submits": 0, "key_events": 14,
+        }]
+        with _EngineContext(
+            osstf_media_plan, osstf_digital_rows, osstf_adset_rows,
+            ga4_url_rows=ga4_urls, ga4_metric_rows=ga4_rows,
+        ) as ctx:
+            run_diagnostics_for_project("25042", date(2026, 4, 15))
+
+        for ctype in (CampaignType.PERSUASION, CampaignType.CONVERSION):
+            assert ctx.captured_data[ctype].ga4.sessions == 4574
+            assert ctx.captured_data[ctype].ga4.key_events == 14

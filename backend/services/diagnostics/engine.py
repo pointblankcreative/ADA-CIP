@@ -699,9 +699,20 @@ def _query_ga4(
     """Query GA4 session data by joining project_ga4_urls → fact_ga4_daily.
 
     `fact_ga4_daily` has no project_code column; attribution is via the
-    `project_ga4_urls` mapping table (project_code ↔ ga4_property_id +
-    url_pattern). If the project has no GA4 URLs configured, we return
-    empty metrics — this is expected and must not break Distribution signals.
+    `project_ga4_urls` mapping table (project_code ↔ ga4_property_id).
+    If the project has no GA4 URLs configured, we return empty metrics —
+    this is expected and must not break Distribution signals.
+
+    Scoping is by `ga4_property_id` only. The `url_pattern` field on
+    `project_ga4_urls` is configured per-project but is NOT used in the
+    WHERE clause: `fact_ga4_daily` exposes no page_path / hostname column,
+    only `session_source` / `session_medium` / `session_campaign`. A
+    previous version of this query matched `session_campaign LIKE
+    '%<url_pattern>%'`, which never matched any row and silently zeroed
+    F3–F5 (conversion funnel) and R3 (landing-page depth) signals across
+    every project. The url_pattern column is retained for documentation /
+    a future page-path-aware schema, but property_id is the correct scope
+    today because each GA4 property maps to a single project.
 
     Note: GA4 data is NOT partitioned by campaign type (session data isn't
     objective-tagged). Per Build Plan §12, the same GA4Metrics feeds both the
@@ -724,20 +735,24 @@ def _query_ga4(
     if not url_rows:
         return GA4Metrics()
 
-    # Build an OR clause across (property_id, url_pattern) tuples.
+    # Scope by ga4_property_id only — see docstring. Dedup the property
+    # ids in case a project has multiple url_pattern rows pointing at the
+    # same property (we'd otherwise generate duplicate OR-clauses with
+    # different bind names but identical semantics).
+    seen_pids: set[str] = set()
     clauses = []
     params: list = [
         bq.date_param("flight_start", flight_start),
         bq.date_param("eval_date", eval_date),
     ]
-    for i, r in enumerate(url_rows):
-        pid_name = f"ga4_pid_{i}"
-        url_name = f"ga4_url_{i}"
-        clauses.append(
-            f"(ga4_property_id = @{pid_name} AND session_campaign LIKE @{url_name})"
-        )
-        params.append(bq.string_param(pid_name, str(r["ga4_property_id"])))
-        params.append(bq.string_param(url_name, f"%{r['url_pattern']}%"))
+    for r in url_rows:
+        pid = str(r["ga4_property_id"])
+        if pid in seen_pids:
+            continue
+        seen_pids.add(pid)
+        pid_name = f"ga4_pid_{len(seen_pids) - 1}"
+        clauses.append(f"ga4_property_id = @{pid_name}")
+        params.append(bq.string_param(pid_name, pid))
 
     where_urls = " OR ".join(clauses) if clauses else "FALSE"
     sql = f"""
