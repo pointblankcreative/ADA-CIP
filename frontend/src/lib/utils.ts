@@ -121,3 +121,71 @@ export function daysUntil(dateStr: string | null): number {
   now.setHours(0, 0, 0, 0);
   return Math.ceil((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
+
+export type FlightDayVariant = "combined" | "short";
+
+export interface FlightDayInput {
+  /** Current day-of-flight (1-indexed). From DiagnosticOutput.flight_day. */
+  flightDay?: number | null;
+  /** Total scheduled flight length in days. Derive from end - start if not on hand. */
+  flightTotalDays?: number | null;
+  /** Days remaining from today. From Project.days_remaining. Negative = ended. */
+  daysRemaining?: number | null;
+}
+
+/**
+ * Canonical day-count phrasing for ADA-CIP surfaces.
+ *
+ * "combined" → "Day 14 of 30 · 16 days remaining" (project header, diagnostics card)
+ * "short"    → "16 days remaining" / "Ends today" / "Ended" (dashboard cards, tight space)
+ *
+ * Falls back gracefully when only one half of the inputs is available. See
+ * AI-049 for context — three surfaces were rendering three different
+ * phrasings; this centralizes the rules.
+ */
+export function formatFlightDay(
+  input: FlightDayInput,
+  variant: FlightDayVariant = "combined",
+): string {
+  const { flightDay, flightTotalDays, daysRemaining } = input;
+
+  // Terminal: campaign ended (negative days remaining).
+  if (daysRemaining != null && daysRemaining < 0) {
+    return variant === "short" ? "Ended" : "Campaign ended";
+  }
+  // Ends today (zero days remaining).
+  if (daysRemaining === 0) {
+    if (variant === "short") return "Ends today";
+    if (flightDay != null && flightTotalDays != null) {
+      return `Day ${flightDay} of ${flightTotalDays} · ends today`;
+    }
+    return "Ends today";
+  }
+
+  // Short variant: just the countdown, used on the dashboard cards.
+  if (variant === "short") {
+    if (daysRemaining != null && daysRemaining > 0) {
+      return `${daysRemaining} days remaining`;
+    }
+    // Fallback when daysRemaining isn't available — derive from flight halves.
+    if (flightDay != null && flightTotalDays != null) {
+      const left = Math.max(0, flightTotalDays - flightDay);
+      return `${left} days remaining`;
+    }
+    return "";
+  }
+
+  // Combined variant: prefer "Day N of M · X days remaining".
+  if (flightDay != null && flightTotalDays != null) {
+    const left =
+      daysRemaining != null && daysRemaining > 0
+        ? daysRemaining
+        : Math.max(0, flightTotalDays - flightDay);
+    return `Day ${flightDay} of ${flightTotalDays} · ${left} days remaining`;
+  }
+  // Combined but missing flight halves — fall back to short-form text.
+  if (daysRemaining != null && daysRemaining > 0) {
+    return `${daysRemaining} days remaining`;
+  }
+  return "";
+}

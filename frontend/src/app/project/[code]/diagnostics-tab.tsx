@@ -21,7 +21,7 @@ import {
   type PacingLine,
 } from "@/lib/api";
 import { Card } from "@/components/card";
-import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
+import { cn, formatCurrency, formatFlightDay, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
 
 const PILLAR_LABELS: Record<string, string> = {
   distribution: "Distribution",
@@ -397,7 +397,19 @@ function DiagnosticCard({
             )}
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            Day {output.flight_day} of {output.flight_total_days} · evaluated {output.evaluation_date}
+            {formatFlightDay(
+              {
+                flightDay: output.flight_day,
+                flightTotalDays: output.flight_total_days,
+                daysRemaining:
+                  output.flight_total_days != null && output.flight_day != null
+                    ? output.flight_total_days - output.flight_day
+                    : null,
+              },
+              "combined",
+            )}
+            {" · evaluated "}
+            {output.evaluation_date}
           </div>
           {overlapCount !== null && (
             <div className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300">
