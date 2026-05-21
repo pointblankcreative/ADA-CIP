@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "CIP — Campaign Intelligence Platform",
   description:
-    "Campaign monitoring, budget pacing, and automated reporting for Point Blank Creative",
+    "Campaign monitoring, budget pacing, and automated reporting for Point Blank",
 };
 
 export default function RootLayout({
