@@ -9,7 +9,15 @@ interface PacingBadgeProps {
 
 export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md" }: PacingBadgeProps) {
   const status = pacingStatus(percentage);
-  const isPending = lineStatus === "pending" || lineStatus === "not_started" || (percentage == null && totalSpend > 0);
+  // AI-001: the "spend without a percentage" fallback is a LINE-level
+  // heuristic — a brand-new flight that's started spending before the daily
+  // pacing engine has computed a percentage for it. It must NOT fire for
+  // project-level callers (home cards, project header) that don't pass
+  // `lineStatus`, otherwise an actively-spending project whose backend
+  // pacing_percentage is null shows "Pending" instead of the honest "No Data".
+  const isPending = lineStatus === "pending"
+    || lineStatus === "not_started"
+    || (lineStatus != null && percentage == null && totalSpend > 0);
   const isCompleted = lineStatus === "completed";
 
   const labels: Record<string, string> = {
