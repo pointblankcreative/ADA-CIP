@@ -121,3 +121,62 @@ export function daysUntil(dateStr: string | null): number {
   now.setHours(0, 0, 0, 0);
   return Math.ceil((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
+
+/**
+ * Returns true if `platformId` is in the backend-declared support list for a
+ * given metric. `supportList` comes from
+ * PerformanceResponse.metric_platforms[metric] and carries platform LABELS
+ * (e.g. "Meta", "Google Ads", "StackAdapt") while `platformId` is the
+ * snake_case ID ("meta", "google_ads", "stackadapt"). To match across both
+ * forms we normalize each side by lowercasing AND stripping every
+ * non-alphanumeric character, so "google_ads" and "Google Ads" both collapse
+ * to "googleads" and compare equal. Plain case-insensitive equality is not
+ * enough — it only worked for single-word names.
+ *
+ * Used to disambiguate backend `0` from backend `null` when a platform
+ * simply doesn't report a metric (e.g. Google Ads / StackAdapt don't report
+ * engagements; their rows return engagement_rate=0.0, not null).
+ */
+export function platformSupportsMetric(
+  platformId: string | null | undefined,
+  supportList: string[] | undefined,
+): boolean {
+  if (!platformId || !supportList || supportList.length === 0) return false;
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const needle = normalize(platformId);
+  return supportList.some((p) => normalize(p) === needle);
+}
+
+/**
+ * Render an engagement rate cell for a single-platform row (AdSetRow, AdRow).
+ * Shows "—" when the platform doesn't support engagements, or when the value
+ * is null. Otherwise returns the formatted percentage.
+ */
+export function renderEngagementRate(
+  engagementRate: number | null | undefined,
+  platformId: string | null | undefined,
+  supportList: string[] | undefined,
+): string {
+  if (!platformSupportsMetric(platformId, supportList)) return "—";
+  if (engagementRate == null) return "—";
+  return formatPercent(engagementRate * 100);
+}
+
+/**
+ * Render an engagement rate cell for a multi-platform row
+ * (CreativeVariantRow.platforms is a string[] because one variant may ship to
+ * multiple platforms). A row gets a real number if at least one of its
+ * platforms supports the metric — the value remains meaningful because it's a
+ * weighted average across that supporting subset.
+ */
+export function renderEngagementRateMulti(
+  engagementRate: number | null | undefined,
+  platforms: string[] | null | undefined,
+  supportList: string[] | undefined,
+): string {
+  if (!platforms || platforms.length === 0) return "—";
+  const supported = platforms.some((p) => platformSupportsMetric(p, supportList));
+  if (!supported) return "—";
+  if (engagementRate == null) return "—";
+  return formatPercent(engagementRate * 100);
+}

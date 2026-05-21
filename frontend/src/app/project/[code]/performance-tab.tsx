@@ -38,6 +38,7 @@ import {
   formatPercent,
   platformLabel,
   cn,
+  renderEngagementRateMulti,
 } from "@/lib/utils";
 
 const RANGE_OPTIONS = [
@@ -207,6 +208,13 @@ export function PerformanceTab({ code }: { code: string }) {
     data.total_impressions > 0
       ? (data.total_clicks / data.total_impressions) * 100
       : 0;
+  // The Engagement Rate KPI tile already discriminates correctly: it gates on
+  // `has(data, "engagements")` (i.e. available_metrics) AND truthy-tests
+  // total_engagements, so platforms that don't report engagements fall through
+  // to the Clicks tile. The drilldown tables (adset / ad / creative variants)
+  // need the same discrimination per-row — see AI-029 / AI-115 — which is
+  // handled via the renderEngagementRate{,Multi} helpers and the
+  // metric_platforms.engagements prop passed down below.
   const engagementRate =
     has(data, "engagements") && data.total_impressions > 0 && data.total_engagements
       ? (data.total_engagements / data.total_impressions) * 100
@@ -544,13 +552,19 @@ export function PerformanceTab({ code }: { code: string }) {
       />
 
       {/* ── Audience (ad set) drill-down ─────────────────────────── */}
-      {adsetsData && <AdSetDrillDown data={adsetsData} />}
+      {adsetsData && (
+        <AdSetDrillDown
+          data={adsetsData}
+          engagementSupport={data.metric_platforms?.engagements}
+        />
+      )}
 
       {/* ── Creative variants (cross-platform) ───────────────────── */}
       {creativesData && creativesData.creatives.length > 0 && (
         <CreativeVariantsTable
           data={creativesData}
           projectCode={code}
+          engagementSupport={data.metric_platforms?.engagements}
           onRename={(oldVariant: string, newVariant: string) => {
             setCreativesData((prev) => {
               if (!prev) return prev;
@@ -568,7 +582,12 @@ export function PerformanceTab({ code }: { code: string }) {
       )}
 
       {/* ── Creative (ad) drill-down ──────────────────────────────── */}
-      {adsData && <AdDrillDown data={adsData} />}
+      {adsData && (
+        <AdDrillDown
+          data={adsData}
+          engagementSupport={data.metric_platforms?.engagements}
+        />
+      )}
 
       {/* ── GA4 Web Analytics Section ─────────────────────────────── */}
       {ga4Data?.has_ga4 && ga4Data.daily.length > 0 && (
@@ -618,10 +637,13 @@ export function PerformanceTab({ code }: { code: string }) {
 function CreativeVariantsTable({
   data,
   projectCode,
+  engagementSupport,
   onRename,
 }: {
   data: CreativeVariantResponse;
   projectCode: string;
+  /** Platforms that report engagements — see AI-029. */
+  engagementSupport?: string[];
   onRename: (oldVariant: string, newVariant: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -724,6 +746,7 @@ function CreativeVariantsTable({
                     isExpanded={isExpanded}
                     isRenaming={isRenaming}
                     renameValue={renameValue}
+                    engagementSupport={engagementSupport}
                     onToggle={() => toggleExpand(row.creative_variant)}
                     onStartRename={() => {
                       setRenaming(row.creative_variant);
@@ -748,6 +771,7 @@ function VariantRowGroup({
   isExpanded,
   isRenaming,
   renameValue,
+  engagementSupport,
   onToggle,
   onStartRename,
   onRenameChange,
@@ -758,6 +782,8 @@ function VariantRowGroup({
   isExpanded: boolean;
   isRenaming: boolean;
   renameValue: string;
+  /** Platforms that report engagements — see AI-029. */
+  engagementSupport?: string[];
   onToggle: () => void;
   onStartRename: () => void;
   onRenameChange: (v: string) => void;
@@ -846,7 +872,7 @@ function VariantRowGroup({
           {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
         </td>
         <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-          {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
+          {renderEngagementRateMulti(row.engagement_rate, row.platforms, engagementSupport)}
         </td>
         <td className="px-5 py-3 text-right tabular-nums text-slate-400">
           {row.vcr != null ? formatPercent(row.vcr * 100) : "—"}
