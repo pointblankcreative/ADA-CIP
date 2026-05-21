@@ -432,6 +432,7 @@ export function OscilloscopeCard({
                         <PacingBadge
                           percentage={line.pacing_percentage}
                           lineStatus={line.line_status}
+                          variant="label"
                         />
                       </td>
                     </tr>
