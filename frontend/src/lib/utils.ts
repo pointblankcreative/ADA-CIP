@@ -149,6 +149,21 @@ export function formatFlightDay(
 ): string {
   const { flightDay, flightTotalDays, daysRemaining } = input;
 
+  // Retro-view case: looking at a flight whose end date is in the past.
+  // flightDay continues counting forward from start, so it can exceed
+  // flightTotalDays. In that case the combined variant keeps the "Day N of
+  // M" anchor (so the user still knows where in the schedule they are) and
+  // swaps the "X days remaining" half for "ended". Short variant stays
+  // terse — the dashboard cards just need to signal the flight is over.
+  if (
+    flightDay != null &&
+    flightTotalDays != null &&
+    flightDay > flightTotalDays
+  ) {
+    if (variant === "short") return "Ended";
+    return `Day ${flightDay} of ${flightTotalDays} · ended`;
+  }
+
   // Terminal: campaign ended (negative days remaining).
   if (daysRemaining != null && daysRemaining < 0) {
     return variant === "short" ? "Ended" : "Campaign ended";
