@@ -19,6 +19,7 @@ import { BudgetGauge } from "@/components/budget-gauge";
 import { OrphanPanel } from "@/components/orphan-panel";
 import {
   formatCurrency,
+  formatFlightDay,
   formatNumber,
   pacingStatus,
   pacingBg,
@@ -274,11 +275,7 @@ function ProjectCard({ project: p }: { project: Project }) {
         <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
           <span className="flex items-center gap-1">
             <Calendar className="h-3 w-3" />
-            {p.days_remaining > 0
-              ? `${p.days_remaining}d left`
-              : p.days_remaining === 0
-              ? "Ends today"
-              : "Ended"}
+            {formatFlightDay({ daysRemaining: p.days_remaining }, "short")}
           </span>
           <span className="flex items-center gap-1">
             <DollarSign className="h-3 w-3" />
