@@ -34,6 +34,7 @@ import { AdSetDrillDown } from "@/components/adset-drilldown";
 import { AdDrillDown } from "@/components/ad-drilldown";
 import {
   formatCurrency,
+  formatCurrencyTick,
   formatNumber,
   formatPercent,
   platformLabel,
@@ -420,7 +421,7 @@ export function PerformanceTab({ code }: { code: string }) {
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
               <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${((v ?? 0) / 1000).toFixed(0)}k`} />
+              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={formatCurrencyTick} />
               <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
               <Area type="monotone" dataKey="spend" stroke="#3b82f6" strokeWidth={2} fill="url(#spendGrad)" />
             </AreaChart>
@@ -530,7 +531,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 layout="vertical"
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={(v) => `$${((v ?? 0) / 1000).toFixed(0)}k`} />
+                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={formatCurrencyTick} />
                 <YAxis type="category" dataKey="name" stroke="#475569" fontSize={11} width={80} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
                 <Bar dataKey="spend" radius={[0, 4, 4, 0]}>
