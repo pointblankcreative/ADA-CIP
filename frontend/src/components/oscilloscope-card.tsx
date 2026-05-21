@@ -306,7 +306,7 @@ export function OscilloscopeCard({
     : health > 0.85
       ? "Healthy"
       : health > 0.5
-        ? "Attention"
+        ? "Watch"
         : "Critical";
   const healthColor = allPending
     ? "text-blue-400"

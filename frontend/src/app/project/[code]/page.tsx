@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { api, type Project } from "@/lib/api";
 import { PacingBadge } from "@/components/pacing-badge";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, formatFlightDay } from "@/lib/utils";
 import { PacingTab } from "./pacing-tab";
 import { PerformanceTab } from "./performance-tab";
 import { AlertsTab } from "./alerts-tab";
@@ -33,6 +33,41 @@ type TabId = (typeof TABS)[number]["id"];
 
 function isUnprovisioned(p: Project): boolean {
   return !p.net_budget || p.net_budget === 0;
+}
+
+/**
+ * Derive flight halves for `formatFlightDay` from a Project. flight_total_days
+ * is `end - start + 1` (inclusive of both endpoints, matching how the
+ * diagnostic engine counts), and flight_day is computed from today against
+ * start_date. We pass daysRemaining straight through so the helper can prefer
+ * it over the derived value (it's the source of truth — accounts for project
+ * timezone the same way the API does).
+ */
+function buildFlightDayInput(p: Project) {
+  const startMs = Date.parse(p.start_date + "T00:00:00");
+  const endMs = Date.parse(p.end_date + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+
+  const dayMs = 1000 * 60 * 60 * 24;
+  const flightTotalDays =
+    isFinite(startMs) && isFinite(endMs)
+      ? Math.max(1, Math.round((endMs - startMs) / dayMs) + 1)
+      : null;
+  const flightDay =
+    isFinite(startMs) && flightTotalDays != null
+      ? Math.min(
+          flightTotalDays,
+          Math.max(1, Math.floor((todayMs - startMs) / dayMs) + 1),
+        )
+      : null;
+
+  return {
+    flightDay,
+    flightTotalDays,
+    daysRemaining: p.days_remaining,
+  };
 }
 
 export default function ProjectDetailPage() {
@@ -89,11 +124,7 @@ export default function ProjectDetailPage() {
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">
                 <span>Budget: {formatCurrency(project.net_budget)}</span>
                 <span>Spent: {formatCurrency(project.total_spend)}</span>
-                <span>
-                  {project.days_remaining > 0
-                    ? `${project.days_remaining} days remaining`
-                    : "Campaign ended"}
-                </span>
+                <span>{formatFlightDay(buildFlightDayInput(project), "combined")}</span>
               </div>
             )}
           </div>
