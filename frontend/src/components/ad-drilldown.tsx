@@ -8,12 +8,21 @@ import {
   formatCurrency,
   formatPercent,
   platformLabel,
+  renderEngagementRate,
 } from "@/lib/utils";
 
 export function AdDrillDown({
   data,
+  engagementSupport,
 }: {
   data: AdPerformanceResponse;
+  /**
+   * Platforms that the backend says report engagements for this project, taken
+   * from PerformanceResponse.metric_platforms.engagements. Used to render "—"
+   * for rows whose platform doesn't report the metric (rather than the
+   * backend's 0.0, which is the AI-029 / AI-115 bug).
+   */
+  engagementSupport?: string[];
 }) {
   if (!data.ads || data.ads.length === 0) {
     return null;
@@ -57,7 +66,7 @@ export function AdDrillDown({
                   {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                  {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
+                  {renderEngagementRate(row.engagement_rate, row.platform_id, engagementSupport)}
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-400">
                   {row.vcr != null ? formatPercent(row.vcr * 100) : "—"}

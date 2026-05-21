@@ -7,8 +7,8 @@ import { Card } from "@/components/card";
 import {
   formatCurrency,
   formatNumber,
-  formatPercent,
   platformLabel,
+  renderEngagementRate,
 } from "@/lib/utils";
 
 function freqHealthDot(f: number | null | undefined): string | null {
@@ -20,8 +20,16 @@ function freqHealthDot(f: number | null | undefined): string | null {
 
 export function AdSetDrillDown({
   data,
+  engagementSupport,
 }: {
   data: AdSetPerformanceResponse;
+  /**
+   * Platforms that the backend says report engagements for this project, taken
+   * from PerformanceResponse.metric_platforms.engagements. When undefined we
+   * fall through to the old behaviour (render "—" for every row, since
+   * nothing supports the metric).
+   */
+  engagementSupport?: string[];
 }) {
   if (!data.ad_sets || data.ad_sets.length === 0) {
     return null;
@@ -73,7 +81,7 @@ export function AdSetDrillDown({
                   {formatCurrency(row.spend)}
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                  {row.engagement_rate != null ? formatPercent(row.engagement_rate * 100) : "—"}
+                  {renderEngagementRate(row.engagement_rate, row.platform_id, engagementSupport)}
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-400">
                   {row.ad_count}
