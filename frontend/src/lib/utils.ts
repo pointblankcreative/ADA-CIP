@@ -126,8 +126,12 @@ export function daysUntil(dateStr: string | null): number {
  * Returns true if `platformId` is in the backend-declared support list for a
  * given metric. `supportList` comes from
  * PerformanceResponse.metric_platforms[metric] and carries platform LABELS
- * (e.g. "Meta", "StackAdapt") not IDs ("meta", "stackadapt") — so we
- * lower-case both sides.
+ * (e.g. "Meta", "Google Ads", "StackAdapt") while `platformId` is the
+ * snake_case ID ("meta", "google_ads", "stackadapt"). To match across both
+ * forms we normalize each side by lowercasing AND stripping every
+ * non-alphanumeric character, so "google_ads" and "Google Ads" both collapse
+ * to "googleads" and compare equal. Plain case-insensitive equality is not
+ * enough — it only worked for single-word names.
  *
  * Used to disambiguate backend `0` from backend `null` when a platform
  * simply doesn't report a metric (e.g. Google Ads / StackAdapt don't report
@@ -138,8 +142,9 @@ export function platformSupportsMetric(
   supportList: string[] | undefined,
 ): boolean {
   if (!platformId || !supportList || supportList.length === 0) return false;
-  const needle = platformId.toLowerCase();
-  return supportList.some((p) => p.toLowerCase() === needle);
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const needle = normalize(platformId);
+  return supportList.some((p) => normalize(p) === needle);
 }
 
 /**
