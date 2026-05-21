@@ -13,6 +13,7 @@ import {
 import { api, type Alert } from "@/lib/api";
 import { Card } from "@/components/card";
 import { cn, severityColor } from "@/lib/utils";
+import { formatAlertSource } from "@/lib/alert-labels";
 
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -154,8 +155,11 @@ function AlertRow({ alert }: { alert: Alert }) {
               <Clock className="h-3 w-3" />
               {timeAgo}
             </span>
-            <span className="rounded bg-slate-800 px-1.5 py-0.5">
-              {alert.alert_type}
+            <span
+              className="rounded bg-slate-800 px-1.5 py-0.5"
+              title={alert.alert_type}
+            >
+              {formatAlertSource(alert.alert_type)}
             </span>
             {alert.acknowledged_at && (
               <span className="flex items-center gap-1 text-emerald-500">

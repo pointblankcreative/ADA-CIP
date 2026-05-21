@@ -112,7 +112,7 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="border-t border-slate-800 px-5 py-3">
-        <p className="text-[10px] text-slate-600">Point Blank Creative</p>
+        <p className="text-[10px] text-slate-600">Point Blank</p>
       </div>
     </aside>
     </>
