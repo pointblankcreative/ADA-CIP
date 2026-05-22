@@ -34,6 +34,7 @@ import { AdSetDrillDown } from "@/components/adset-drilldown";
 import { AdDrillDown } from "@/components/ad-drilldown";
 import {
   formatCurrency,
+  formatCurrencyTick,
   formatNumber,
   formatPercent,
   platformLabel,
@@ -278,6 +279,17 @@ export function PerformanceTab({ code }: { code: string }) {
         </div>
       )}
 
+      {/* AI-031: zero-conversion warning. Gated server-side on
+          conversion/mixed projects with ≥3 days of spend; we additionally
+          gate client-side on showConversion to defensively hide it on
+          awareness-only projects. */}
+      {showConversion && data.zero_conversion_warning && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <span className="font-medium">Conversion tracking — </span>
+          {data.zero_conversion_warning}
+        </div>
+      )}
+
       {/* ── KPI Cards ─────────────────────────────────────────────── */}
 
       {showAwareness && (
@@ -369,39 +381,74 @@ export function PerformanceTab({ code }: { code: string }) {
             {objective !== "mixed" && (
               <KpiCard label="Spend" value={formatCurrency(data.total_spend)} />
             )}
-            {has(data, "conversions") && (
-              <KpiCard
-                label="Conversions"
-                value={formatNumber(Math.round(data.total_conversions))}
-                sub={metricNote(data, "conversions")}
-              />
+            {/* AI-031: Conversions tile renders unconditionally for
+                conversion/mixed projects. Red on zero when spend > 0 so the
+                tracking failure is visible even if the user scrolls past the
+                banner. */}
+            {has(data, "conversions") && (() => {
+              const conv = Math.round(data.total_conversions);
+              const isZeroAlarm = conv === 0 && data.total_spend > 0;
+              return (
+                <KpiCard
+                  label="Conversions"
+                  value={formatNumber(conv)}
+                  sub={metricNote(data, "conversions")}
+                  accent={isZeroAlarm ? "text-red-400" : undefined}
+                />
+              );
+            })()}
+            {/* AI-031: CPA tile renders unconditionally. When CPA is null
+                because no conversions have fired, show "—" with an
+                "Awaiting first conversion" sub-line (AI-046 precedent)
+                rather than $0 (which would imply zero cost). */}
+            {has(data, "cpa") && (
+              data.total_cpa != null ? (
+                <KpiCard
+                  label="CPA"
+                  value={formatCurrency(data.total_cpa)}
+                  sub="Cost per acquisition"
+                  benchmark={toBenchmark(bm.cpa, data.total_cpa, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+                />
+              ) : (
+                <KpiCard
+                  label="CPA"
+                  value="—"
+                  sub="Awaiting first conversion"
+                />
+              )
             )}
-            {has(data, "cpa") && data.total_cpa != null ? (
-              <KpiCard
-                label="CPA"
-                value={formatCurrency(data.total_cpa)}
-                sub="Cost per acquisition"
-                benchmark={toBenchmark(bm.cpa, data.total_cpa, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
-              />
-            ) : null}
             <KpiCard
               label="CTR"
               value={formatPercent(avgCTR)}
               benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
             />
-            {has(data, "conversion_rate") && data.total_conversion_rate != null ? (
-              <KpiCard
-                label="Conv. Rate"
-                value={formatPercent(data.total_conversion_rate * 100)}
-                benchmark={toBenchmark(bm.conversion_rate, data.total_conversion_rate, { format: (v) => fmtPct(v) ?? "—" })}
-              />
-            ) : (
-              <KpiCard
-                label="CPC"
-                value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
-                benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
-              />
-            )}
+            {/* AI-031 follow-up: CPC preserved as a sibling tile (was
+                previously rendered as a Conv. Rate fallback before the
+                always-shown conversion tiles refactor). */}
+            <KpiCard
+              label="CPC"
+              value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
+              benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+            />
+            {/* AI-031: Conv. Rate tile renders unconditionally. Render 0
+                conversions as "0.00%" in red rather than hiding the metric
+                so the tracking failure is visible. Null (no conversions
+                table at all) renders "—". */}
+            {has(data, "conversion_rate") && (() => {
+              const cvr = data.total_conversion_rate;
+              if (cvr == null) {
+                return <KpiCard label="Conv. Rate" value="—" />;
+              }
+              const isZeroAlarm = cvr === 0 && data.total_spend > 0;
+              return (
+                <KpiCard
+                  label="Conv. Rate"
+                  value={formatPercent(cvr * 100)}
+                  benchmark={toBenchmark(bm.conversion_rate, cvr, { format: (v) => fmtPct(v) ?? "—" })}
+                  accent={isZeroAlarm ? "text-red-400" : undefined}
+                />
+              );
+            })()}
           </div>
         </div>
       )}
@@ -420,7 +467,7 @@ export function PerformanceTab({ code }: { code: string }) {
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
               <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${((v ?? 0) / 1000).toFixed(0)}k`} />
+              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={formatCurrencyTick} />
               <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
               <Area type="monotone" dataKey="spend" stroke="#3b82f6" strokeWidth={2} fill="url(#spendGrad)" />
             </AreaChart>
@@ -444,8 +491,25 @@ export function PerformanceTab({ code }: { code: string }) {
               <ComposedChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => formatNumber(v)} />
-                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} domain={[0, "auto"]} />
+                <YAxis
+                  yAxisId="left"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => formatNumber(v)}
+                  label={{ value: "Reach", angle: -90, position: "insideLeft", style: { fill: "#a855f7", fontSize: 11, textAnchor: "middle" } }}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={[0, "auto"]}
+                  label={{ value: "Frequency", angle: -90, position: "insideRight", style: { fill: "#f59e0b", fontSize: 11, textAnchor: "middle" } }}
+                />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Bar yAxisId="left" dataKey="reach" fill="#a855f7" opacity={0.4} radius={[2, 2, 0, 0]} name="Reach" />
                 <Line yAxisId="right" type="monotone" dataKey="frequency" stroke="#f59e0b" strokeWidth={2} dot={false} name="Frequency" />
@@ -503,8 +567,24 @@ export function PerformanceTab({ code }: { code: string }) {
               <ComposedChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} />
+                <YAxis
+                  yAxisId="left"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  label={{ value: "Conversions", angle: -90, position: "insideLeft", style: { fill: "#22c55e", fontSize: 11, textAnchor: "middle" } }}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => `${safeFix(v) ?? "0"}%`}
+                  label={{ value: "Conv. Rate", angle: -90, position: "insideRight", style: { fill: "#10b981", fontSize: 11, textAnchor: "middle" } }}
+                />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Bar yAxisId="left" dataKey="conversions" fill="#22c55e" opacity={0.5} radius={[2, 2, 0, 0]} name="Conversions" />
                 {has(data, "conversion_rate") && (
@@ -530,7 +610,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 layout="vertical"
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={(v) => `$${((v ?? 0) / 1000).toFixed(0)}k`} />
+                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={formatCurrencyTick} />
                 <YAxis type="category" dataKey="name" stroke="#475569" fontSize={11} width={80} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
                 <Bar dataKey="spend" radius={[0, 4, 4, 0]}>
@@ -616,8 +696,23 @@ export function PerformanceTab({ code }: { code: string }) {
                 <ComposedChart data={ga4Data.daily.map((d) => ({ ...d, dateLabel: d.date.slice(5) }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                   <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                  <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                  <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
+                  <YAxis
+                    yAxisId="left"
+                    stroke="#475569"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                    label={{ value: "Sessions", angle: -90, position: "insideLeft", style: { fill: "#6366f1", fontSize: 11, textAnchor: "middle" } }}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    stroke="#475569"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                    label={{ value: "Conversions", angle: -90, position: "insideRight", style: { fill: "#22c55e", fontSize: 11, textAnchor: "middle" } }}
+                  />
                   <Tooltip contentStyle={TOOLTIP_STYLE} />
                   <Bar yAxisId="left" dataKey="sessions" fill="#6366f1" opacity={0.4} radius={[2, 2, 0, 0]} name="Sessions" />
                   <Line yAxisId="right" type="monotone" dataKey="conversions" stroke="#22c55e" strokeWidth={2} dot={false} name="GA4 Conversions" />

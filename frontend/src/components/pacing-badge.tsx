@@ -5,9 +5,19 @@ interface PacingBadgeProps {
   totalSpend?: number;
   lineStatus?: "not_started" | "pending" | "active" | "completed";
   size?: "sm" | "md";
+  /**
+   * "auto" (default) — show the percentage when available, fall back to the
+   * categorical label only when percentage is null. Matches legacy behaviour
+   * for project header, home cards, and the standalone pacing-tab pill.
+   * "label" — always show the categorical status label (Over / On Track /
+   * Under / etc.), never the percentage. Used by the LINE BREAKDOWN table
+   * where a separate column already prints the numeric percentage and the
+   * pill would otherwise just repeat it. See AI-013.
+   */
+  variant?: "auto" | "label";
 }
 
-export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md" }: PacingBadgeProps) {
+export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md", variant = "auto" }: PacingBadgeProps) {
   const status = pacingStatus(percentage);
   // AI-001: the "spend without a percentage" fallback is a LINE-level
   // heuristic — a brand-new flight that's started spending before the daily
@@ -35,9 +45,11 @@ export function PacingBadge({ percentage, totalSpend = 0, lineStatus, size = "md
       ? lineStatus === "not_started"
         ? "Not Started"
         : "Pending"
-      : percentage != null
-        ? formatPercent(percentage)
-        : labels[status];
+      : variant === "label"
+        ? labels[status]
+        : percentage != null
+          ? formatPercent(percentage)
+          : labels[status];
 
   const dotColor = isCompleted
     ? "bg-slate-400"
