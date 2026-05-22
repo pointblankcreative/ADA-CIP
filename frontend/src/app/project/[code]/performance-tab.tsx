@@ -278,6 +278,17 @@ export function PerformanceTab({ code }: { code: string }) {
         </div>
       )}
 
+      {/* AI-031: zero-conversion warning. Gated server-side on
+          conversion/mixed projects with ≥3 days of spend; we additionally
+          gate client-side on showConversion to defensively hide it on
+          awareness-only projects. */}
+      {showConversion && data.zero_conversion_warning && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <span className="font-medium">Conversion tracking — </span>
+          {data.zero_conversion_warning}
+        </div>
+      )}
+
       {/* ── KPI Cards ─────────────────────────────────────────────── */}
 
       {showAwareness && (
@@ -369,39 +380,66 @@ export function PerformanceTab({ code }: { code: string }) {
             {objective !== "mixed" && (
               <KpiCard label="Spend" value={formatCurrency(data.total_spend)} />
             )}
-            {has(data, "conversions") && (
-              <KpiCard
-                label="Conversions"
-                value={formatNumber(Math.round(data.total_conversions))}
-                sub={metricNote(data, "conversions")}
-              />
+            {/* AI-031: Conversions tile renders unconditionally for
+                conversion/mixed projects. Red on zero when spend > 0 so the
+                tracking failure is visible even if the user scrolls past the
+                banner. */}
+            {has(data, "conversions") && (() => {
+              const conv = Math.round(data.total_conversions);
+              const isZeroAlarm = conv === 0 && data.total_spend > 0;
+              return (
+                <KpiCard
+                  label="Conversions"
+                  value={formatNumber(conv)}
+                  sub={metricNote(data, "conversions")}
+                  accent={isZeroAlarm ? "text-red-400" : undefined}
+                />
+              );
+            })()}
+            {/* AI-031: CPA tile renders unconditionally. When CPA is null
+                because no conversions have fired, show "—" with an
+                "Awaiting first conversion" sub-line (AI-046 precedent)
+                rather than $0 (which would imply zero cost). */}
+            {has(data, "cpa") && (
+              data.total_cpa != null ? (
+                <KpiCard
+                  label="CPA"
+                  value={formatCurrency(data.total_cpa)}
+                  sub="Cost per acquisition"
+                  benchmark={toBenchmark(bm.cpa, data.total_cpa, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+                />
+              ) : (
+                <KpiCard
+                  label="CPA"
+                  value="—"
+                  sub="Awaiting first conversion"
+                />
+              )
             )}
-            {has(data, "cpa") && data.total_cpa != null ? (
-              <KpiCard
-                label="CPA"
-                value={formatCurrency(data.total_cpa)}
-                sub="Cost per acquisition"
-                benchmark={toBenchmark(bm.cpa, data.total_cpa, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
-              />
-            ) : null}
             <KpiCard
               label="CTR"
               value={formatPercent(avgCTR)}
               benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
             />
-            {has(data, "conversion_rate") && data.total_conversion_rate != null ? (
-              <KpiCard
-                label="Conv. Rate"
-                value={formatPercent(data.total_conversion_rate * 100)}
-                benchmark={toBenchmark(bm.conversion_rate, data.total_conversion_rate, { format: (v) => fmtPct(v) ?? "—" })}
-              />
-            ) : (
-              <KpiCard
-                label="CPC"
-                value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
-                benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
-              />
-            )}
+            {/* AI-031: Conv. Rate tile renders unconditionally. Render 0
+                conversions as "0.00%" in red rather than hiding the metric
+                so the tracking failure is visible. Null (no conversions
+                table at all) renders "—". */}
+            {has(data, "conversion_rate") && (() => {
+              const cvr = data.total_conversion_rate;
+              if (cvr == null) {
+                return <KpiCard label="Conv. Rate" value="—" />;
+              }
+              const isZeroAlarm = cvr === 0 && data.total_spend > 0;
+              return (
+                <KpiCard
+                  label="Conv. Rate"
+                  value={formatPercent(cvr * 100)}
+                  benchmark={toBenchmark(bm.conversion_rate, cvr, { format: (v) => fmtPct(v) ?? "—" })}
+                  accent={isZeroAlarm ? "text-red-400" : undefined}
+                />
+              );
+            })()}
           </div>
         </div>
       )}

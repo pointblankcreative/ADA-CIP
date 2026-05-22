@@ -647,8 +647,37 @@ async def get_performance(
 
     if "video_views" in available and "video_completions" in available:
         available.append("vcr")
-    if "conversions" in available:
-        available.extend(["cpa", "conversion_rate"])
+    # AI-031: surface conversion metric tiles for conversion / mixed projects
+    # even when no conversions have fired yet. `available_metrics` is a
+    # "metric is structurally relevant" declaration, not a "metric has a
+    # non-zero value" one; the frontend uses it to decide whether to render
+    # the Conversions / CPA / Conv. Rate tiles at all. Awareness-only
+    # projects are unaffected — the frontend's showConversion gate hides
+    # the whole block for them.
+    if "conversions" in available or project_objective in ("conversion", "mixed"):
+        available.extend(["conversions", "cpa", "conversion_rate"])
+        # De-dupe in case "conversions" was already present (or appended twice).
+        available = list(dict.fromkeys(available))
+
+    # AI-031: zero-conversion warning banner. Fires for conversion-bearing
+    # projects that have $>0 spend, 0 conversions, and ≥3 calendar days of
+    # spend window. Mirrors the amber `high_frequency_warning` banner pattern.
+    zero_conversion_warning: str | None = None
+    if (
+        project_objective in ("conversion", "mixed")
+        and _float(t["total_conversions"]) == 0
+        and _float(t["total_spend"]) > 0
+        and t.get("min_date") is not None
+        and t.get("max_date") is not None
+        and (t["max_date"] - t["min_date"]).days >= 3
+    ):
+        _spend = _float(t["total_spend"])
+        _days = (t["max_date"] - t["min_date"]).days
+        zero_conversion_warning = (
+            f"No conversions recorded across ${_spend:,.0f} of conversion-objective spend "
+            f"over the last {_days} days. "
+            f"Check that pixels, Google Ads conversion actions, or offline conversion uploads are firing."
+        )
 
     # ── build response ──────────────────────────────────────────────
     return PerformanceResponse(
@@ -673,6 +702,7 @@ async def get_performance(
         reach_platforms=reach_platforms,
         reach_note=reach_note,
         high_frequency_warning=high_frequency_warning,
+        zero_conversion_warning=zero_conversion_warning,
         available_metrics=available,
         metric_platforms=metric_platforms,
         daily=[
