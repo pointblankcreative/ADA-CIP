@@ -491,8 +491,25 @@ export function PerformanceTab({ code }: { code: string }) {
               <ComposedChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => formatNumber(v)} />
-                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} domain={[0, "auto"]} />
+                <YAxis
+                  yAxisId="left"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => formatNumber(v)}
+                  label={{ value: "Reach", angle: -90, position: "insideLeft", style: { fill: "#a855f7", fontSize: 11, textAnchor: "middle" } }}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={[0, "auto"]}
+                  label={{ value: "Frequency", angle: -90, position: "insideRight", style: { fill: "#f59e0b", fontSize: 11, textAnchor: "middle" } }}
+                />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Bar yAxisId="left" dataKey="reach" fill="#a855f7" opacity={0.4} radius={[2, 2, 0, 0]} name="Reach" />
                 <Line yAxisId="right" type="monotone" dataKey="frequency" stroke="#f59e0b" strokeWidth={2} dot={false} name="Frequency" />
@@ -550,8 +567,24 @@ export function PerformanceTab({ code }: { code: string }) {
               <ComposedChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} />
+                <YAxis
+                  yAxisId="left"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  label={{ value: "Conversions", angle: -90, position: "insideLeft", style: { fill: "#22c55e", fontSize: 11, textAnchor: "middle" } }}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => `${safeFix(v) ?? "0"}%`}
+                  label={{ value: "Conv. Rate", angle: -90, position: "insideRight", style: { fill: "#10b981", fontSize: 11, textAnchor: "middle" } }}
+                />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
                 <Bar yAxisId="left" dataKey="conversions" fill="#22c55e" opacity={0.5} radius={[2, 2, 0, 0]} name="Conversions" />
                 {has(data, "conversion_rate") && (
@@ -663,8 +696,23 @@ export function PerformanceTab({ code }: { code: string }) {
                 <ComposedChart data={ga4Data.daily.map((d) => ({ ...d, dateLabel: d.date.slice(5) }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                   <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                  <YAxis yAxisId="left" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
-                  <YAxis yAxisId="right" orientation="right" stroke="#475569" fontSize={11} tickLine={false} axisLine={false} />
+                  <YAxis
+                    yAxisId="left"
+                    stroke="#475569"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                    label={{ value: "Sessions", angle: -90, position: "insideLeft", style: { fill: "#6366f1", fontSize: 11, textAnchor: "middle" } }}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    stroke="#475569"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                    label={{ value: "Conversions", angle: -90, position: "insideRight", style: { fill: "#22c55e", fontSize: 11, textAnchor: "middle" } }}
+                  />
                   <Tooltip contentStyle={TOOLTIP_STYLE} />
                   <Bar yAxisId="left" dataKey="sessions" fill="#6366f1" opacity={0.4} radius={[2, 2, 0, 0]} name="Sessions" />
                   <Line yAxisId="right" type="monotone" dataKey="conversions" stroke="#22c55e" strokeWidth={2} dot={false} name="GA4 Conversions" />
