@@ -421,6 +421,14 @@ export function PerformanceTab({ code }: { code: string }) {
               value={formatPercent(avgCTR)}
               benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
             />
+            {/* AI-031 follow-up: CPC preserved as a sibling tile (was
+                previously rendered as a Conv. Rate fallback before the
+                always-shown conversion tiles refactor). */}
+            <KpiCard
+              label="CPC"
+              value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
+              benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+            />
             {/* AI-031: Conv. Rate tile renders unconditionally. Render 0
                 conversions as "0.00%" in red rather than hiding the metric
                 so the tracking failure is visible. Null (no conversions
