@@ -195,6 +195,7 @@ export interface PerformanceResponse {
   reach_platforms?: string[];
   reach_note?: string | null;
   high_frequency_warning?: string | null;
+  zero_conversion_warning?: string | null;
   available_metrics: string[];
   metric_platforms: Record<string, string[]>;
   daily: DailyPerformance[];

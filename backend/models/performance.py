@@ -82,6 +82,7 @@ class PerformanceResponse(BaseModel):
     reach_platforms: list[str] = []
     reach_note: str | None = None
     high_frequency_warning: str | None = None
+    zero_conversion_warning: str | None = None
     available_metrics: list[str] = []
     metric_platforms: dict[str, list[str]] = {}
     daily: list[DailyMetric] = []
