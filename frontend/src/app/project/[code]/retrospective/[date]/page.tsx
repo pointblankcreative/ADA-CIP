@@ -123,7 +123,7 @@ export default function RetrospectivePage() {
             </div>
             {project && (
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">
-                <span>Budget: {formatCurrency(project.net_budget)} {project.currency}</span>
+                <span>Budget: {formatCurrency(project.net_budget)}{project.currency ? ` ${project.currency}` : ""}</span>
                 <span>
                   Flight: {project.start_date} to {project.end_date}
                 </span>
