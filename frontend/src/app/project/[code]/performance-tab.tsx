@@ -532,7 +532,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, 100]} />
+                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, (dataMax: number) => Math.max(Math.ceil(dataMax * 1.2), 5)]} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${(v ?? 0).toFixed(1)}%`, "VCR"]} />
                 <Line type="monotone" dataKey="vcrPct" stroke="#a855f7" strokeWidth={2} dot={false} name="VCR" />
               </LineChart>
