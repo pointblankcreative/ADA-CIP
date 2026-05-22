@@ -25,6 +25,26 @@ export function formatPercent(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+/**
+ * Magnitude-aware currency tick formatter for chart axes.
+ *
+ * Under $1k:   "$200", "$400"
+ * $1k–$1M:    "$1k", "$25k"
+ * $1M+:       "$1.2M"
+ *
+ * Use this on any Recharts `<XAxis>` / `<YAxis>` whose values represent
+ * spend in dollars. Pairing every spend axis with this helper avoids the
+ * "four $0k labels" bug (AI-020) for projects whose daily spend never
+ * crosses $1,000.
+ */
+export function formatCurrencyTick(value: number | null | undefined): string {
+  const n = value ?? 0;
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${Math.round(n / 1_000)}k`;
+  return `$${Math.round(n)}`;
+}
+
 export type PacingStatus =
   | "critical-over"
   | "warning-over"
