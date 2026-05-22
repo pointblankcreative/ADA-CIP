@@ -122,8 +122,8 @@ export default function ProjectDetailPage() {
             </div>
             {project && !unprovisioned && (
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">
-                <span>Budget: {formatCurrency(project.net_budget)}</span>
-                <span>Spent: {formatCurrency(project.total_spend)}</span>
+                <span>Budget: {formatCurrency(project.net_budget)} {project.currency}</span>
+                <span>Spent: {formatCurrency(project.total_spend)} {project.currency}</span>
                 <span>{formatFlightDay(buildFlightDayInput(project), "combined")}</span>
               </div>
             )}

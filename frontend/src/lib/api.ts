@@ -28,6 +28,7 @@ export interface Project {
   pacing_percentage: number | null;
   days_remaining: number;
   recently_ended?: boolean;
+  currency: string;
   updated_at: string;
 }
 
