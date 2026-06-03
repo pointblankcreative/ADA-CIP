@@ -49,6 +49,24 @@ PLATFORM_NAMES = {
     "pinterest": "Pinterest",
 }
 
+# AI-102: the canonical `clicks` definition per platform, surfaced verbatim in
+# `clicks_definitions` so the frontend can tooltip it. `clicks` is each
+# platform's destination-intent click — the closest cross-platform alignment
+# Funnel offers — and these strings are where that per-platform meaning is
+# finally labeled instead of silently summed. Keep in sync with
+# ingestion/transformation/transform_funnel_to_unified{,_full_history}.sql.
+CLICKS_DEFINITIONS = {
+    "meta": "Link clicks (Meta). All-clicks available as clicks_all.",
+    "google_ads": "Clicks (Google Ads — all chargeable clicks).",
+    "stackadapt": "Clicks (StackAdapt).",
+    "tiktok": "Destination clicks (TikTok). All-clicks available as clicks_all.",
+    "snapchat": "Swipe-ups (Snapchat).",
+    "linkedin": "Chargeable clicks (LinkedIn).",
+    "reddit": "Clicks (Reddit).",
+    "pinterest": "Outbound clicks (Pinterest).",
+}
+CLICKS_DEFINITION_FALLBACK = "Platform-reported clicks."
+
 # AI-120 Option D stopgap (fixes the v1 surface of AI-111 + AI-112):
 # StackAdapt "reach" via Funnel.io is a 1-day per-creative reach field, not
 # deduplicated multi-day reach (wrong by 7-10x), and StackAdapt frequency is
@@ -167,6 +185,7 @@ async def get_adset_performance(
                 SUM(f.spend) AS spend,
                 SUM(f.impressions) AS impressions,
                 SUM(f.clicks) AS clicks,
+                SUM(f.clicks_all) AS clicks_all,
                 SUM(f.conversions) AS conversions,
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
@@ -225,6 +244,7 @@ async def get_adset_performance(
             a.spend,
             a.impressions,
             a.clicks,
+            a.clicks_all,
             a.conversions,
             a.engagements,
             a.video_views,
@@ -279,6 +299,7 @@ async def get_adset_performance(
                 spend=_float(r.get("spend")),
                 impressions=_int(r.get("impressions")),
                 clicks=_int(r.get("clicks")),
+                clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r.get("conversions")),
                 engagements=_int(r.get("engagements")),
                 video_views=_int(r.get("video_views")),
@@ -348,6 +369,7 @@ async def get_creative_performance(
                 SUM(f.spend) AS spend,
                 SUM(f.impressions) AS impressions,
                 SUM(f.clicks) AS clicks,
+                SUM(f.clicks_all) AS clicks_all,
                 SUM(f.conversions) AS conversions,
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
@@ -379,6 +401,7 @@ async def get_creative_performance(
             SUM(spend) AS spend,
             SUM(impressions) AS impressions,
             SUM(clicks) AS clicks,
+            SUM(clicks_all) AS clicks_all,
             SUM(conversions) AS conversions,
             SUM(engagements) AS engagements,
             SUM(video_views) AS video_views,
@@ -407,6 +430,7 @@ async def get_creative_performance(
                 spend=_float(r.get("spend")),
                 impressions=_int(r.get("impressions")),
                 clicks=_int(r.get("clicks")),
+                clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r.get("conversions")),
                 engagements=_int(r.get("engagements")),
                 video_views=_int(r.get("video_views")),
@@ -447,6 +471,7 @@ async def get_ad_performance(
             SUM(f.spend) AS spend,
             SUM(f.impressions) AS impressions,
             SUM(f.clicks) AS clicks,
+            SUM(f.clicks_all) AS clicks_all,
             SUM(f.conversions) AS conversions,
             SUM(f.engagements) AS engagements,
             SUM(f.video_views) AS video_views,
@@ -476,6 +501,7 @@ async def get_ad_performance(
                 spend=_float(r.get("spend")),
                 impressions=_int(r.get("impressions")),
                 clicks=_int(r.get("clicks")),
+                clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r.get("conversions")),
                 engagements=_int(r.get("engagements")),
                 video_views=_int(r.get("video_views")),
@@ -527,6 +553,7 @@ async def get_performance(
             COALESCE(SUM(f.spend), 0) AS total_spend,
             COALESCE(SUM(f.impressions), 0) AS total_impressions,
             COALESCE(SUM(f.clicks), 0) AS total_clicks,
+            SUM(f.clicks_all) AS total_clicks_all,
             COALESCE(SUM(f.conversions), 0) AS total_conversions,
             MAX({rf_reach_col}) AS total_reach,
             AVG(NULLIF({rf_freq_col}, 0)) AS total_frequency,
@@ -554,6 +581,7 @@ async def get_performance(
             SUM(f.spend) AS spend,
             SUM(f.impressions) AS impressions,
             SUM(f.clicks) AS clicks,
+            SUM(f.clicks_all) AS clicks_all,
             SUM(f.conversions) AS conversions,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
@@ -646,6 +674,7 @@ async def get_performance(
             SUM(f.spend) AS spend,
             SUM(f.impressions) AS impressions,
             SUM(f.clicks) AS clicks,
+            SUM(f.clicks_all) AS clicks_all,
             SUM(f.conversions) AS conversions,
             MAX({rf_reach_col}) AS reach,
             AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
@@ -674,6 +703,7 @@ async def get_performance(
             SUM(f.spend) AS spend,
             SUM(f.impressions) AS impressions,
             SUM(f.clicks) AS clicks,
+            SUM(f.clicks_all) AS clicks_all,
             SUM(f.conversions) AS conversions,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
@@ -793,6 +823,7 @@ async def get_performance(
         total_spend=_float(t["total_spend"]),
         total_impressions=_int(t["total_impressions"]),
         total_clicks=_int(t["total_clicks"]),
+        total_clicks_all=_int_or_none(t.get("total_clicks_all")),  # AI-102
         total_conversions=_float(t["total_conversions"]),
         total_reach=_int_or_none(t.get("total_reach")),
         total_frequency=_float_or_none(t.get("total_frequency")),
@@ -810,12 +841,21 @@ async def get_performance(
         zero_conversion_warning=zero_conversion_warning,
         available_metrics=available,
         metric_platforms=metric_platforms,
+        # AI-102: per-platform `clicks` definition strings for tooltips —
+        # only for platforms active on this project (and platform filter).
+        clicks_definitions={
+            r["platform_id"]: CLICKS_DEFINITIONS.get(
+                r["platform_id"], CLICKS_DEFINITION_FALLBACK
+            )
+            for r in platform_rows
+        },
         daily=[
             DailyMetric(
                 date=r["date"],
                 spend=_float(r["spend"]),
                 impressions=_int(r["impressions"]),
                 clicks=_int(r["clicks"]),
+                clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r["conversions"]),
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
@@ -850,6 +890,7 @@ async def get_performance(
                 spend=_float(r["spend"]),
                 impressions=_int(r["impressions"]),
                 clicks=_int(r["clicks"]),
+                clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r["conversions"]),
                 # AI-120: NULL R&F for excluded platforms (em-dash in UI).
                 reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
@@ -871,6 +912,7 @@ async def get_performance(
                 spend=_float(r["spend"]),
                 impressions=_int(r["impressions"]),
                 clicks=_int(r["clicks"]),
+                clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r["conversions"]),
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
