@@ -106,6 +106,23 @@ function metricNote(data: PerformanceResponse, metric: string): string | undefin
   return `${fromPart} Not reported by ${excluded.join(", ")}.`;
 }
 
+/**
+ * AI-102: hover tooltip for click-derived tiles (Clicks / CTR / CPC).
+ *
+ * `clicks` means a different thing per platform (Meta: link clicks;
+ * Snapchat: swipes; Google/StackAdapt: all clicks; …) and the project total
+ * silently sums them. The backend now labels each active platform's
+ * definition in `clicks_definitions`; this joins them into a native
+ * browser tooltip so the definition is one hover away.
+ */
+function clicksTooltip(data: PerformanceResponse): string | undefined {
+  const defs = data.clicks_definitions;
+  if (!defs) return undefined;
+  const lines = Object.values(defs);
+  if (lines.length === 0) return undefined;
+  return `What counts as a click:\n${lines.join("\n")}`;
+}
+
 function toBenchmark(
   bv: BenchmarkValue | undefined,
   current: number,
@@ -372,6 +389,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 label="CTR"
                 value={formatPercent(avgCTR)}
                 benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
+                title={clicksTooltip(data)}
               />
             )}
             {engagementRate != null ? (
@@ -384,6 +402,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <KpiCard
                 label="Clicks"
                 value={formatNumber(data.total_clicks)}
+                title={clicksTooltip(data)}
               />
             )}
           </div>
@@ -441,6 +460,7 @@ export function PerformanceTab({ code }: { code: string }) {
               label="CTR"
               value={formatPercent(avgCTR)}
               benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
+              title={clicksTooltip(data)}
             />
             {/* AI-031 follow-up: CPC preserved as a sibling tile (was
                 previously rendered as a Conv. Rate fallback before the
@@ -449,6 +469,7 @@ export function PerformanceTab({ code }: { code: string }) {
               label="CPC"
               value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
               benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+              title={clicksTooltip(data)}
             />
             {/* AI-031: Conv. Rate tile renders unconditionally. Render 0
                 conversions as "0.00%" in red rather than hiding the metric

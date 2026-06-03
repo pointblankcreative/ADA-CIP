@@ -182,6 +182,8 @@ export interface PerformanceResponse {
   total_spend: number;
   total_impressions: number;
   total_clicks: number;
+  /** AI-102: all clicks incl. on-platform actions (Meta/TikTok only). */
+  total_clicks_all?: number | null;
   total_conversions: number;
   total_reach?: number | null;
   total_frequency?: number | null;
@@ -199,6 +201,9 @@ export interface PerformanceResponse {
   zero_conversion_warning?: string | null;
   available_metrics: string[];
   metric_platforms: Record<string, string[]>;
+  /** AI-102: per-platform definition of the canonical `clicks` field,
+   *  keyed by platform_id, for tooltips. */
+  clicks_definitions?: Record<string, string>;
   daily: DailyPerformance[];
   by_platform?: PlatformBreakdown[];
   campaigns?: CampaignRow[];
