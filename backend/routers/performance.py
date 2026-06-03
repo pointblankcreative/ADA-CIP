@@ -176,18 +176,46 @@ async def get_adset_performance(
             WHERE f.project_code = @project_code AND {date_clause} {plat}
             GROUP BY f.campaign_id, f.ad_set_id, f.ad_set_name, f.platform_id
         ),
-        reach AS (
-            SELECT
-                platform_id,
-                campaign_id,
-                MAX(reach) AS reach,
-                MAX(frequency) AS frequency,
-                ANY_VALUE(reach_window) AS reach_window
+        -- AI-103: reach/frequency must be joined at AD SET grain, not campaign
+        -- grain. The previous version grouped by (platform_id, campaign_id)
+        -- and broadcast the campaign-wide MAX(reach)/MAX(frequency) onto every
+        -- adset row — EN/FR audience pairs in the same campaign showed
+        -- identical (and mutually inconsistent) reach + frequency.
+        --
+        -- Semantics: reach/frequency in fact_adset_daily are rolling-window
+        -- SNAPSHOTS (e.g. Meta 7d). The honest value for a date range is the
+        -- LATEST snapshot in the range, with reach and frequency taken from
+        -- the SAME row (no more impossible cross-adset / cross-date pairs,
+        -- which also fed AI-023).
+        adset_reach AS (
+            SELECT platform_id, campaign_id, ad_set_id,
+                   reach, frequency, reach_window
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code AND {date_clause} {reach_plat}
+              AND ad_set_id IS NOT NULL
               -- AI-120: StackAdapt R&F excluded pending direct-API supplement
               AND platform_id NOT IN UNNEST(@rf_excluded)
-            GROUP BY platform_id, campaign_id
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY platform_id, campaign_id, ad_set_id
+                ORDER BY date DESC, loaded_at DESC
+            ) = 1
+        ),
+        -- Campaign-grain fallback ONLY for platforms that report reach at
+        -- campaign level (Snapchat, LinkedIn → ad_set_id IS NULL in
+        -- fact_adset_daily). Never matches when adset-grain rows exist for
+        -- the row's adset, so it cannot re-introduce the broadcast.
+        campaign_reach AS (
+            SELECT platform_id, campaign_id,
+                   reach, frequency, reach_window
+            FROM {bq.table('fact_adset_daily')}
+            WHERE project_code = @project_code AND {date_clause} {reach_plat}
+              AND ad_set_id IS NULL
+              -- AI-120: StackAdapt R&F excluded pending direct-API supplement
+              AND platform_id NOT IN UNNEST(@rf_excluded)
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY platform_id, campaign_id
+                ORDER BY date DESC, loaded_at DESC
+            ) = 1
         )
         SELECT
             a.ad_set_id,
@@ -207,14 +235,20 @@ async def get_adset_performance(
             SAFE_DIVIDE(a.clicks, NULLIF(a.impressions, 0)) AS ctr,
             SAFE_DIVIDE(a.video_completions, NULLIF(a.video_views, 0)) AS vcr,
             SAFE_DIVIDE(a.engagements, NULLIF(a.impressions, 0)) AS engagement_rate,
-            r.reach,
-            r.frequency,
-            r.reach_window,
-            SAFE_DIVIDE(a.spend, NULLIF(r.reach, 0)) * 1000 AS cost_per_reach
+            COALESCE(ar.reach, cr.reach) AS reach,
+            COALESCE(ar.frequency, cr.frequency) AS frequency,
+            COALESCE(ar.reach_window, cr.reach_window) AS reach_window,
+            SAFE_DIVIDE(a.spend, NULLIF(COALESCE(ar.reach, cr.reach), 0)) * 1000
+                AS cost_per_reach
         FROM ad_metrics a
-        LEFT JOIN reach r
-            ON a.platform_id = r.platform_id
-            AND a.campaign_id = r.campaign_id
+        LEFT JOIN adset_reach ar
+            ON a.platform_id = ar.platform_id
+            AND a.campaign_id = ar.campaign_id
+            AND a.ad_set_id = ar.ad_set_id
+        LEFT JOIN campaign_reach cr
+            ON a.platform_id = cr.platform_id
+            AND a.campaign_id = cr.campaign_id
+            AND ar.ad_set_id IS NULL
         ORDER BY a.spend DESC
     """
 
