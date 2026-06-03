@@ -92,6 +92,16 @@ class PacingResponse(BaseModel):
     # total_actual_to_date + untracked_spend. The number the header's
     # fact-table total should reconcile against.
     total_actual_all_platforms: float = 0
+    # AI-070/071: explicit empty-state signalling for retrospective requests.
+    # True when no stored budget_tracking row exists for the requested date
+    # AND a compute-on-miss replay was impossible (no plan / no data). The
+    # frontend renders "No pacing snapshot for this date — snapshots begin
+    # {earliest_snapshot_date}" instead of dishonest zeros.
+    snapshot_missing: bool = False
+    earliest_snapshot_date: date | None = None
+    # True when the rows were computed on demand (replay) rather than read
+    # from a stored budget_tracking snapshot. Mirrors diagnostics' `cached`.
+    replayed: bool = False
     lines: list[LinePacing] = []
     # Multi-plan support (2026-04-25): one entry per active sheet, ordered for
     # display. Single-plan projects get a one-element list. Empty when the

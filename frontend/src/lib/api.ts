@@ -114,6 +114,14 @@ export interface PacingResponse {
   untracked_platforms?: UntrackedPlatformSpend[];
   /** total_actual_to_date + untracked_spend — reconciles with the header. */
   total_actual_all_platforms?: number;
+  /** AI-070/071: true when no stored snapshot exists for the requested date
+   *  AND a compute-on-miss replay was impossible (no plan / no data). */
+  snapshot_missing?: boolean;
+  /** Earliest budget_tracking date for this project (null = no history). */
+  earliest_snapshot_date?: string | null;
+  /** True when rows were computed on demand (replay) rather than read from
+   *  a stored budget_tracking snapshot. Mirrors diagnostics' `cached`. */
+  replayed?: boolean;
   lines: PacingLine[];
   /** Empty for legacy projects that haven't landed in project_media_plans. */
   phases: PhaseSummary[];
@@ -638,6 +646,10 @@ export interface RetrospectivePacingSummary {
   project_code: string;
   lines_processed: number;
   alerts: number;
+  /** AI-070/072: the replay's per-line rows (budget_tracking shape). The
+   *  retro UI fetches pacing through GET /api/pacing?as_of_date= instead,
+   *  so nothing renders these — surfaced for API consumers/debugging. */
+  lines?: Record<string, unknown>[];
 }
 
 export interface RetrospectiveResponse {

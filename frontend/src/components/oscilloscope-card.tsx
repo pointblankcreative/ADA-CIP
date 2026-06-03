@@ -170,17 +170,26 @@ const TOOLTIP_STYLE = {
   color: "#e2e8f0",
 };
 
-function HistoryChart({ code }: { code: string }) {
+function HistoryChart({
+  code,
+  asOfDate,
+}: {
+  code: string;
+  /** Retrospective Mode (AI-070 bonus fix): anchor the trailing window at
+   *  the replay date instead of today, so the expanded history chart never
+   *  peeks past the as-of date. Undefined = live mode = anchored at today. */
+  asOfDate?: string;
+}) {
   const [history, setHistory] = useState<PacingHistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.pacing
-      .history(code)
+      .history(code, 60, asOfDate)
       .then(setHistory)
       .catch(() => setHistory(null))
       .finally(() => setLoading(false));
-  }, [code]);
+  }, [code, asOfDate]);
 
   if (loading) {
     return (
@@ -291,9 +300,13 @@ function HistoryChart({ code }: { code: string }) {
 export function OscilloscopeCard({
   pacing,
   code,
+  asOfDate,
 }: {
   pacing: PacingResponse;
   code: string;
+  /** Set in Retrospective Mode — passed through to the history chart so its
+   *  trailing window anchors at the replay date, not today. */
+  asOfDate?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const health = computeHealthScore(pacing.lines);
@@ -387,7 +400,7 @@ export function OscilloscopeCard({
             <h4 className="text-xs font-medium uppercase tracking-wider text-slate-500 mb-3">
               Pacing trend
             </h4>
-            <HistoryChart code={code} />
+            <HistoryChart code={code} asOfDate={asOfDate} />
           </div>
 
           {/* Per-line detail table */}

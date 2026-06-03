@@ -166,6 +166,36 @@ export function PacingTab({
     );
   }
 
+  // AI-070/071/072: honest empty state. With the backend's compute-on-miss
+  // replay in place, this only fires when the replay itself was impossible
+  // (no media plan / no spend data for the window) — the genuinely-absent
+  // case. The API echoes the REQUESTED date, never today.
+  if (data.snapshot_missing) {
+    return (
+      <div className="space-y-6">
+        <Card>
+          <p className="text-slate-300">
+            No pacing snapshot for this date{asOfDate ? ` — ${asOfDate}` : ""}.
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {data.earliest_snapshot_date
+              ? `Pacing snapshots for this project begin ${data.earliest_snapshot_date}.`
+              : "This project has no pacing history yet."}
+          </p>
+        </Card>
+        {/* Untracked warehouse spend can exist even without a snapshot
+            (AI-002 test: a project whose pacing engine never ran must not
+            show $0 when real spend exists). */}
+        {(data.untracked_spend ?? 0) > 0 && (
+          <UntrackedSpendCard
+            platforms={data.untracked_platforms ?? []}
+            total={data.untracked_spend ?? 0}
+          />
+        )}
+      </div>
+    );
+  }
+
   const overallStatus = pacingStatus(data.overall_pacing_percentage);
 
   // AI-002: untracked spend (platforms with no media plan line) is included
@@ -181,7 +211,7 @@ export function PacingTab({
     <div className="space-y-6">
       {/* Oscilloscope health card */}
       {data.lines.length > 0 && (
-        <OscilloscopeCard pacing={data} code={code} />
+        <OscilloscopeCard pacing={data} code={code} asOfDate={asOfDate} />
       )}
 
       {/* KPI cards */}
@@ -230,10 +260,20 @@ export function PacingTab({
       />
 
       {/* Blocking chart visualization */}
-      <div>
+      <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
           As of {data.as_of_date}
         </h3>
+        {/* AI-070/072: rows computed on demand (no stored snapshot for this
+            date) — mirrors diagnostics' cached/just-computed indicator. */}
+        {data.replayed && (
+          <span
+            className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-400"
+            title="No stored snapshot exists for this date; these figures were reconstructed on demand from warehouse data."
+          >
+            Reconstructed
+          </span>
+        )}
       </div>
     </div>
   );
