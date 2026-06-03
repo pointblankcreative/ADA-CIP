@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, type PacingResponse, type PacingLine, type BundleMember, type PhaseSummary } from "@/lib/api";
+import {
+  api,
+  type PacingResponse,
+  type PacingLine,
+  type BundleMember,
+  type PhaseSummary,
+  type UntrackedPlatformSpend,
+} from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { OscilloscopeCard } from "@/components/oscilloscope-card";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -161,6 +168,15 @@ export function PacingTab({
 
   const overallStatus = pacingStatus(data.overall_pacing_percentage);
 
+  // AI-002: untracked spend (platforms with no media plan line) is included
+  // in Spent / Remaining (conservative — never overstate remaining budget)
+  // but excluded from Overall Pacing (no planned baseline). The `??`
+  // fallbacks keep the tab working against a not-yet-redeployed backend.
+  const untrackedSpend = data.untracked_spend ?? 0;
+  const untrackedPlatforms = data.untracked_platforms ?? [];
+  const spentAllPlatforms =
+    data.total_actual_all_platforms ?? data.total_actual_to_date;
+
   return (
     <div className="space-y-6">
       {/* Oscilloscope health card */}
@@ -176,21 +192,33 @@ export function PacingTab({
         />
         <KpiCard
           label="Spent to Date"
-          value={formatCurrency(data.total_actual_to_date)}
-          sub={`of ${formatCurrency(data.total_planned_to_date)} planned`}
+          value={formatCurrency(spentAllPlatforms)}
+          sub={
+            untrackedSpend > 0
+              ? `${formatCurrency(data.total_actual_to_date)} tracked + ${formatCurrency(untrackedSpend)} untracked`
+              : `of ${formatCurrency(data.total_planned_to_date)} planned`
+          }
         />
         <KpiCard
           label="Remaining"
-          value={formatCurrency(
-            data.net_budget - data.total_actual_to_date
-          )}
+          value={formatCurrency(data.net_budget - spentAllPlatforms)}
         />
         <KpiCard
           label="Overall Pacing"
           value={formatPercent(data.overall_pacing_percentage)}
+          sub={untrackedSpend > 0 ? "tracked media plan lines only" : undefined}
           accent={pacingColor(overallStatus)}
         />
       </div>
+
+      {/* AI-002 / AI-022: spend on platforms with no media plan line. Shown
+          so the Pacing tab never silently hides real spend. */}
+      {untrackedSpend > 0 && (
+        <UntrackedSpendCard
+          platforms={untrackedPlatforms}
+          total={untrackedSpend}
+        />
+      )}
 
       {/* Per-line pacing — grouped by phase when there's more than one. */}
       <PacingLinesSection
@@ -208,6 +236,64 @@ export function PacingTab({
         </h3>
       </div>
     </div>
+  );
+}
+
+/**
+ * AI-002 / AI-022: amber callout listing platforms with real spend in the
+ * data warehouse but no line in the synced media plan. These are not paced
+ * (no planned baseline) but ARE included in Spent / Remaining so the budget
+ * math never hides real spend.
+ */
+function UntrackedSpendCard({
+  platforms,
+  total,
+}: {
+  platforms: UntrackedPlatformSpend[];
+  total: number;
+}) {
+  return (
+    <Card className="border-amber-500/30 bg-amber-500/5">
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-semibold uppercase tracking-wider text-amber-400">
+              Untracked spend — no media plan line
+            </div>
+            <span className="font-mono text-sm text-amber-300">
+              {formatCurrency(total)}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            These platforms have spend in the data warehouse but no line in
+            the synced media plan, so they are not paced. Check the media
+            plan sheet and re-sync, or confirm this spend is expected.
+          </p>
+          <div className="mt-2 space-y-1">
+            {platforms.map((u) => (
+              <div
+                key={u.platform_id}
+                className="flex items-center justify-between text-sm"
+              >
+                <span className="flex items-center gap-2 font-medium text-slate-200">
+                  <PlatformIcon platformId={u.platform_id} />
+                  {platformLabel(u.platform_id)}
+                  {u.first_date && u.last_date && (
+                    <span className="text-xs text-slate-500">
+                      {formatShortDate(u.first_date)} —{" "}
+                      {formatShortDate(u.last_date)}
+                    </span>
+                  )}
+                </span>
+                <span className="font-mono text-amber-300">
+                  {formatCurrency(u.spend)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }
 

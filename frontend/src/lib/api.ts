@@ -92,6 +92,14 @@ export interface PhaseSummary {
   is_active: boolean;
 }
 
+/** AI-002: spend on a platform with no media plan line (no planned baseline). */
+export interface UntrackedPlatformSpend {
+  platform_id: string;
+  spend: number;
+  first_date?: string | null;
+  last_date?: string | null;
+}
+
 export interface PacingResponse {
   project_code: string;
   as_of_date: string;
@@ -99,6 +107,13 @@ export interface PacingResponse {
   total_planned_to_date: number;
   total_actual_to_date: number;
   overall_pacing_percentage: number;
+  /** AI-002: spend on platforms with no media plan line. Included in the
+   *  spent/remaining math, excluded from overall_pacing_percentage. Optional
+   *  so the tab keeps working against a not-yet-redeployed backend. */
+  untracked_spend?: number;
+  untracked_platforms?: UntrackedPlatformSpend[];
+  /** total_actual_to_date + untracked_spend — reconciles with the header. */
+  total_actual_all_platforms?: number;
   lines: PacingLine[];
   /** Empty for legacy projects that haven't landed in project_media_plans. */
   phases: PhaseSummary[];

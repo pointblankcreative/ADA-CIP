@@ -44,6 +44,18 @@ class LinePacing(BaseModel):
     phase_display_order: int | None = None
 
 
+class UntrackedPlatformSpend(BaseModel):
+    """Spend present in fact_digital_daily for a platform that has NO line in
+    the current, active media plan (AI-002 / AI-022). Surfaced so the Pacing
+    tab never silently hides real spend — there is no planned baseline, so
+    these carry spend only (no pacing %)."""
+
+    platform_id: str
+    spend: float = 0
+    first_date: str | None = None
+    last_date: str | None = None
+
+
 class PhaseSummary(BaseModel):
     """Aggregate roll-up for one phase (one project_media_plans row).
 
@@ -72,6 +84,14 @@ class PacingResponse(BaseModel):
     total_actual_to_date: float = 0
     overall_pacing_percentage: float = 0
     pending_line_count: int = 0  # C2: count of lines excluded from overall pacing
+    # AI-002: spend on platforms with no media plan line. Included in the
+    # spent/remaining math (conservative — never overstate remaining budget)
+    # but EXCLUDED from overall_pacing_percentage (no planned baseline).
+    untracked_spend: float = 0
+    untracked_platforms: list[UntrackedPlatformSpend] = []
+    # total_actual_to_date + untracked_spend. The number the header's
+    # fact-table total should reconcile against.
+    total_actual_all_platforms: float = 0
     lines: list[LinePacing] = []
     # Multi-plan support (2026-04-25): one entry per active sheet, ordered for
     # display. Single-plan projects get a one-element list. Empty when the
