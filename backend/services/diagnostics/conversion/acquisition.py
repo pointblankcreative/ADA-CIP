@@ -53,6 +53,7 @@ from backend.services.diagnostics.shared.audience_temp import (
 )
 from backend.services.diagnostics.shared.benchmarks import (
     ACQUISITION_SIGNAL_WEIGHTS,
+    MIN_PILLAR_COVERAGE,
 )
 from backend.services.diagnostics.shared.guards import (
     check_min_days,
@@ -667,20 +668,11 @@ def compute_acquisition_pillar(data: CampaignData) -> PillarScore:
         weight=0.43,  # Conversion pillar weight (Quality deferred; see benchmarks)
     )
 
-    # Weighted average of active signals
-    active = [s for s in pillar.signals if s.guard_passed and s.score is not None]
-    if active:
-        weights = ACQUISITION_SIGNAL_WEIGHTS
-        weighted_sum = sum(
-            s.score * weights.get(s.id, 0.33) for s in active
-        )
-        total_weight = sum(
-            weights.get(s.id, 0.33) for s in active
-        )
-        pillar.score = round(weighted_sum / total_weight, 1) if total_weight > 0 else None
-        pillar.status = status_band(pillar.score) if pillar.score is not None else None
-    else:
-        pillar.score = None
-        pillar.status = None
+    # Weighted average of active signals, gated on coverage (AI-040).
+    pillar.apply_weighted_score(
+        ACQUISITION_SIGNAL_WEIGHTS,
+        min_coverage=MIN_PILLAR_COVERAGE,
+        default_weight=0.33,
+    )
 
     return pillar

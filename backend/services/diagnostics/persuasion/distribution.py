@@ -43,6 +43,7 @@ from backend.services.diagnostics.shared.benchmarks import (
     D5_SMOOTHNESS_WEIGHT,
     DISTRIBUTION_SIGNAL_WEIGHTS,
     EFFECTIVE_FREQ_FLOOR,
+    MIN_PILLAR_COVERAGE,
     get_freq_band,
     get_overlap_factor,
     infer_creative_format,
@@ -965,21 +966,13 @@ def compute_distribution_pillar(data: CampaignData) -> PillarScore:
         weight=0.35,  # Persuasion pillar weight
     )
 
-    # Weighted average of active signals (using Distribution-specific weights)
-    active = [s for s in pillar.signals if s.guard_passed and s.score is not None]
-    if active:
-        weights = DISTRIBUTION_SIGNAL_WEIGHTS
-        weighted_sum = sum(
-            s.score * weights.get(s.id, 0.25) for s in active
-        )
-        total_weight = sum(
-            weights.get(s.id, 0.25) for s in active
-        )
-        pillar.score = round(weighted_sum / total_weight, 1) if total_weight > 0 else None
-        pillar.status = status_band(pillar.score) if pillar.score is not None else None
-    else:
-        pillar.score = None
-        pillar.status = None
+    # Weighted average of active signals (Distribution-specific weights),
+    # gated on coverage (AI-040).
+    pillar.apply_weighted_score(
+        DISTRIBUTION_SIGNAL_WEIGHTS,
+        min_coverage=MIN_PILLAR_COVERAGE,
+        default_weight=0.25,
+    )
 
     return pillar
 

@@ -28,6 +28,7 @@ from backend.services.diagnostics.shared.benchmarks import (
     R1_FLOOR,
     R2_BENCHMARK,
     R2_FLOOR,
+    MIN_PILLAR_COVERAGE,
     R3_BENCHMARK,
     R3_FLOOR,
     RESONANCE_SIGNAL_WEIGHTS,
@@ -411,25 +412,14 @@ def compute_resonance_pillar(data: CampaignData) -> PillarScore:
         weight=0.25,  # Persuasion pillar weight
     )
 
-    active = [s for s in pillar.signals if s.guard_passed and s.score is not None]
-    if active:
-        weights = RESONANCE_SIGNAL_WEIGHTS
-        # Fail loudly if a signal ID isn't in the weights table — adding a new
-        # signal to compute_resonance_pillar without also updating
-        # RESONANCE_SIGNAL_WEIGHTS would otherwise silently default to an
-        # arbitrary weight and distort the pillar score.
-        missing = [s.id for s in active if s.id not in weights]
-        if missing:
-            raise KeyError(
-                f"RESONANCE_SIGNAL_WEIGHTS is missing entries for: {missing}. "
-                f"Add them to shared.benchmarks before scoring."
-            )
-        weighted_sum = sum(s.score * weights[s.id] for s in active)
-        total_weight = sum(weights[s.id] for s in active)
-        pillar.score = round(weighted_sum / total_weight, 1) if total_weight > 0 else None
-        pillar.status = status_band(pillar.score) if pillar.score is not None else None
-    else:
-        pillar.score = None
-        pillar.status = None
+    # Weighted average of active signals, gated on coverage (AI-040).
+    # Strict mode (no default_weight): adding a new signal to
+    # compute_resonance_pillar without also updating
+    # RESONANCE_SIGNAL_WEIGHTS raises KeyError instead of silently
+    # defaulting to an arbitrary weight — same contract as before.
+    pillar.apply_weighted_score(
+        RESONANCE_SIGNAL_WEIGHTS,
+        min_coverage=MIN_PILLAR_COVERAGE,
+    )
 
     return pillar

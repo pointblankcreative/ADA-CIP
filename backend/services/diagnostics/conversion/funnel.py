@@ -76,6 +76,7 @@ from backend.services.diagnostics.shared.benchmarks import (
     F5_ACTIVATION_FLOOR,
     FUNNEL_SIGNAL_WEIGHTS_ARCH_A,
     FUNNEL_SIGNAL_WEIGHTS_ARCH_B,
+    MIN_PILLAR_COVERAGE,
     get_f1_benchmark,
 )
 from backend.services.diagnostics.shared.guards import (
@@ -1169,7 +1170,9 @@ def compute_funnel_pillar(data: CampaignData) -> PillarScore:
 
     Guard-failed signals are excluded and their weight redistributes
     pro rata across active signals (same pattern as Distribution /
-    Attention / Resonance / Acquisition).
+    Attention / Resonance / Acquisition) — but only above the coverage
+    floor (AI-040): if less than MIN_PILLAR_COVERAGE of the blended
+    design weight reported, the pillar score is withheld.
     """
     arch_mix = _compute_arch_mix(data)
 
@@ -1185,24 +1188,18 @@ def compute_funnel_pillar(data: CampaignData) -> PillarScore:
         weight=0.57,  # Conversion pillar weight (Quality deferred; see benchmarks)
     )
 
-    active = [s for s in pillar.signals if s.guard_passed and s.score is not None]
-    if active:
-        weights = _blend_signal_weights(arch_mix)
-        # Fail loudly if a signal ID isn't in the blended weights — same
-        # defensive pattern as Resonance.
-        missing = [s.id for s in active if s.id not in weights]
-        if missing:
-            raise KeyError(
-                f"Funnel blended weights missing entries for: {missing}. "
-                f"Check FUNNEL_SIGNAL_WEIGHTS_ARCH_A / _ARCH_B in "
-                f"shared.benchmarks."
-            )
-        weighted_sum = sum(s.score * weights[s.id] for s in active)
-        total_weight = sum(weights[s.id] for s in active)
-        pillar.score = round(weighted_sum / total_weight, 1) if total_weight > 0 else None
-        pillar.status = status_band(pillar.score) if pillar.score is not None else None
-    else:
-        pillar.score = None
-        pillar.status = None
+    # Coverage-gated weighted average (AI-040). The blend only carries
+    # signals with weight > 0, so structurally-absent signals (F2/F3 on a
+    # pure Arch-B plan) get a 0.0 entry and never count against coverage.
+    # Active signals missing from the blend are left OUT of the weight
+    # table so apply_weighted_score raises KeyError — same strict
+    # fail-loudly contract as before (and as Resonance).
+    blended = _blend_signal_weights(arch_mix)
+    weights = {
+        s.id: blended.get(s.id, 0.0)
+        for s in pillar.signals
+        if s.id in blended or not (s.guard_passed and s.score is not None)
+    }
+    pillar.apply_weighted_score(weights, min_coverage=MIN_PILLAR_COVERAGE)
 
     return pillar

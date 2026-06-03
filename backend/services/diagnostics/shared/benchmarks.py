@@ -449,6 +449,29 @@ CONVERSION_PILLAR_WEIGHTS = {
     "funnel": 0.57,
 }
 
+
+# ── Coverage floors (AI-040) ────────────────────────────────────────
+#
+# A pillar / health score computed from a sliver of its designed signal
+# weight is not a score — it's one signal wearing a pillar costume.
+# 26018 showed "100 STRONG" off F1 alone (15% of funnel weight, 8.55%
+# of total conversion weight). Below these floors we withhold the score
+# and surface INSUFFICIENT DATA instead, per the conservative ethos in
+# shared/guards.py ("when in doubt, withhold the score").
+#
+# Pillar coverage = Σ weight(guard-passed signals) / Σ weight(all signals)
+#                   (weights from the pillar's design-weight table,
+#                   arch-blended for Funnel — so signals that structurally
+#                   don't apply never count against coverage)
+# Health coverage = Σ (pillar_weight × pillar_coverage) / Σ pillar_weight
+#                   (denominator includes UNSCORED pillars — a fully
+#                   guard-failed pillar drags coverage down rather than
+#                   silently renormalizing away. When the deferred Quality
+#                   pillar ships, include it in the denominator from day
+#                   one.)
+MIN_PILLAR_COVERAGE = 0.5
+MIN_HEALTH_COVERAGE = 0.5
+
 # Signal weights within Acquisition pillar
 ACQUISITION_SIGNAL_WEIGHTS = {
     "C1": 0.45,    # CPA vs friction-adjusted target

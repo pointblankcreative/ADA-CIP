@@ -322,14 +322,23 @@ def test_resonance_pillar_scores_with_r1_and_r3_active():
     assert pillar.status is not None
 
 
-def test_resonance_pillar_scores_r1_only_without_ga4():
-    """No GA4 → R3 guard-fails, only R1 active."""
+def test_resonance_pillar_r1_only_is_below_coverage_floor():
+    """No GA4 → R3 guard-fails, only R1 active (0.45 of design weight).
+
+    AI-040: 0.45 coverage < MIN_PILLAR_COVERAGE (0.5) → the pillar score
+    is withheld rather than presenting R1 alone as the resonance score.
+    Coverage metadata stays populated for the frontend.
+    """
     pillar = compute_resonance_pillar(
         _campaign([_engaged_platform()])
     )
     active = [s for s in pillar.signals if s.guard_passed]
     assert {s.id for s in active} == {"R1"}
-    assert pillar.score is not None
+    assert pillar.score is None
+    assert pillar.status is None
+    assert pillar.coverage == 0.45
+    assert pillar.signals_active == 1
+    assert pillar.signals_total == 3
 
 
 def test_resonance_pillar_none_when_no_signals_active():

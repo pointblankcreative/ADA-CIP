@@ -151,21 +151,30 @@ class TestSignalLevelAlerts:
         types = {a.type for a in output.alerts}
         assert types == {"signal_c1", "signal_c2", "signal_f1"}
 
-    def test_unscored_pillar_suppresses_its_signals(self):
-        """Signals inside an unscored pillar (pillar.score is None) do not
-        fire — belt-and-suspenders for the Quality-deferred pattern."""
+    def test_unscored_pillar_still_fires_guard_passed_signals(self):
+        """AI-040: a pillar may be unscored because of the coverage floor
+        while still containing cleanly-measured ACTION signals (e.g.
+        F2 LP-load = 0 inside a low-coverage funnel). Those alerts fire
+        regardless of the pillar's score; guard-failed signals still
+        never fire."""
         output = _output([
             _pillar("funnel",
-                    [_signal("F1", 20.0, StatusBand.ACTION)],
+                    [
+                        _signal("F2", 0.0, StatusBand.ACTION,
+                                diagnostic="LP load rate collapsed"),
+                        _signal("F3", None, None, guard_passed=False),
+                    ],
                     score=None, status=None),
             _pillar("acquisition",
                     [_signal("C1", 25.0, StatusBand.ACTION)]),
         ])
         populate_signal_alerts(output)
 
-        # Only C1 should fire; F1 is in an unscored pillar.
-        assert len(output.alerts) == 1
-        assert output.alerts[0].type == "signal_c1"
+        # Both the coverage-blanked pillar's F2 and the scored pillar's C1
+        # fire; the guard-failed F3 does not.
+        assert len(output.alerts) == 2
+        types = {a.type for a in output.alerts}
+        assert types == {"signal_f2", "signal_c1"}
 
 
 # ── Regression alert tests ──────────────────────────────────────────
