@@ -49,6 +49,27 @@ PLATFORM_NAMES = {
     "pinterest": "Pinterest",
 }
 
+# AI-120 Option D stopgap (fixes the v1 surface of AI-111 + AI-112):
+# StackAdapt "reach" via Funnel.io is a 1-day per-creative reach field, not
+# deduplicated multi-day reach (wrong by 7-10x), and StackAdapt frequency is
+# hardcoded 0.0 upstream. Until the post-launch StackAdapt direct-API
+# supplement lands (which will restore true reach + frequency), these
+# platforms are excluded from EVERY reach/frequency aggregate and their
+# per-row reach/frequency values are nulled so the frontend renders an
+# em-dash (AI-029 unsupported-platform pattern). Spend / impressions /
+# clicks stay Funnel-sourced and are NOT affected.
+# Removal is one line: empty this set once the direct-API supplement ships.
+RF_EXCLUDED_PLATFORMS = {"stackadapt"}
+
+# Note text appended to reach_note when an excluded platform is active.
+RF_EXCLUDED_NOTE = "StackAdapt reach/frequency hidden pending direct API integration."
+
+
+def _rf_excluded_param():
+    """Array query param for `platform_id NOT IN UNNEST(@rf_excluded)` /
+    `IF(platform_id IN UNNEST(@rf_excluded), NULL, ...)` clauses (AI-120)."""
+    return bq.array_param("rf_excluded", "STRING", sorted(RF_EXCLUDED_PLATFORMS))
+
 
 def _date_filter(start_date: str | None, end_date: str | None) -> tuple[str, list]:
     clauses: list[str] = []
@@ -130,6 +151,7 @@ async def get_adset_performance(
     date_clause, date_params = _date_filter(start_date, end_date)
     plat = "AND f.platform_id = @platform" if platform else ""
     params = [bq.string_param("project_code", project_code)] + date_params
+    params.append(_rf_excluded_param())
     if platform:
         params.append(bq.string_param("platform", platform))
 
@@ -163,6 +185,8 @@ async def get_adset_performance(
                 ANY_VALUE(reach_window) AS reach_window
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code AND {date_clause} {reach_plat}
+              -- AI-120: StackAdapt R&F excluded pending direct-API supplement
+              AND platform_id NOT IN UNNEST(@rf_excluded)
             GROUP BY platform_id, campaign_id
         )
         SELECT
@@ -196,12 +220,18 @@ async def get_adset_performance(
 
     rows = bq.run_query(sql, params)
     no_reach = {"google_ads", "pinterest"}
-    reach_ok = sorted({r["platform_id"] for r in rows if r.get("reach")}) if rows else []
+    reach_ok = sorted({
+        r["platform_id"] for r in rows
+        if r.get("reach") and r["platform_id"] not in RF_EXCLUDED_PLATFORMS
+    }) if rows else []
     note = None
     if reach_ok:
         names = [PLATFORM_NAMES.get(p, p) for p in reach_ok if p not in no_reach]
         if names:
             note = "Reach from " + ", ".join(names) + ". Not additive across audiences."
+    # AI-120: explain the missing StackAdapt R&F cells when it's active here.
+    if any(r["platform_id"] in RF_EXCLUDED_PLATFORMS for r in rows):
+        note = f"{note} {RF_EXCLUDED_NOTE}" if note else RF_EXCLUDED_NOTE
     return AdSetPerformanceResponse(
         project_code=project_code,
         start_date=date.fromisoformat(start_date) if start_date else None,
@@ -224,10 +254,17 @@ async def get_adset_performance(
                 ctr=_float_or_none(r.get("ctr")),
                 vcr=_float_or_none(r.get("vcr")),
                 engagement_rate=_float_or_none(r.get("engagement_rate")),
-                reach=_int_or_none(r.get("reach")),
-                frequency=_float_or_none(r.get("frequency")),
-                reach_window=r.get("reach_window"),
-                cost_per_reach=_float_or_none(r.get("cost_per_reach")),
+                # AI-120: NULL R&F for excluded platforms → frontend em-dash
+                # (AI-029 pattern). SQL already excludes them from the reach
+                # CTE; this guard keeps the contract explicit and testable.
+                reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                       else _int_or_none(r.get("reach"))),
+                frequency=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                           else _float_or_none(r.get("frequency"))),
+                reach_window=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                              else r.get("reach_window")),
+                cost_per_reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                                else _float_or_none(r.get("cost_per_reach"))),
                 ad_count=_int(r.get("ad_count")),
             )
             for r in rows
@@ -435,10 +472,18 @@ async def get_performance(
     date_clause, date_params = _date_filter(start_date, end_date)
     platform_clause = "AND f.platform_id = @platform" if platform else ""
     base_params = [bq.string_param("project_code", project_code)] + date_params
+    base_params.append(_rf_excluded_param())
     if platform:
         base_params.append(bq.string_param("platform", platform))
 
     base_where = f"f.project_code = @project_code AND {date_clause} {platform_clause}"
+
+    # AI-120: conditional R&F aggregation — NULLs out reach/frequency for
+    # excluded platforms (StackAdapt) WITHOUT touching spend / impressions /
+    # clicks / conversions in the same rollup. Funnel stays source of truth
+    # for everything except R&F.
+    rf_reach_col = "IF(f.platform_id IN UNNEST(@rf_excluded), NULL, f.reach)"
+    rf_freq_col = "IF(f.platform_id IN UNNEST(@rf_excluded), NULL, f.frequency)"
 
     # ── totals ──────────────────────────────────────────────────────
     totals_sql = f"""
@@ -449,8 +494,8 @@ async def get_performance(
             COALESCE(SUM(f.impressions), 0) AS total_impressions,
             COALESCE(SUM(f.clicks), 0) AS total_clicks,
             COALESCE(SUM(f.conversions), 0) AS total_conversions,
-            MAX(f.reach) AS total_reach,
-            AVG(NULLIF(f.frequency, 0)) AS total_frequency,
+            MAX({rf_reach_col}) AS total_reach,
+            AVG(NULLIF({rf_freq_col}, 0)) AS total_frequency,
             SUM(f.video_views) AS total_video_views,
             SUM(f.video_completions) AS total_video_completions,
             SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS total_vcr,
@@ -479,8 +524,8 @@ async def get_performance(
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
             SAFE_DIVIDE(SUM(f.clicks), NULLIF(SUM(f.impressions), 0)) AS ctr,
-            MAX(f.reach) AS reach,
-            AVG(NULLIF(f.frequency, 0)) AS frequency,
+            MAX({rf_reach_col}) AS reach,
+            AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
             SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS vcr,
@@ -502,10 +547,14 @@ async def get_performance(
     high_frequency_warning: str | None = None
     try:
         ap_ad = [bq.string_param("project_code", project_code)] + date_params
+        ap_ad.append(_rf_excluded_param())
+        # AI-120: every fact_adset_daily R&F rollup excludes StackAdapt.
+        rf_guard = "AND platform_id NOT IN UNNEST(@rf_excluded)"
         adset_daily_sql = f"""
             SELECT date, MAX(reach) AS reach, MAX(frequency) AS frequency
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code AND {date_clause}
+              {rf_guard}
             GROUP BY date
         """
         for ar in bq.run_query(adset_daily_sql, ap_ad):
@@ -515,6 +564,7 @@ async def get_performance(
             SELECT MAX(reach) AS max_reach, AVG(frequency) AS avg_freq
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code AND {date_clause}
+              {rf_guard}
         """
         sr = bq.run_query(sum_sql, ap_ad)
         if sr:
@@ -525,8 +575,12 @@ async def get_performance(
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code AND {date_clause}
               AND reach IS NOT NULL AND reach > 0
+              {rf_guard}
         """
-        reach_platforms = sorted({r["platform_id"] for r in bq.run_query(plat_sql, ap_ad)})
+        reach_platforms = sorted({
+            r["platform_id"] for r in bq.run_query(plat_sql, ap_ad)
+            if r["platform_id"] not in RF_EXCLUDED_PLATFORMS
+        })
         if reach_platforms:
             reach_note = "Reach from " + ", ".join(
                 PLATFORM_NAMES.get(p, p) for p in reach_platforms
@@ -535,6 +589,7 @@ async def get_performance(
             SELECT ad_set_name, platform_id, MAX(frequency) AS frequency
             FROM {bq.table('fact_adset_daily')}
             WHERE project_code = @project_code AND {date_clause} AND frequency > 5
+              {rf_guard}
             GROUP BY ad_set_name, platform_id
             ORDER BY frequency DESC
             LIMIT 1
@@ -558,8 +613,8 @@ async def get_performance(
             SUM(f.impressions) AS impressions,
             SUM(f.clicks) AS clicks,
             SUM(f.conversions) AS conversions,
-            MAX(f.reach) AS reach,
-            AVG(NULLIF(f.frequency, 0)) AS frequency,
+            MAX({rf_reach_col}) AS reach,
+            AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
             SUM(f.engagements) AS engagements
@@ -569,6 +624,12 @@ async def get_performance(
         ORDER BY spend DESC
     """
     platform_rows = bq.run_query(platform_sql, base_params)
+
+    # AI-120: when an R&F-excluded platform (StackAdapt) is active on the
+    # project, tell the user why its reach/frequency is missing. Existing
+    # note text is preserved; this only appends.
+    if any(r["platform_id"] in RF_EXCLUDED_PLATFORMS for r in platform_rows):
+        reach_note = f"{reach_note} {RF_EXCLUDED_NOTE}" if reach_note else RF_EXCLUDED_NOTE
 
     # ── campaign-level detail ───────────────────────────────────────
     campaign_sql = f"""
@@ -583,8 +644,8 @@ async def get_performance(
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
             SAFE_DIVIDE(SUM(f.clicks), NULLIF(SUM(f.impressions), 0)) AS ctr,
-            MAX(f.reach) AS reach,
-            AVG(NULLIF(f.frequency, 0)) AS frequency,
+            MAX({rf_reach_col}) AS reach,
+            AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
             SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS vcr,
@@ -636,10 +697,20 @@ async def get_performance(
         "conversions": lambda r: r.get("conversions") and float(r["conversions"]) > 0,
     }
 
+    # AI-120: R&F-derived metrics must never list an excluded platform as a
+    # contributor. The SQL already NULLs these columns, but this Python guard
+    # keeps the contract explicit (and survives any future SQL regression).
+    # The frontend's AI-026 subtitle logic then renders
+    # "Not reported by StackAdapt." automatically.
+    rf_metrics = {"reach", "frequency"}
+
     for metric_name, check_fn in metric_checks.items():
         platforms_with = [
             PLATFORM_NAMES.get(r["platform_id"], r["platform_id"])
-            for r in platform_rows if check_fn(r)
+            for r in platform_rows
+            if check_fn(r)
+            and not (metric_name in rf_metrics
+                     and r["platform_id"] in RF_EXCLUDED_PLATFORMS)
         ]
         if platforms_with:
             available.append(metric_name)
@@ -746,8 +817,11 @@ async def get_performance(
                 impressions=_int(r["impressions"]),
                 clicks=_int(r["clicks"]),
                 conversions=_float(r["conversions"]),
-                reach=_int_or_none(r.get("reach")),
-                frequency=_float_or_none(r.get("frequency")),
+                # AI-120: NULL R&F for excluded platforms (em-dash in UI).
+                reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                       else _int_or_none(r.get("reach"))),
+                frequency=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                           else _float_or_none(r.get("frequency"))),
                 video_views=_int_or_none(r.get("video_views")),
                 video_completions=_int_or_none(r.get("video_completions")),
                 engagements=_int_or_none(r.get("engagements")),
@@ -767,8 +841,11 @@ async def get_performance(
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
                 ctr=_float_or_none(r.get("ctr")),
-                reach=_int_or_none(r.get("reach")),
-                frequency=_float_or_none(r.get("frequency")),
+                # AI-120: NULL R&F for excluded platforms (em-dash in UI).
+                reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                       else _int_or_none(r.get("reach"))),
+                frequency=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                           else _float_or_none(r.get("frequency"))),
                 video_views=_int_or_none(r.get("video_views")),
                 video_completions=_int_or_none(r.get("video_completions")),
                 vcr=_float_or_none(r.get("vcr")),
