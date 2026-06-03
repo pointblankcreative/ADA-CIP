@@ -560,6 +560,11 @@ export interface DiagnosticSignal {
 export interface DiagnosticPillar {
   score: number | null;
   status: DiagnosticStatus;
+  /** AI-040 coverage metadata — absent/null on legacy snapshots. */
+  weight?: number | null;
+  coverage?: number | null;
+  signals_active?: number | null;
+  signals_total?: number | null;
 }
 
 export interface DiagnosticEfficiency {
@@ -586,6 +591,11 @@ export interface DiagnosticOutput {
   flight_total_days: number;
   health_score: number | null;
   health_status: DiagnosticStatus;
+  /**
+   * Weighted fraction of designed signal weight reporting (AI-040).
+   * Null/absent on legacy snapshots — render those exactly as before.
+   */
+  health_coverage?: number | null;
   pillars: Record<string, DiagnosticPillar>;
   signals: DiagnosticSignal[];
   efficiency: DiagnosticEfficiency;
