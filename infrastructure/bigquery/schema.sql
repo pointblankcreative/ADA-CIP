@@ -280,13 +280,14 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.fact_digital_daily` (
   line_code STRING,
   spend NUMERIC DEFAULT 0,
   impressions INT64 DEFAULT 0,
-  clicks INT64 DEFAULT 0,
+  clicks INT64 DEFAULT 0,                      -- Canonical destination-intent click (AI-102). Meta: Link_Clicks; TikTok: Clicks_Destination; Snapchat: Swipes; Pinterest: Paid_Outbound_Clicks; Google/StackAdapt/LinkedIn/Reddit: platform clicks. SAME definition at every grain.
+  clicks_all INT64,                            -- AI-102: Meta: Clicks_all; TikTok: Clicks_All. All clicks incl. on-platform actions (reactions, profile taps, video-play clicks). NULL for platforms without the concept; NULL on pre-backfill rows.
   conversions NUMERIC DEFAULT 0,
   video_views INT64 DEFAULT 0,
   video_completions INT64 DEFAULT 0,
   reach INT64 DEFAULT 0,
   frequency FLOAT64 DEFAULT 0,
-  engagements INT64 DEFAULT 0,
+  engagements INT64 DEFAULT 0,                 -- Meta: Post_Engagement (was Clicks_all pre-2026-06 — AI-102 remap); Google: Engagements; LinkedIn: Action_Clicks; Pinterest: Paid_engagements; TikTok: NULL pending engagement-column mapping.
   cpm FLOAT64,
   cpc FLOAT64,
   ctr FLOAT64,

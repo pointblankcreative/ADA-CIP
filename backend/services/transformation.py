@@ -83,6 +83,7 @@ SELECT * EXCEPT(rn) FROM (
       CAST(spend AS NUMERIC) AS spend,
       impressions,
       clicks,
+      clicks_all,
       reach,
       frequency,
       video_views,
