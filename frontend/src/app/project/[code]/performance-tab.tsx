@@ -38,6 +38,7 @@ import {
   formatNumber,
   formatPercent,
   platformLabel,
+  platformSupportsMetric,
   cn,
   renderEngagementRateMulti,
 } from "@/lib/utils";
@@ -253,9 +254,18 @@ export function PerformanceTab({ code }: { code: string }) {
   // need the same discrimination per-row — see AI-029 / AI-115 — which is
   // handled via the renderEngagementRate{,Multi} helpers and the
   // metric_platforms.engagements prop passed down below.
+  // F2 (2026-06-03): scope the denominator to platforms that actually report
+  // engagements (metric_platforms.engagements). Dividing Meta-only engagements
+  // by all-platform impressions diluted the rate (0.6% shown vs 0.76% true on
+  // 26018) while the subtitle claimed "From Meta".
+  const engagementImpressions = (data.by_platform ?? [])
+    .filter((p) =>
+      platformSupportsMetric(p.platform_id, data.metric_platforms?.engagements),
+    )
+    .reduce((sum, p) => sum + (p.impressions ?? 0), 0);
   const engagementRate =
-    has(data, "engagements") && data.total_impressions > 0 && data.total_engagements
-      ? (data.total_engagements / data.total_impressions) * 100
+    has(data, "engagements") && engagementImpressions > 0 && data.total_engagements
+      ? (data.total_engagements / engagementImpressions) * 100
       : null;
 
   const bm = benchData?.benchmarks ?? {};
