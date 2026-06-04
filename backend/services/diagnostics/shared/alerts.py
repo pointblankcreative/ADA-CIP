@@ -25,17 +25,19 @@ def populate_signal_alerts(output: DiagnosticOutput) -> None:
     """Append one DiagnosticAlert per signal in ACTION band.
 
     A signal fires when:
-      - It's in a scored pillar (pillar.score is not None)
       - guard_passed is True (we measured it cleanly)
       - status == StatusBand.ACTION (score < 40)
+
+    AI-040: a pillar can now be unscored because of the coverage floor
+    while still containing guard-passed ACTION signals (e.g. F2 LP-load
+    = 0 inside a low-coverage funnel). Those are real, cleanly-measured
+    problems — fire them regardless of whether the pillar presents a
+    score. _is_action_level already requires guard_passed, so fully
+    guard-failed pillars still emit nothing.
 
     See docs/diagnostics/alert-rules.md §"Signal-level ACTION".
     """
     for pillar in output.pillars:
-        # Skip unscored pillars. Quality (when deferred) will have
-        # no pillar object at all, but belt-and-suspenders.
-        if pillar.score is None:
-            continue
         for signal in pillar.signals:
             if _is_action_level(signal):
                 output.alerts.append(_build_signal_alert(signal, output))
@@ -136,11 +138,15 @@ def _build_signal_alert(
 def _top_failing_signals(
     output: DiagnosticOutput, n: int = 2
 ) -> list[SignalResult]:
-    """Lowest-scoring signals from scored pillars where guard passed."""
+    """Lowest-scoring guard-passed signals across all pillars.
+
+    AI-040: includes signals inside coverage-blanked pillars — a
+    cleanly-measured failing signal is real evidence even when its
+    pillar withholds a score (same decoupling as
+    populate_signal_alerts).
+    """
     candidates: list[SignalResult] = []
     for pillar in output.pillars:
-        if pillar.score is None:
-            continue
         for signal in pillar.signals:
             if signal.guard_passed and signal.score is not None:
                 candidates.append(signal)

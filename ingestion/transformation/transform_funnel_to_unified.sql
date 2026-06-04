@@ -53,7 +53,8 @@ WITH platform_data AS (
     Ad_Account_Name__Facebook_Ads AS account_name,
     CAST(Amount_Spent__Facebook_Ads AS NUMERIC) AS spend,
     CAST(Impressions__Facebook_Ads AS INT64) AS impressions,
-    CAST(Link_Clicks__Facebook_Ads AS INT64) AS clicks,
+    CAST(Link_Clicks__Facebook_Ads AS INT64) AS clicks,            -- canonical: destination-intent (AI-102)
+    CAST(Clicks_all__Facebook_Ads AS INT64) AS clicks_all,         -- AI-102: all clicks, first-class
     CAST(Reach___7_Day_Ad_Set__Facebook_Ads AS INT64) AS reach,
     CAST(Frequency___7_Day_Ad_Set__Facebook_Ads AS FLOAT64) AS frequency,
     CAST(Video_Plays__Facebook_Ads AS INT64) AS video_views,
@@ -69,7 +70,10 @@ WITH platform_data AS (
       END,
       0
     ) AS conversions,
-    CAST(Clicks_all__Facebook_Ads AS INT64) AS engagements,
+    -- AI-102: engagements was Clicks_all (all-click noise rendered as a 9%+
+    -- "Eng. rate" in the UI). Post_Engagement is the metric the label claims;
+    -- Clicks_all now lives in the dedicated clicks_all column above.
+    CAST(Post_Engagement__Facebook_Ads AS INT64) AS engagements,
     -- Diagnostic signal columns
     CAST(n_3_Second_Video_Views__Facebook_Ads AS INT64) AS video_views_3s,
     CAST(Video_thruplay__Facebook_Ads AS INT64) AS thruplay,
@@ -109,6 +113,7 @@ WITH platform_data AS (
     SUM(spend) AS spend,
     SUM(impressions) AS impressions,
     SUM(clicks) AS clicks,
+    CAST(NULL AS INT64) AS clicks_all,  -- AI-102: no all-clicks concept on Google Ads
     CAST(NULL AS INT64) AS reach,
     CAST(NULL AS FLOAT64) AS frequency,
     SUM(video_views) AS video_views,
@@ -184,6 +189,7 @@ WITH platform_data AS (
     CAST(Cost__StackAdapt AS NUMERIC) AS spend,
     CAST(Impressions__StackAdapt AS INT64) AS impressions,
     CAST(Clicks__StackAdapt AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS clicks_all,  -- AI-102: no all-clicks concept on StackAdapt
     CAST(Unique_impressions_1_Day_Creative__StackAdapt AS INT64) AS reach,
     CAST(Frequency_1_Day_Creative__StackAdapt AS FLOAT64) AS frequency,
     CAST(Video_started__StackAdapt AS INT64) AS video_views,
@@ -235,13 +241,16 @@ WITH platform_data AS (
     Advertiser_name__TikTok AS account_name,
     CAST(Total_cost__TikTok AS NUMERIC) AS spend,
     CAST(Impressions__TikTok AS INT64) AS impressions,
-    CAST(Clicks_Destination__TikTok AS INT64) AS clicks,
+    CAST(Clicks_Destination__TikTok AS INT64) AS clicks,           -- canonical: destination-intent (AI-102)
+    CAST(Clicks_All__TikTok AS INT64) AS clicks_all,               -- AI-102: all clicks, first-class
     CAST(Reach___7_Day_Adgroup__TikTok AS INT64) AS reach,
     CAST(Frequency___7_Day_Adgroup__TikTok AS FLOAT64) AS frequency,
     CAST(NULL AS INT64) AS video_views,
     CAST(NULL AS INT64) AS video_completions,
     CAST(Conversions__TikTok AS NUMERIC) AS conversions,
-    CAST(Clicks_All__TikTok AS INT64) AS engagements,
+    -- AI-102: Clicks_All is not engagement — NULL until TikTok's real
+    -- engagement columns are mapped (still TODO in this transform).
+    CAST(NULL AS INT64) AS engagements,
     -- Diagnostic signal columns (TikTok: TODO extend when Funnel.io columns confirmed)
     CAST(NULL AS INT64) AS video_views_3s,
     CAST(NULL AS INT64) AS thruplay,
@@ -289,6 +298,7 @@ WITH platform_data AS (
     CAST(Spend__Snapchat AS NUMERIC) AS spend,
     CAST(Impressions__Snapchat AS INT64) AS impressions,
     CAST(Swipes__Snapchat AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS clicks_all,  -- AI-102: no all-clicks concept on Snapchat
     CAST(Reach___7_Day_Campaign__Snapchat AS INT64) AS reach,
     CAST(Frequency___7_Day_Campaign__Snapchat AS FLOAT64) AS frequency,
     CAST(Video_Views_time_based__Snapchat AS INT64) AS video_views,
@@ -342,6 +352,7 @@ WITH platform_data AS (
     CAST(Spend__LinkedIn AS NUMERIC) AS spend,
     CAST(Impressions__LinkedIn AS INT64) AS impressions,
     CAST(Clicks__LinkedIn AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS clicks_all,  -- AI-102: no all-clicks concept on LinkedIn
     CAST(NULL AS INT64) AS reach,
     CAST(NULL AS FLOAT64) AS frequency,
     CAST(NULL AS INT64) AS video_views,
@@ -395,6 +406,7 @@ WITH platform_data AS (
     CAST(Cost__Reddit AS NUMERIC) AS spend,
     CAST(Impressions__Reddit AS INT64) AS impressions,
     CAST(Clicks__Reddit AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS clicks_all,  -- AI-102: no all-clicks concept on Reddit
     CAST(NULL AS INT64) AS reach,
     CAST(NULL AS FLOAT64) AS frequency,
     CAST(Video_Starts__Reddit AS INT64) AS video_views,
@@ -448,6 +460,7 @@ WITH platform_data AS (
     CAST(Spend__Pinterest AS NUMERIC) AS spend,
     CAST(Paid_impressions__Pinterest AS INT64) AS impressions,
     CAST(Paid_Outbound_Clicks__Pinterest AS INT64) AS clicks,
+    CAST(NULL AS INT64) AS clicks_all,  -- AI-102: no all-clicks concept exported for Pinterest
     CAST(NULL AS INT64) AS reach,
     CAST(NULL AS FLOAT64) AS frequency,
     CAST(Paid_video_views__Pinterest AS INT64) AS video_views,
@@ -503,6 +516,7 @@ enriched_data AS (
     pd.spend,
     pd.impressions,
     pd.clicks,
+    pd.clicks_all,
     pd.reach,
     pd.frequency,
     pd.video_views,
@@ -565,6 +579,7 @@ USING (
     spend,
     impressions,
     clicks,
+    clicks_all,
     reach,
     frequency,
     video_views,
@@ -616,6 +631,7 @@ WHEN MATCHED THEN
     spend = source.spend,
     impressions = source.impressions,
     clicks = source.clicks,
+    clicks_all = source.clicks_all,
     reach = source.reach,
     frequency = source.frequency,
     video_views = source.video_views,
@@ -664,6 +680,7 @@ WHEN NOT MATCHED THEN
     spend,
     impressions,
     clicks,
+    clicks_all,
     reach,
     frequency,
     video_views,
@@ -711,6 +728,7 @@ WHEN NOT MATCHED THEN
     source.spend,
     source.impressions,
     source.clicks,
+    source.clicks_all,
     source.reach,
     source.frequency,
     source.video_views,

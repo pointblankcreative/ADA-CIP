@@ -28,6 +28,7 @@ export interface Project {
   pacing_percentage: number | null;
   days_remaining: number;
   recently_ended?: boolean;
+  currency: string;
   updated_at: string;
 }
 
@@ -91,6 +92,14 @@ export interface PhaseSummary {
   is_active: boolean;
 }
 
+/** AI-002: spend on a platform with no media plan line (no planned baseline). */
+export interface UntrackedPlatformSpend {
+  platform_id: string;
+  spend: number;
+  first_date?: string | null;
+  last_date?: string | null;
+}
+
 export interface PacingResponse {
   project_code: string;
   as_of_date: string;
@@ -98,6 +107,21 @@ export interface PacingResponse {
   total_planned_to_date: number;
   total_actual_to_date: number;
   overall_pacing_percentage: number;
+  /** AI-002: spend on platforms with no media plan line. Included in the
+   *  spent/remaining math, excluded from overall_pacing_percentage. Optional
+   *  so the tab keeps working against a not-yet-redeployed backend. */
+  untracked_spend?: number;
+  untracked_platforms?: UntrackedPlatformSpend[];
+  /** total_actual_to_date + untracked_spend — reconciles with the header. */
+  total_actual_all_platforms?: number;
+  /** AI-070/071: true when no stored snapshot exists for the requested date
+   *  AND a compute-on-miss replay was impossible (no plan / no data). */
+  snapshot_missing?: boolean;
+  /** Earliest budget_tracking date for this project (null = no history). */
+  earliest_snapshot_date?: string | null;
+  /** True when rows were computed on demand (replay) rather than read from
+   *  a stored budget_tracking snapshot. Mirrors diagnostics' `cached`. */
+  replayed?: boolean;
   lines: PacingLine[];
   /** Empty for legacy projects that haven't landed in project_media_plans. */
   phases: PhaseSummary[];
@@ -181,6 +205,8 @@ export interface PerformanceResponse {
   total_spend: number;
   total_impressions: number;
   total_clicks: number;
+  /** AI-102: all clicks incl. on-platform actions (Meta/TikTok only). */
+  total_clicks_all?: number | null;
   total_conversions: number;
   total_reach?: number | null;
   total_frequency?: number | null;
@@ -198,6 +224,9 @@ export interface PerformanceResponse {
   zero_conversion_warning?: string | null;
   available_metrics: string[];
   metric_platforms: Record<string, string[]>;
+  /** AI-102: per-platform definition of the canonical `clicks` field,
+   *  keyed by platform_id, for tooltips. */
+  clicks_definitions?: Record<string, string>;
   daily: DailyPerformance[];
   by_platform?: PlatformBreakdown[];
   campaigns?: CampaignRow[];
@@ -559,6 +588,11 @@ export interface DiagnosticSignal {
 export interface DiagnosticPillar {
   score: number | null;
   status: DiagnosticStatus;
+  /** AI-040 coverage metadata — absent/null on legacy snapshots. */
+  weight?: number | null;
+  coverage?: number | null;
+  signals_active?: number | null;
+  signals_total?: number | null;
 }
 
 export interface DiagnosticEfficiency {
@@ -585,6 +619,11 @@ export interface DiagnosticOutput {
   flight_total_days: number;
   health_score: number | null;
   health_status: DiagnosticStatus;
+  /**
+   * Weighted fraction of designed signal weight reporting (AI-040).
+   * Null/absent on legacy snapshots — render those exactly as before.
+   */
+  health_coverage?: number | null;
   pillars: Record<string, DiagnosticPillar>;
   signals: DiagnosticSignal[];
   efficiency: DiagnosticEfficiency;
@@ -622,6 +661,10 @@ export interface RetrospectivePacingSummary {
   project_code: string;
   lines_processed: number;
   alerts: number;
+  /** AI-070/072: the replay's per-line rows (budget_tracking shape). The
+   *  retro UI fetches pacing through GET /api/pacing?as_of_date= instead,
+   *  so nothing renders these — surfaced for API consumers/debugging. */
+  lines?: Record<string, unknown>[];
 }
 
 export interface RetrospectiveResponse {

@@ -4,15 +4,18 @@ import type { ReactNode } from "react";
 interface CardProps {
   children: ReactNode;
   className?: string;
+  /** Native browser tooltip (AI-102: used for per-platform metric definitions). */
+  title?: string;
 }
 
-export function Card({ children, className }: CardProps) {
+export function Card({ children, className, title }: CardProps) {
   return (
     <div
       className={cn(
         "rounded-lg border border-slate-800 bg-surface-raised p-5",
         className
       )}
+      title={title}
     >
       {children}
     </div>
@@ -34,6 +37,8 @@ interface KpiCardProps {
   sub?: string;
   accent?: string;
   benchmark?: BenchmarkIndicator;
+  /** Native browser tooltip on hover (AI-102: per-platform clicks definitions). */
+  title?: string;
 }
 
 function benchmarkColor(bm: BenchmarkIndicator): string {
@@ -56,11 +61,11 @@ function benchmarkBarPosition(bm: BenchmarkIndicator): number {
   return Math.max(0, Math.min(100, pos));
 }
 
-export function KpiCard({ label, value, sub, accent, benchmark }: KpiCardProps) {
+export function KpiCard({ label, value, sub, accent, benchmark, title }: KpiCardProps) {
   const fmt = benchmark?.format ?? ((v: number) => (v ?? 0).toFixed(2));
 
   return (
-    <Card>
+    <Card title={title}>
       <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
         {label}
       </p>

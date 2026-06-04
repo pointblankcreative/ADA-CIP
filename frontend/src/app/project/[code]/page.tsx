@@ -121,9 +121,21 @@ export default function ProjectDetailPage() {
               )}
             </div>
             {project && !unprovisioned && (
-              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">
-                <span>Budget: {formatCurrency(project.net_budget)}</span>
-                <span>Spent: {formatCurrency(project.total_spend)}</span>
+              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">                
+                {project.client_name && (
+                  <span className="font-medium text-slate-400">{project.client_name}</span>
+                )}
+                <span>Budget: {formatCurrency(project.net_budget)}{project.currency ? ` ${project.currency}` : ""}</span>
+                {/* AI-002: scope label — this is the data-warehouse total
+                    (all platforms, all dates). Reconciles with the Pacing
+                    tab's "Spent to Date" now that untracked-platform spend
+                    is included there. */}
+                <span
+                  className="cursor-help"
+                  title="All platforms, all dates (data warehouse total)"
+                >
+                  Spent: {formatCurrency(project.total_spend)}{project.currency ? ` ${project.currency}` : ""}
+                </span>
                 <span>{formatFlightDay(buildFlightDayInput(project), "combined")}</span>
               </div>
             )}

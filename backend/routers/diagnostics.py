@@ -42,8 +42,37 @@ def _coerce_json(value: Any) -> Any:
     return value
 
 
+def _derive_health_coverage(pillars: dict) -> float | None:
+    """Derive campaign-level coverage from per-pillar coverage (AI-040).
+
+    Coverage lives inside the existing ``pillars`` JSON column (no new
+    top-level BQ column), so the campaign-level number is computed here
+    at read time:
+
+        health_coverage = Σ(pillar_weight × pillar_coverage) / Σ(pillar_weight)
+
+    Legacy rows (pre-coverage snapshots) lack the ``weight``/``coverage``
+    keys → returns None and the frontend renders them exactly as before
+    (no INSUFFICIENT DATA retro-blanking).
+    """
+    if not isinstance(pillars, dict):
+        return None
+    entries = [
+        (p.get("weight"), p.get("coverage"))
+        for p in pillars.values()
+        if isinstance(p, dict) and p.get("weight") is not None
+    ]
+    if not entries or not any(c is not None for _, c in entries):
+        return None
+    total_w = sum(w for w, _ in entries)
+    if total_w <= 0:
+        return None
+    return round(sum(w * (c or 0.0) for w, c in entries) / total_w, 3)
+
+
 def _row_to_diagnostic(row: dict) -> dict:
     """Convert a fact_diagnostic_signals row into the API response shape."""
+    pillars = _coerce_json(row.get("pillars")) or {}
     return {
         "id": row.get("id"),
         "project_code": row.get("project_code"),
@@ -57,7 +86,8 @@ def _row_to_diagnostic(row: dict) -> dict:
         "flight_total_days": row.get("flight_total_days"),
         "health_score": row.get("health_score"),
         "health_status": row.get("health_status"),
-        "pillars": _coerce_json(row.get("pillars")) or {},
+        "health_coverage": _derive_health_coverage(pillars),
+        "pillars": pillars,
         "signals": _coerce_json(row.get("signals")) or [],
         "efficiency": _coerce_json(row.get("efficiency")) or {},
         "alerts": _coerce_json(row.get("alerts")) or [],

@@ -189,6 +189,95 @@ def test_pacing_skip_writes_suppresses_budget_tracking_and_alerts():
         mock_write_alerts.assert_not_called()
 
 
+def test_run_pacing_for_project_returns_computed_lines():
+    """AI-070/072: the return dict exposes the computed per-line rows under
+    ``lines`` (budget_tracking row shape) so the retrospective read path can
+    serve a replay when no stored snapshot exists. Previously these rows were
+    computed and thrown away — the design intent was half-implemented.
+    """
+    from datetime import date as _date, timedelta
+    from unittest.mock import MagicMock, patch
+
+    from backend.services.pacing import run_pacing_for_project
+
+    today = _date.today()
+    flight_start = today - timedelta(days=5)
+    flight_end = today + timedelta(days=15)
+
+    line = {
+        "line_id": "retro-line-01",
+        "line_code": "TEST",
+        "platform_id": "meta",
+        "channel_category": "Digital",
+        "budget": 10000.0,
+        "flight_start": flight_start.isoformat(),
+        "flight_end": flight_end.isoformat(),
+    }
+    blocking_weeks = [{
+        "line_id": "retro-line-01",
+        "week_start": flight_start.isoformat(),
+        "is_active": True,
+    }]
+
+    with patch("backend.services.pacing.bq") as mock_bq, \
+         patch("backend.services.pacing._write_budget_tracking"), \
+         patch("backend.services.pacing._write_alerts"):
+
+        mock_bq.table.return_value = "dummy_table"
+        mock_bq.string_param.return_value = MagicMock()
+        mock_bq.scalar_param.return_value = MagicMock()
+        mock_bq.date_param.return_value = MagicMock()
+
+        call_count = [0]
+
+        def mock_run_query(sql, params=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [line]
+            elif call_count[0] == 2:
+                return blocking_weeks
+            return []
+
+        mock_bq.run_query.side_effect = mock_run_query
+
+        result = run_pacing_for_project("TEST01", today, skip_writes=True)
+
+    assert result["lines_processed"] == 1
+    assert len(result["lines"]) == 1
+    row = result["lines"][0]
+    # Shape matches the budget_tracking columns written in step 5.
+    for col in (
+        "date", "project_code", "line_id", "line_code", "platform_id",
+        "channel_category", "line_status", "planned_budget",
+        "planned_spend_to_date", "actual_spend_to_date", "remaining_budget",
+        "remaining_days", "pacing_percentage", "daily_budget_required",
+        "is_over_pacing", "is_under_pacing", "bundle_id", "bundle_role",
+    ):
+        assert col in row, f"missing budget_tracking column {col!r}"
+    assert row["date"] == today.isoformat()
+    assert row["line_id"] == "retro-line-01"
+    assert row["planned_budget"] == 10000.0
+
+
+def test_run_pacing_for_project_returns_empty_lines_when_no_plan():
+    """The no-media-plan early return also carries ``lines: []`` so callers
+    never have to special-case a missing key."""
+    from datetime import date as _date
+    from unittest.mock import MagicMock, patch
+
+    from backend.services.pacing import run_pacing_for_project
+
+    with patch("backend.services.pacing.bq") as mock_bq:
+        mock_bq.table.return_value = "dummy_table"
+        mock_bq.string_param.return_value = MagicMock()
+        mock_bq.run_query.return_value = []
+
+        result = run_pacing_for_project("NOPLAN", _date.today())
+
+    assert result["lines_processed"] == 0
+    assert result["lines"] == []
+
+
 # ── snapshots service (commit 4) ────────────────────────────────────
 
 
@@ -271,11 +360,16 @@ def test_find_snapshot_defaults_to_current_engine_version(monkeypatch):
 
 def test_find_or_compute_hits_cache(monkeypatch):
     """Cache hit path: find_snapshot returns rows, compute_and_store is never
-    called, and the returned was_cached flag is True."""
+    called, and the returned was_cached flag is True.
+
+    The stale-cache guard (AI-073 hardening) is satisfied here: the plan
+    classifies into exactly as many campaign types as the snapshot covers.
+    """
     from backend.services import snapshots
 
     cached = [{"campaign_type": "persuasion", "health_score": 81.0}]
     monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: cached)
+    monkeypatch.setattr(snapshots, "_expected_campaign_type_count", lambda pc: 1)
     # compute_and_store must NOT be called — explode if it is.
     monkeypatch.setattr(
         snapshots, "compute_and_store",
@@ -285,6 +379,85 @@ def test_find_or_compute_hits_cache(monkeypatch):
     rows, was_cached = snapshots.find_or_compute("25013", date(2026, 4, 15))
     assert rows == cached
     assert was_cached is True
+
+
+def test_find_or_compute_recomputes_when_cached_types_fewer_than_plan(monkeypatch):
+    """AI-073 hardening: a snapshot computed while the media plan was
+    incomplete (e.g. day-one setup where persuasion lines were synced before
+    conversion lines) covers fewer campaign types than the completed plan
+    classifies into. The cache key has no plan awareness, so without this
+    guard that partial snapshot would be served forever — exactly the
+    "only Persuasion, no Conversion" symptom. 26018 dodged it by ~25 minutes.
+    """
+    from backend.services import snapshots
+
+    stale_cached = [{"campaign_type": "persuasion", "health_score": 41.8}]
+    monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: stale_cached)
+    # The plan NOW classifies into 2 types (mixed) — cache is stale.
+    monkeypatch.setattr(snapshots, "_expected_campaign_type_count", lambda pc: 2)
+
+    fresh = [
+        _make_output(campaign_type=CampaignType.PERSUASION, engine_version="sha-abc"),
+        _make_output(campaign_type=CampaignType.CONVERSION, engine_version="sha-abc"),
+    ]
+    calls = []
+
+    def fake_compute(project_code, as_of_date):
+        calls.append((project_code, as_of_date))
+        return fresh
+
+    monkeypatch.setattr(snapshots, "compute_and_store", fake_compute)
+
+    rows, was_cached = snapshots.find_or_compute("26018", date(2026, 5, 19))
+
+    assert len(calls) == 1, "stale cache must trigger a recompute"
+    assert was_cached is False
+    assert len(rows) == 2
+    assert {r["campaign_type"] for r in rows} == {"persuasion", "conversion"}
+
+
+def test_find_or_compute_pure_project_single_row_cache_hit_preserved(monkeypatch):
+    """A pure-persuasion project with a 1-row snapshot is NOT stale —
+    expected count (1) == cached count (1), so the hit is preserved and no
+    recompute happens."""
+    from backend.services import snapshots
+
+    cached = [{"campaign_type": "persuasion", "health_score": 81.0}]
+    monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: cached)
+    monkeypatch.setattr(snapshots, "_expected_campaign_type_count", lambda pc: 1)
+    monkeypatch.setattr(
+        snapshots, "compute_and_store",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("pure project's complete snapshot must stay cached")
+        ),
+    )
+
+    rows, was_cached = snapshots.find_or_compute("25013", date(2026, 4, 15))
+    assert rows == cached
+    assert was_cached is True
+
+
+def test_find_or_compute_fresh_path_sorts_by_campaign_type(monkeypatch):
+    """Fresh computes must come back campaign-type-sorted (conversion before
+    persuasion) for parity with find_snapshot's ORDER BY campaign_type — the
+    first (fresh) view of a retro date should order cards exactly like every
+    subsequent (cached) view. AI-073's most plausible explanation was this
+    very ordering flip."""
+    from backend.services import snapshots
+
+    monkeypatch.setattr(snapshots, "find_snapshot", lambda *a, **k: [])
+
+    # Engine order: persuasion first (partition_lines iterates persuasion
+    # before conversion) — must come back re-sorted.
+    outputs = [
+        _make_output(campaign_type=CampaignType.PERSUASION, engine_version="sha-abc"),
+        _make_output(campaign_type=CampaignType.CONVERSION, engine_version="sha-abc"),
+    ]
+    monkeypatch.setattr(snapshots, "compute_and_store", lambda *a, **k: outputs)
+
+    rows, was_cached = snapshots.find_or_compute("26018", date(2026, 5, 19))
+    assert was_cached is False
+    assert [r["campaign_type"] for r in rows] == ["conversion", "persuasion"]
 
 
 def test_find_or_compute_computes_on_miss(monkeypatch):

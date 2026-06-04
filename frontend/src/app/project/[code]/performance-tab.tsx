@@ -79,11 +79,48 @@ function has(data: PerformanceResponse, metric: string): boolean {
   return data.available_metrics.includes(metric);
 }
 
+/**
+ * Build the "From X. Not reported by Y." subtitle for a metric tile.
+ *
+ * Lists the platforms that contribute data on the From line, and (when there
+ * is a gap) names the active platforms that don't report the metric. The
+ * platform-id normalization mirrors `platformSupportsMetric` in lib/utils.ts
+ * (lowercase + strip non-alphanumerics) so "Google Ads" and "google_ads" both
+ * collapse to "googleads" — `metric_platforms` carries platform LABELS while
+ * `by_platform` carries snake_case IDs.
+ *
+ * Returns undefined when there's nothing useful to show (no contributors, or
+ * every active platform contributes) so the caller can hide the line.
+ * See AI-026.
+ */
 function metricNote(data: PerformanceResponse, metric: string): string | undefined {
-  const platforms = data.metric_platforms[metric];
-  if (!platforms || platforms.length === 0) return undefined;
-  if (platforms.length === data.by_platform?.length) return undefined;
-  return `Based on ${platforms.join(", ")} data`;
+  const contributingLabels = data.metric_platforms[metric];
+  if (!contributingLabels || contributingLabels.length === 0) return undefined;
+  const activeLabels = (data.by_platform ?? []).map((p) => platformLabel(p.platform_id));
+  if (activeLabels.length === 0) return undefined;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const contribNorm = new Set(contributingLabels.map(norm));
+  const excluded = activeLabels.filter((l) => !contribNorm.has(norm(l)));
+  const fromPart = `From ${contributingLabels.join(", ")}.`;
+  if (excluded.length === 0) return undefined;
+  return `${fromPart} Not reported by ${excluded.join(", ")}.`;
+}
+
+/**
+ * AI-102: hover tooltip for click-derived tiles (Clicks / CTR / CPC).
+ *
+ * `clicks` means a different thing per platform (Meta: link clicks;
+ * Snapchat: swipes; Google/StackAdapt: all clicks; …) and the project total
+ * silently sums them. The backend now labels each active platform's
+ * definition in `clicks_definitions`; this joins them into a native
+ * browser tooltip so the definition is one hover away.
+ */
+function clicksTooltip(data: PerformanceResponse): string | undefined {
+  const defs = data.clicks_definitions;
+  if (!defs) return undefined;
+  const lines = Object.values(defs);
+  if (lines.length === 0) return undefined;
+  return `What counts as a click:\n${lines.join("\n")}`;
 }
 
 function toBenchmark(
@@ -305,7 +342,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <KpiCard
                 label="Reach"
                 value={formatNumber(data.total_reach_adset)}
-                sub={data.reach_note ?? "From fact_adset_daily"}
+                sub={metricNote(data, "reach")}
               />
             ) : has(data, "reach") && data.total_reach ? (
               <KpiCard
@@ -323,7 +360,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <KpiCard
                 label="Frequency"
                 value={data.avg_frequency_adset.toFixed(1)}
-                sub={data.reach_note ?? undefined}
+                sub={metricNote(data, "frequency")}
                 benchmark={toBenchmark(bm.frequency, data.avg_frequency_adset, { format: (v) => v.toFixed(1) })}
               />
             ) : has(data, "frequency") && data.total_frequency ? (
@@ -352,6 +389,7 @@ export function PerformanceTab({ code }: { code: string }) {
                 label="CTR"
                 value={formatPercent(avgCTR)}
                 benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
+                title={clicksTooltip(data)}
               />
             )}
             {engagementRate != null ? (
@@ -364,6 +402,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <KpiCard
                 label="Clicks"
                 value={formatNumber(data.total_clicks)}
+                title={clicksTooltip(data)}
               />
             )}
           </div>
@@ -421,6 +460,7 @@ export function PerformanceTab({ code }: { code: string }) {
               label="CTR"
               value={formatPercent(avgCTR)}
               benchmark={toBenchmark(bm.ctr, avgCTR / 100, { format: (v) => fmtPct(v) ?? "—" })}
+              title={clicksTooltip(data)}
             />
             {/* AI-031 follow-up: CPC preserved as a sibling tile (was
                 previously rendered as a Conv. Rate fallback before the
@@ -429,6 +469,7 @@ export function PerformanceTab({ code }: { code: string }) {
               label="CPC"
               value={`$${data.total_clicks > 0 ? (data.total_spend / data.total_clicks).toFixed(2) : "0.00"}`}
               benchmark={toBenchmark(bm.cpc, data.total_clicks > 0 ? data.total_spend / data.total_clicks : 0, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+              title={clicksTooltip(data)}
             />
             {/* AI-031: Conv. Rate tile renders unconditionally. Render 0
                 conversions as "0.00%" in red rather than hiding the metric
@@ -480,9 +521,9 @@ export function PerformanceTab({ code }: { code: string }) {
         <Card>
           <h4 className="mb-4 text-sm font-medium text-slate-400">
             Reach &amp; Frequency
-            {(data.reach_note || metricNote(data, "reach")) && (
+            {metricNote(data, "reach") && (
               <span className="ml-2 text-xs font-normal text-slate-600">
-                {data.reach_note ?? metricNote(data, "reach")}
+                {metricNote(data, "reach")}
               </span>
             )}
           </h4>
@@ -532,7 +573,7 @@ export function PerformanceTab({ code }: { code: string }) {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                 <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, 100]} />
+                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, (dataMax: number) => Math.max(Math.ceil(dataMax * 1.2), 5)]} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${(v ?? 0).toFixed(1)}%`, "VCR"]} />
                 <Line type="monotone" dataKey="vcrPct" stroke="#a855f7" strokeWidth={2} dot={false} name="VCR" />
               </LineChart>

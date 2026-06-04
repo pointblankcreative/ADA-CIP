@@ -232,7 +232,12 @@ def run_pacing_for_project(
 
     if not lines:
         logger.info("No media plan lines found for project %s", project_code)
-        return {"project_code": project_code, "lines_processed": 0, "alerts": 0}
+        return {
+            "project_code": project_code,
+            "lines_processed": 0,
+            "alerts": 0,
+            "lines": [],
+        }
 
     line_ids = [r["line_id"] for r in lines]
 
@@ -587,6 +592,13 @@ def run_pacing_for_project(
         "project_code": project_code,
         "lines_processed": len(tracking_rows),
         "alerts": len(all_alerts),
+        # AI-070/072: expose the computed per-line rows so the retrospective
+        # read path (routers/pacing.py compute-on-miss) can serve a replay
+        # when budget_tracking has no stored snapshot for the requested date.
+        # Shape matches the budget_tracking row schema written in step 5.
+        # Existing callers (daily_job, /run endpoints, retro router) only
+        # read lines_processed/alerts — additive and backward-compatible.
+        "lines": tracking_rows,
     }
 
 

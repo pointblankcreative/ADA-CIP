@@ -14,6 +14,7 @@ import {
 import {
   api,
   type DiagnosticOutput,
+  type DiagnosticPillar,
   type DiagnosticSignal,
   type DiagnosticStatus,
   type PacingResponse,
@@ -395,7 +396,20 @@ function DiagnosticCard({
                 {output.health_status}
               </div>
             )}
+            {/* AI-040: coverage-gated health. health_coverage is only
+                populated on post-fix snapshots — legacy rows render the
+                plain em-dash exactly as before. */}
+            {output.health_score == null && output.health_coverage != null && (
+              <div className="text-sm font-medium text-slate-400">
+                INSUFFICIENT DATA
+              </div>
+            )}
           </div>
+          {output.health_coverage != null && (
+            <div className="mt-1 text-[11px] text-slate-500">
+              {signalCoverageLabel(output)}
+            </div>
+          )}
           <div className="mt-1 text-xs text-slate-500">
             {formatFlightDay(
               {
@@ -502,10 +516,17 @@ function PillarGauge({
   pillar,
 }: {
   label: string;
-  pillar: { score: number | null; status: DiagnosticStatus } | undefined;
+  pillar: DiagnosticPillar | undefined;
 }) {
   const score = pillar?.score ?? null;
   const status = pillar?.status ?? null;
+  // AI-040: coverage metadata is only present on post-fix snapshots.
+  // Legacy rows (hasCoverage === false) render exactly as before.
+  const hasCoverage = pillar?.coverage != null;
+  const coverageLabel =
+    hasCoverage && pillar?.signals_total
+      ? `${pillar.signals_active ?? 0} of ${pillar.signals_total} signals reporting`
+      : null;
 
   return (
     <div className={cn("rounded-md border p-3", statusBg(status))}>
@@ -516,12 +537,22 @@ function PillarGauge({
             {status}
           </div>
         )}
+        {!status && hasCoverage && (
+          <div className="text-[10px] font-semibold text-slate-500">
+            INSUFFICIENT DATA
+          </div>
+        )}
       </div>
       {score != null ? (
         <>
           <div className={cn("mt-2 text-2xl font-semibold tabular-nums", statusColor(status))}>
             {score.toFixed(0)}
           </div>
+          {coverageLabel && (
+            <div className="mt-1 text-[10px] leading-tight text-slate-500">
+              {coverageLabel}
+            </div>
+          )}
           <div className="mt-2 h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
             <div
               className={cn("h-full", statusBarFill(status))}
@@ -535,13 +566,26 @@ function PillarGauge({
             —
           </div>
           <div className="mt-1 text-[10px] leading-tight text-slate-500">
-            Awaiting data — no signals have cleared their data guard yet
+            {coverageLabel
+              ? `${coverageLabel} — below the coverage floor for a reliable score`
+              : "Awaiting data — no signals have cleared their data guard yet"}
           </div>
           <div className="mt-2 h-1.5 w-full rounded-full bg-slate-800 overflow-hidden" />
         </>
       )}
     </div>
   );
+}
+
+function signalCoverageLabel(output: DiagnosticOutput): string {
+  const pillars = Object.values(output.pillars);
+  const active = pillars.reduce((n, p) => n + (p.signals_active ?? 0), 0);
+  const total = pillars.reduce((n, p) => n + (p.signals_total ?? 0), 0);
+  const pct =
+    output.health_coverage != null
+      ? ` · ${(output.health_coverage * 100).toFixed(0)}% of signal weight`
+      : "";
+  return `${active} of ${total} signals reporting${pct}`;
 }
 
 function SignalRow({ signal }: { signal: DiagnosticSignal }) {
