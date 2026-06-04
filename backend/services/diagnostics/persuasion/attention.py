@@ -39,6 +39,7 @@ from backend.services.diagnostics.shared.benchmarks import (
     A5_FATIGUE_THRESHOLDS,
     A5_MIN_DAY_IMP_FRACTION,
     ATTENTION_SIGNAL_WEIGHTS,
+    MIN_PILLAR_COVERAGE,
     VIDEO_LENGTH_BENCHMARKS,
     get_a4_benchmark,
     infer_creative_format,
@@ -1078,19 +1079,18 @@ def compute_attention_pillar(data: CampaignData) -> PillarScore:
         weight=0.40,  # Persuasion pillar weight
     )
 
-    active = [s for s in pillar.signals if s.guard_passed and s.score is not None]
-    if active:
-        weights = ATTENTION_SIGNAL_WEIGHTS
-        weighted_sum = sum(
-            s.score * weights.get(s.id, 0.20) for s in active
-        )
-        total_weight = sum(
-            weights.get(s.id, 0.20) for s in active
-        )
-        pillar.score = round(weighted_sum / total_weight, 1) if total_weight > 0 else None
-        pillar.status = status_band(pillar.score) if pillar.score is not None else None
-    else:
-        pillar.score = None
-        pillar.status = None
+    # Weighted average of active signals, gated on coverage (AI-040).
+    #
+    # NOTE: ATTENTION_SIGNAL_WEIGHTS sums to 1.20 with A2 (audio) listed at
+    # 0.20 even though A2 has no data source yet and permanently guard-fails
+    # — capping attention coverage at 1.0/1.2 ≈ 0.83. Harmless at a 0.5
+    # floor, but if MIN_PILLAR_COVERAGE is ever raised, either remove A2
+    # from the table until it ships or exclude always-unavailable signals
+    # from the denominator.
+    pillar.apply_weighted_score(
+        ATTENTION_SIGNAL_WEIGHTS,
+        min_coverage=MIN_PILLAR_COVERAGE,
+        default_weight=0.20,
+    )
 
     return pillar

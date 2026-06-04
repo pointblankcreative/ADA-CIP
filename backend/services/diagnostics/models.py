@@ -94,11 +94,74 @@ class PillarScore(BaseModel):
     status: StatusBand | None = None
     signals: list[SignalResult] = Field(default_factory=list)
     weight: float = 1.0                     # Pillar weight in health rollup
+    # Coverage metadata (AI-040): fraction of the pillar's designed signal
+    # weight that actually reported (guard-passed + scored). None only on
+    # legacy rows read back from BQ that predate this field.
+    coverage: float | None = None
+    signals_active: int = 0
+    signals_total: int = 0
 
     @property
     def active_signals(self) -> list[SignalResult]:
         """Signals that passed their guard and have a score."""
         return [s for s in self.signals if s.guard_passed and s.score is not None]
+
+    def apply_weighted_score(
+        self,
+        weights: dict[str, float],
+        min_coverage: float,
+        default_weight: float | None = None,
+    ) -> None:
+        """Shared pillar rollup used by every pillar builder (AI-040).
+
+        Computes the weighted average of guard-passed signal scores AND the
+        weighted coverage (active design weight / total design weight). If
+        coverage < ``min_coverage`` the score/status are withheld (None) —
+        the coverage fields stay populated so the frontend can render
+        "n of m signals reporting".
+
+        ``weights`` is the pillar's design-weight table (arch-blended for
+        Funnel). Signals absent from ``weights`` use ``default_weight`` when
+        given (legacy leniency — Distribution/Attention/Acquisition pattern),
+        or raise KeyError when None (strict mode — Resonance/Funnel pattern).
+        The coverage denominator only counts signals with weight > 0, so
+        signals that structurally don't apply (e.g. F2/F3 on a pure Arch-B
+        campaign) never count against coverage.
+        """
+        def _w(sig_id: str) -> float:
+            if sig_id in weights:
+                return weights[sig_id]
+            if default_weight is not None:
+                return default_weight
+            raise KeyError(
+                f"Signal weight table for pillar '{self.name}' is missing an "
+                f"entry for {sig_id!r}. Add it to shared.benchmarks before "
+                f"scoring."
+            )
+
+        total_design_weight = sum(
+            w for w in (_w(s.id) for s in self.signals) if w > 0
+        )
+        active = self.active_signals
+        active_weight = sum(_w(s.id) for s in active)
+
+        self.signals_total = sum(1 for s in self.signals if _w(s.id) > 0)
+        self.signals_active = len(active)
+        self.coverage = (
+            round(active_weight / total_design_weight, 3)
+            if total_design_weight > 0 else 0.0
+        )
+
+        if not active or active_weight <= 0 or self.coverage < min_coverage:
+            # Either nothing reported, or too little of the pillar's designed
+            # weight reported to present a score honestly.
+            self.score = None
+            self.status = None
+            return
+
+        weighted_sum = sum(s.score * _w(s.id) for s in active)
+        self.score = round(weighted_sum / active_weight, 1)
+        self.status = status_band(self.score)
 
     def compute_score(self) -> None:
         """Set pillar score to the mean of active signal scores."""
@@ -148,6 +211,9 @@ class DiagnosticOutput(BaseModel):
 
     health_score: float | None = None
     health_status: StatusBand | None = None
+    # AI-040: fraction of total designed signal weight that reported,
+    # rolled up through pillar weights. None on legacy rows only.
+    health_coverage: float | None = None
 
     pillars: list[PillarScore] = Field(default_factory=list)
     efficiency: EfficiencyMetrics = Field(default_factory=EfficiencyMetrics)
@@ -170,15 +236,40 @@ class DiagnosticOutput(BaseModel):
     )
 
     def compute_health_score(self) -> None:
-        """Weighted average of pillar scores → health score."""
-        scored = [p for p in self.pillars if p.score is not None]
-        if not scored:
-            self.health_score = None
-            self.health_status = None
-            return
+        """Weighted average of pillar scores → health score, gated on
+        weighted coverage (AI-040).
 
+        The coverage denominator includes ALL pillars (scored or not): a
+        pillar whose every signal guard-failed contributes 0 coverage
+        instead of disappearing from the average. Below
+        MIN_HEALTH_COVERAGE the health score is withheld — the dashboard
+        shows INSUFFICIENT DATA rather than a confident number built from
+        a sliver of the design weight.
+        """
+        # Local import: benchmarks is a leaf constants module, but models
+        # is imported by nearly everything — keep the module-level import
+        # graph of models dependency-free to avoid future cycles.
+        from backend.services.diagnostics.shared.benchmarks import (
+            MIN_HEALTH_COVERAGE,
+        )
+
+        all_weight = sum(p.weight for p in self.pillars)
+        if all_weight > 0:
+            self.health_coverage = round(
+                sum(p.weight * (p.coverage or 0.0) for p in self.pillars)
+                / all_weight,
+                3,
+            )
+        else:
+            self.health_coverage = 0.0
+
+        scored = [p for p in self.pillars if p.score is not None]
         total_weight = sum(p.weight for p in scored)
-        if total_weight == 0:
+        if (
+            not scored
+            or total_weight == 0
+            or self.health_coverage < MIN_HEALTH_COVERAGE
+        ):
             self.health_score = None
             self.health_status = None
             return
@@ -202,6 +293,12 @@ class DiagnosticOutput(BaseModel):
                 p.name: {
                     "score": p.score,
                     "status": p.status.value if p.status else None,
+                    # AI-040 coverage metadata — additive keys inside the
+                    # existing pillars JSON column; no BQ schema change.
+                    "weight": p.weight,
+                    "coverage": p.coverage,
+                    "signals_active": p.signals_active,
+                    "signals_total": p.signals_total,
                 }
                 for p in self.pillars
             },
