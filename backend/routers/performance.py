@@ -780,6 +780,22 @@ async def get_performance(
             available.append(metric_name)
             metric_platforms[metric_name] = platforms_with
 
+    # F1 (2026-06-03): the Reach / Frequency KPI values come from the
+    # fact_adset_daily rollup (total_reach_adset / avg_frequency_adset), so
+    # their provenance must come from the same source. Campaign-grain reach
+    # columns are NULL for Meta (adset-grain only) and guarded out for
+    # RF_EXCLUDED_PLATFORMS (AI-120), which left the Reach / Frequency tiles
+    # with no "From X." subtitle at all once the stopgap landed.
+    if reach_platforms:
+        adset_names = [PLATFORM_NAMES.get(p, p) for p in reach_platforms]
+        for rf_metric in ("reach", "frequency"):
+            merged = list(dict.fromkeys(
+                adset_names + metric_platforms.get(rf_metric, [])
+            ))
+            metric_platforms[rf_metric] = merged
+            if rf_metric not in available:
+                available.append(rf_metric)
+
     if "video_views" in available and "video_completions" in available:
         available.append("vcr")
     # AI-031: surface conversion metric tiles for conversion / mixed projects
