@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 PLATFORM_MAP = {
     "open internet": "stackadapt",
     "stackadapt": "stackadapt",
+    # PB's media plans label StackAdapt buys "Programmatic (Native)" /
+    # "(Display)" / "(OLV)" etc. Since Hivestack's removal (2026-05-14)
+    # programmatic == StackAdapt at PB. Without this alias the sync silently
+    # dropped such rows (26018: two StackAdapt lines, $3,750 — AI-002/AI-022
+    # root cause, fixed 2026-06-04).
+    "programmatic": "stackadapt",
     "meta": "meta",
     "meta (facebook, instagram, threads)": "meta",
     "meta (facebook, instagram)": "meta",
@@ -1028,7 +1034,12 @@ def _synthesise_lines_from_mp(
         # Only include lines with recognised platforms — skip flight headers
         # that slipped through or unknown platform names
         if pid not in PLATFORM_MAP.values():
-            logger.debug("  Skipping unrecognised platform_id in fallback: %s", pid)
+            logger.warning(
+                "Media plan sync: skipping row with unrecognised platform %r "
+                "(platform_id=%r, budget=%s) — add an alias to PLATFORM_MAP "
+                "if this is a real buy",
+                mp.get("platform"), pid, mp.get("budget"),
+            )
             continue
         budget = mp.get("budget")
         if not budget or budget <= 0:
