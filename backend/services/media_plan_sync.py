@@ -856,7 +856,7 @@ def _parse_media_plan_tab(
             col_map["audience_name"] = i
         elif "audience" in h_lower and "targeting" in h_lower:
             col_map["audience_targeting"] = i
-        elif h_lower in ("id", "line id", "line code"):
+        elif h_lower in ("id", "line id", "line code") or "internal adset" in h_lower:
             col_map["id"] = i
         # Goal / Objective — widened to accept "Campaign Type/Objective"
         # (Squamish) and bare "Objective".
@@ -947,6 +947,7 @@ def _parse_media_plan_tab(
 
     lines = []
     current_platform = None
+    current_goal = None
     data_start = header_row_idx + 1
 
     for row_idx in range(data_start, len(all_data)):
@@ -959,10 +960,26 @@ def _parse_media_plan_tab(
             # Skip flight/section headers in media plan tabs too
             if _is_section_header(plat_raw):
                 continue
+            if plat_raw != current_platform:
+                # New platform block — never leak a goal across platforms.
+                current_goal = None
             current_platform = plat_raw
 
         line_code = gc(row, "id")
         goal = gc(row, "goal")
+        # Campaign Type / Goal cells are vertically merged across language
+        # pairs in PB plans (EN row carries the value, FR row reads empty),
+        # which used to make the `not goal and not line_code` guard silently
+        # drop every FR row (26018 lost $2,245 across 3 lines — AI-022).
+        # Mirror the current_platform carry-forward, but ONLY onto rows that
+        # look like data rows (dates or audience present); footer/total rows
+        # must keep failing the guard rather than inherit a goal.
+        if goal:
+            current_goal = goal
+        elif current_goal and (
+            gc(row, "start") or gc(row, "audience_group") or gc(row, "group_name")
+        ):
+            goal = current_goal
         budget = _parse_money(gc(row, "budget"))
         audience_name = gc(row, "audience_name")
 
