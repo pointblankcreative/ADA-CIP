@@ -557,12 +557,14 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
         their clicks in the denominator, which used to make mixed-
         platform campaigns look worse than they were.
       - Denominator: prefer ``outbound_clicks`` when > 0, falling back to
-        ``clicks``. Meta's ``clicks`` counts all clicks (likes, reactions,
-        profile clicks, video play clicks) — only ``outbound_clicks`` are
-        clicks that were ever meant to leave the platform, so ``clicks``
-        systematically under-reports load rate. Platforms that don't
-        populate ``outbound_clicks`` (DSPs, LinkedIn historically) keep
-        using ``clicks``.
+        ``clicks``. Since AI-102 documented the definitions, ``clicks`` is
+        the canonical destination-intent click (Meta: Link Clicks) — NOT
+        all-clicks (that lives in ``clicks_all``) — but Meta link clicks
+        still include on-platform destinations (Instant Experiences,
+        native lead forms) that never produce a landing_page_view, so
+        ``outbound_clicks`` (off-platform only) remains the fair LP-load
+        denominator. Platforms that don't populate ``outbound_clicks``
+        (DSPs, LinkedIn historically) keep using ``clicks``.
       - Overcounting transparency: when the raw ratio exceeds 1.10
         (landing-page events outnumbering clicks by >10%), the
         diagnostic flags a likely pixel/organic-traffic issue instead of
@@ -593,10 +595,13 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
     # reporting are surfaced in inputs so the user can see coverage gaps.
     #
     # Denominator selection: prefer outbound_clicks when > 0, else fall
-    # back to total clicks. Meta's "clicks" includes on-platform noise
-    # (reactions, profile clicks, etc.) so using it as the denominator
-    # makes load rate look catastrophically bad. Outbound_clicks is the
-    # fair measure of "clicks that were meant to reach the LP".
+    # back to canonical clicks. Meta's `clicks` is Link Clicks (NOT
+    # all-clicks — see AI-102), but link clicks still include on-platform
+    # destinations (Instant Experiences, native lead forms) that never hit
+    # the LP, so outbound_clicks — off-platform only — is the fair measure
+    # of "clicks that were meant to reach the LP". The link-vs-outbound gap
+    # is smaller than the old all-clicks gap but still real on any campaign
+    # with on-platform destinations.
     per_platform: dict[str, Any] = {}
     reporting_denominator = 0
     reporting_views = 0

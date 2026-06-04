@@ -8,6 +8,10 @@ class DailyMetric(BaseModel):
     spend: float = 0
     impressions: int = 0
     clicks: int = 0
+    # AI-102: all clicks incl. on-platform actions (Meta Clicks_all /
+    # TikTok Clicks_All). None for platforms without the concept and on
+    # pre-backfill history.
+    clicks_all: int | None = None
     conversions: float = 0
     cpm: float | None = None
     cpc: float | None = None
@@ -30,6 +34,7 @@ class PlatformBreakdown(BaseModel):
     spend: float = 0
     impressions: int = 0
     clicks: int = 0
+    clicks_all: int | None = None  # AI-102
     conversions: float = 0
     reach: int | None = None
     frequency: float | None = None
@@ -46,6 +51,7 @@ class CampaignRow(BaseModel):
     spend: float = 0
     impressions: int = 0
     clicks: int = 0
+    clicks_all: int | None = None  # AI-102
     conversions: float = 0
     cpm: float | None = None
     cpc: float | None = None
@@ -68,6 +74,9 @@ class PerformanceResponse(BaseModel):
     total_spend: float = 0
     total_impressions: int = 0
     total_clicks: int = 0
+    # AI-102: SUM of clicks_all across platforms that report it (None when no
+    # active platform does, or pre-backfill).
+    total_clicks_all: int | None = None
     total_conversions: float = 0
     total_reach: int | None = None
     total_frequency: float | None = None
@@ -85,6 +94,11 @@ class PerformanceResponse(BaseModel):
     zero_conversion_warning: str | None = None
     available_metrics: list[str] = []
     metric_platforms: dict[str, list[str]] = {}
+    # AI-102: per-platform definition of the canonical `clicks` field, keyed
+    # by platform_id, for tooltips/exports. The `clicks` column means a
+    # different thing per platform (Meta: link clicks; Snapchat: swipes; …)
+    # and this is where that is finally labeled.
+    clicks_definitions: dict[str, str] = {}
     daily: list[DailyMetric] = []
     by_platform: list[PlatformBreakdown] = []
     campaigns: list[CampaignRow] = []
@@ -98,6 +112,7 @@ class AdSetRow(BaseModel):
     spend: float = 0
     impressions: int = 0
     clicks: int = 0
+    clicks_all: int | None = None  # AI-102
     conversions: float = 0
     engagements: int = 0
     video_views: int = 0
@@ -131,6 +146,7 @@ class AdRow(BaseModel):
     spend: float = 0
     impressions: int = 0
     clicks: int = 0
+    clicks_all: int | None = None  # AI-102
     conversions: float = 0
     engagements: int = 0
     video_views: int = 0
@@ -158,6 +174,7 @@ class CreativeVariantRow(BaseModel):
     spend: float = 0
     impressions: int = 0
     clicks: int = 0
+    clicks_all: int | None = None  # AI-102
     conversions: float = 0
     engagements: int = 0
     video_views: int = 0
