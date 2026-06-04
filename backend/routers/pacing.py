@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
@@ -9,15 +10,168 @@ from backend.models.pacing import (
     PacingHistoryResponse,
     PacingResponse,
     PhaseSummary,
+    UntrackedPlatformSpend,
 )
 from backend.services import bigquery_client as bq
 from backend.services.pacing import run_all_active, run_pacing_for_project
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pacing", tags=["pacing"])
 
 
 def _float(v, default=0.0) -> float:
     return float(v) if v is not None else default
+
+
+def _query_untracked_platform_spend(
+    project_code: str,
+    as_of_date: date | None,
+) -> list[UntrackedPlatformSpend]:
+    """AI-002: spend in fact_digital_daily on platforms that have NO line in
+    the current, active media plan. The pacing engine only ever queries spend
+    for platforms it has lines for, so without this bucket an unplanned
+    platform (e.g. a StackAdapt buy missing from the synced plan — AI-022)
+    silently disappears from the Pacing tab while still counting toward the
+    project header's fact-table total.
+
+    "Tracked" is defined per-platform from the deduped, current, active
+    media plan lines — the standard ROW_NUMBER dedup + plan_id IN (current
+    media_plans × active project_media_plans) guard (see members_sql below
+    and feedback_mpl_dedup.md).
+
+    ``as_of_date`` clamps the spend window for Retrospective Mode so a
+    replay never peeks past the snapshot date (matches the engine's
+    ``date <= @as_of_date`` convention). None means live mode — no clamp.
+    """
+    params = [bq.string_param("project_code", project_code)]
+    date_clause = ""
+    if as_of_date is not None:
+        date_clause = "AND f.date <= @as_of_date"
+        params.append(bq.date_param("as_of_date", as_of_date))
+    sql = f"""
+        WITH tracked_platforms AS (
+            SELECT DISTINCT platform_id FROM (
+                SELECT
+                    l.platform_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY l.line_id
+                        ORDER BY l.sync_version DESC
+                    ) AS _rn
+                FROM {bq.table('media_plan_lines')} l
+                WHERE l.project_code = @project_code
+                  -- Plan-id-aware + multi-plan dedup guard (see top of this
+                  -- router for the canonical comment).
+                  AND l.plan_id IN (
+                      SELECT mp.plan_id
+                      FROM {bq.table('media_plans')} mp
+                      JOIN {bq.table('project_media_plans')} pmp
+                        ON mp.project_code = pmp.project_code
+                       AND mp.sheet_id   = pmp.sheet_id
+                      WHERE mp.project_code = @project_code
+                        AND mp.is_current   = TRUE
+                        AND pmp.is_active   = TRUE
+                  )
+            ) WHERE _rn = 1 AND platform_id IS NOT NULL
+        )
+        SELECT f.platform_id,
+               SUM(f.spend)  AS spend,
+               MIN(f.date)   AS first_date,
+               MAX(f.date)   AS last_date
+        FROM {bq.table('fact_digital_daily')} f
+        WHERE f.project_code = @project_code
+          AND f.platform_id IS NOT NULL
+          AND f.platform_id NOT IN (SELECT platform_id FROM tracked_platforms)
+          {date_clause}
+        GROUP BY f.platform_id
+        HAVING SUM(f.spend) > 0
+        ORDER BY spend DESC
+    """
+    rows = bq.run_query(sql, params)
+    return [
+        UntrackedPlatformSpend(
+            platform_id=r["platform_id"],
+            spend=_float(r.get("spend")),
+            first_date=str(r["first_date"]) if r.get("first_date") else None,
+            last_date=str(r["last_date"]) if r.get("last_date") else None,
+        )
+        for r in rows
+    ]
+
+
+def _attach_plan_metadata(project_code: str, replay_lines: list[dict]) -> list[dict]:
+    """Join media-plan metadata onto replayed pacing rows (AI-070/072).
+
+    ``run_pacing_for_project``'s tracking rows match the budget_tracking
+    column schema, but the stored read path also picks up audience_name /
+    flight dates / sheet+phase metadata from its mpl_dedup LEFT JOIN. This
+    helper runs the same dedup CTE standalone and merges the metadata onto
+    the in-memory replay rows so both paths produce an identical response
+    shape.
+
+    Replay only happens on retrospective requests, so this uses the
+    retro-loosened phase filter (no ``pmp.is_active`` restriction) — same
+    reasoning as the stored retro path: a phase retired today was likely
+    active on the replay date.
+    """
+    metadata_sql = f"""
+        SELECT * EXCEPT(_rn) FROM (
+            SELECT
+                l.line_id,
+                l.audience_name,
+                l.flight_start,
+                l.flight_end,
+                mp.sheet_id        AS sheet_id,
+                pmp.phase_label    AS phase_label,
+                pmp.display_order  AS phase_display_order,
+                pmp.is_active      AS phase_is_active,
+                ROW_NUMBER() OVER (
+                    PARTITION BY l.line_id
+                    ORDER BY l.sync_version DESC
+                ) AS _rn
+            FROM {bq.table('media_plan_lines')} l
+            JOIN {bq.table('media_plans')} mp
+              ON l.plan_id = mp.plan_id
+             AND mp.is_current = TRUE
+            JOIN {bq.table('project_media_plans')} pmp
+              ON mp.project_code = pmp.project_code
+             AND mp.sheet_id   = pmp.sheet_id
+            WHERE l.project_code = @project_code
+        ) WHERE _rn = 1
+    """
+    meta_rows = bq.run_query(
+        metadata_sql, [bq.string_param("project_code", project_code)]
+    )
+    meta_by_line = {m["line_id"]: m for m in meta_rows}
+
+    merged = []
+    for r in replay_lines:
+        meta = meta_by_line.get(r.get("line_id"), {})
+        merged.append({
+            **r,
+            "audience_name": meta.get("audience_name"),
+            "flight_start": meta.get("flight_start"),
+            "flight_end": meta.get("flight_end"),
+            "sheet_id": meta.get("sheet_id"),
+            "phase_label": meta.get("phase_label"),
+            "phase_display_order": meta.get("phase_display_order"),
+            "phase_is_active": meta.get("phase_is_active"),
+        })
+
+    # Match the stored path's ORDER BY: phase_display_order NULLS LAST,
+    # sheet_id, platform_id, bundle_id, line_code.
+    def _key(r: dict):
+        return (
+            r.get("phase_display_order") is None,
+            r.get("phase_display_order") or 0,
+            r.get("sheet_id") or "",
+            r.get("platform_id") or "",
+            r.get("bundle_id") or "",
+            r.get("line_code") or "",
+        )
+
+    merged.sort(key=_key)
+    return merged
 
 
 @router.get("/{project_code}", response_model=PacingResponse)
@@ -142,11 +296,58 @@ async def get_pacing(
         [bq.string_param("project_code", project_code), *date_params],
     )
 
+    # AI-002: surface spend on platforms with no media plan line. Runs on
+    # every path (including the empty fallback) so a project whose pacing
+    # engine never ran but which has fact spend never shows $0.
+    untracked = _query_untracked_platform_spend(project_code, as_of_date)
+    untracked_total = sum(u.spend for u in untracked)
+
+    replayed = False
+    if not rows and as_of_date is not None:
+        # AI-070/072: retrospective request for a date with no stored
+        # budget_tracking snapshot (e.g. the project was registered after
+        # that date, or the daily pipeline missed a day). Mirror the
+        # diagnostics snapshot semantics: compute a point-in-time replay on
+        # demand. skip_writes keeps budget_tracking and alerts untouched.
+        try:
+            replay = run_pacing_for_project(
+                project_code, as_of_date, skip_writes=True,
+            )
+            replay_lines = replay.get("lines") or []
+        except Exception:
+            logger.exception(
+                "Pacing compute-on-miss replay failed for %s @ %s; "
+                "falling back to the empty state",
+                project_code, as_of_date,
+            )
+            replay_lines = []
+        if replay_lines:
+            # tracking_rows match budget_tracking columns; join the plan
+            # metadata the stored path gets from its mpl_dedup LEFT JOIN.
+            rows = _attach_plan_metadata(project_code, replay_lines)
+            replayed = True
+
     if not rows:
+        # AI-070/071: honest empty state. Echo the REQUESTED date (never
+        # today) and tell the frontend when snapshots begin so it can render
+        # "No pacing snapshot for this date — snapshots begin YYYY-MM-DD".
+        earliest = bq.run_query(
+            f"SELECT MIN(date) AS d FROM {bq.table('budget_tracking')} "
+            "WHERE project_code = @project_code",
+            [bq.string_param("project_code", project_code)],
+        )
+        earliest_date = (
+            earliest[0]["d"] if earliest and earliest[0].get("d") else None
+        )
         return PacingResponse(
             project_code=project_code,
-            as_of_date=date.today(),
+            as_of_date=as_of_date or date.today(),
             net_budget=net_budget,
+            snapshot_missing=True,
+            earliest_snapshot_date=earliest_date,
+            untracked_spend=untracked_total,
+            untracked_platforms=untracked,
+            total_actual_all_platforms=untracked_total,
         )
 
     as_of = rows[0]["date"]
@@ -279,6 +480,15 @@ async def get_pacing(
         total_planned_to_date=total_planned,
         total_actual_to_date=total_actual,
         overall_pacing_percentage=round(total_actual / total_planned * 100, 1) if total_planned else 0,
+        # AI-002: untracked spend is included in the spent/remaining math
+        # (conservative — never overstate remaining budget) but EXCLUDED from
+        # overall_pacing_percentage (no planned baseline to pace against).
+        untracked_spend=untracked_total,
+        untracked_platforms=untracked,
+        total_actual_all_platforms=total_actual + untracked_total,
+        # AI-070/072: True when these rows were computed on demand rather
+        # than read from a stored budget_tracking snapshot.
+        replayed=replayed,
         pending_line_count=pending_count,
         lines=[
             LinePacing(

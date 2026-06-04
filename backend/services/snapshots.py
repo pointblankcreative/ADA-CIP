@@ -48,10 +48,32 @@ from typing import Optional
 
 from backend.config import settings
 from backend.services import bigquery_client as bq
-from backend.services.diagnostics.engine import run_diagnostics_for_project
+from backend.services.diagnostics.engine import (
+    _query_media_plan,
+    run_diagnostics_for_project,
+)
+from backend.services.diagnostics.line_classifier import partition_lines
 from backend.services.diagnostics.models import DiagnosticOutput
 
 logger = logging.getLogger(__name__)
+
+
+def _expected_campaign_type_count(project_code: str) -> int:
+    """How many campaign types the project's CURRENT media plan classifies
+    into (1 for pure persuasion/conversion, 2 for mixed, 0 for no plan).
+
+    Used as a stale-cache guard (AI-073 hardening): a snapshot computed while
+    the plan was incomplete (e.g. day-one setup where persuasion lines were
+    synced before conversion lines) covers fewer campaign types than the
+    completed plan classifies into. Without the guard that partial snapshot
+    is served forever for its (project, date, engine_version) key.
+
+    One cheap BQ query — reuses the engine's own dedup-guarded plan query
+    and classifier so "expected" can never drift from what a fresh compute
+    would produce.
+    """
+    lines = _query_media_plan(project_code)
+    return len([t for t, ls in partition_lines(lines).items() if ls])
 
 
 def find_snapshot(
@@ -148,11 +170,27 @@ def find_or_compute(
     if not bypass_cache:
         cached = find_snapshot(project_code, as_of_date, engine_version=version)
         if cached:
-            logger.info(
-                "Snapshot cache hit: %s @ %s (engine_version=%s, rows=%d)",
-                project_code, as_of_date, version, len(cached),
-            )
-            return cached, True
+            # AI-073 hardening: guard against snapshots computed while the
+            # media plan was incomplete (e.g. day-one setup: persuasion lines
+            # synced before conversion lines). The cache key is only
+            # (project, date, engine_version) — it has no awareness of the
+            # plan — so a 1-type partial snapshot would otherwise be served
+            # forever even after the plan completes. If the project currently
+            # classifies into MORE campaign types than the cached snapshot
+            # covers, recompute.
+            expected = _expected_campaign_type_count(project_code)
+            if expected > len(cached):
+                logger.info(
+                    "Snapshot cache stale for %s @ %s: %d cached campaign "
+                    "type(s) < %d expected from the current plan; recomputing",
+                    project_code, as_of_date, len(cached), expected,
+                )
+            else:
+                logger.info(
+                    "Snapshot cache hit: %s @ %s (engine_version=%s, rows=%d)",
+                    project_code, as_of_date, version, len(cached),
+                )
+                return cached, True
 
     logger.info(
         "Snapshot cache miss, computing: %s @ %s (engine_version=%s, bypass=%s)",
@@ -161,5 +199,14 @@ def find_or_compute(
     outputs = compute_and_store(project_code, as_of_date)
     # Return the in-memory outputs serialized to the same dict shape BQ would
     # return. This keeps the caller's response-shaping path uniform whether
-    # we hit the cache or computed fresh.
-    return [output.to_bq_row() for output in outputs], False
+    # we hit the cache or computed fresh. Sorted by campaign_type for parity
+    # with find_snapshot's ORDER BY (conversion first) — without this, the
+    # first (fresh) view orders cards differently from every cached view
+    # (the minor AI-073 ordering inconsistency).
+    return (
+        sorted(
+            (output.to_bq_row() for output in outputs),
+            key=lambda r: str(r.get("campaign_type") or ""),
+        ),
+        False,
+    )
