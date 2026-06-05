@@ -449,9 +449,20 @@ export function PerformanceTab({ code }: { code: string }) {
             {/* AI-031: CPA tile renders unconditionally. When CPA is null
                 because no conversions have fired, show "—" with an
                 "Awaiting first conversion" sub-line (AI-046 precedent)
-                rather than $0 (which would imply zero cost). */}
+                rather than $0 (which would imply zero cost).
+                Conversion CPA (2026-06-05): the default reporting KPI is
+                CPA over conversion-objective spend only. On mixed projects
+                the effective (all-spend) CPA renders as a sibling tile so
+                awareness spend can't silently inflate the headline number. */}
             {has(data, "cpa") && (
-              data.total_cpa != null ? (
+              data.conversion_cpa != null ? (
+                <KpiCard
+                  label="Conversion CPA"
+                  value={formatCurrency(data.conversion_cpa)}
+                  sub="Conversion-objective spend only"
+                  benchmark={toBenchmark(bm.cpa, data.conversion_cpa, { lowerIsBetter: true, format: (v) => fmtCad(v) ?? "—" })}
+                />
+              ) : data.total_cpa != null ? (
                 <KpiCard
                   label="CPA"
                   value={formatCurrency(data.total_cpa)}
@@ -466,6 +477,18 @@ export function PerformanceTab({ code }: { code: string }) {
                 />
               )
             )}
+            {/* Effective CPA: all campaign spend ÷ all conversions. Only
+                meaningful as a separate tile on mixed projects — on pure
+                conversion projects it equals Conversion CPA. */}
+            {objective === "mixed" &&
+              data.conversion_cpa != null &&
+              data.total_cpa != null && (
+                <KpiCard
+                  label="Effective CPA"
+                  value={formatCurrency(data.total_cpa)}
+                  sub="All campaign spend ÷ conversions"
+                />
+              )}
             <KpiCard
               label="CTR"
               value={formatPercent(avgCTR)}
@@ -876,6 +899,8 @@ function CreativeVariantsTable({
                 <th className="px-5 py-3 font-medium text-right">Ads</th>
                 <th className="px-5 py-3 font-medium text-right">Spend</th>
                 <th className="px-5 py-3 font-medium text-right">CTR</th>
+                <th className="px-5 py-3 font-medium text-right">Conv.</th>
+                <th className="px-5 py-3 font-medium text-right">CPA</th>
                 <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
                 <th className="px-5 py-3 font-medium text-right">VCR</th>
               </tr>
@@ -1018,6 +1043,12 @@ function VariantRowGroup({
           {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
         </td>
         <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.conversions > 0 ? formatNumber(Math.round(row.conversions)) : "—"}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+          {row.conversions > 0 ? formatCurrency(row.spend / row.conversions) : "—"}
+        </td>
+        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
           {renderEngagementRateMulti(row.engagement_rate, row.platforms, engagementSupport)}
         </td>
         <td className="px-5 py-3 text-right tabular-nums text-slate-400">
@@ -1036,12 +1067,12 @@ function VariantRowGroup({
               <td className="pl-12 pr-5 py-2 text-xs text-slate-500 truncate max-w-[300px]" colSpan={2}>
                 {adName}
               </td>
-              <td colSpan={6} />
+              <td colSpan={8} />
             </tr>
           ))}
           {row.ad_set_names.length > 0 && (
             <tr className="bg-slate-900/50 border-t border-slate-800/30">
-              <td className="pl-12 pr-5 py-2 text-xs text-slate-600" colSpan={8}>
+              <td className="pl-12 pr-5 py-2 text-xs text-slate-600" colSpan={10}>
                 Ad sets: {row.ad_set_names.join(", ")}
               </td>
             </tr>

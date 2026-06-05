@@ -216,6 +216,12 @@ export interface PerformanceResponse {
   total_engagements?: number | null;
   total_cpa?: number | null;
   total_conversion_rate?: number | null;
+  /** Conversion CPA (2026-06-05): spend/conversions from conversion-objective
+   *  campaigns only — PB's default reporting KPI. total_cpa stays the
+   *  effective (all-spend) CPA. */
+  conversion_spend?: number | null;
+  conversion_conversions?: number | null;
+  conversion_cpa?: number | null;
   total_reach_adset?: number | null;
   avg_frequency_adset?: number | null;
   reach_platforms?: string[];

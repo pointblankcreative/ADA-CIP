@@ -52,9 +52,9 @@ export function CampaignTable({
               <th className="px-5 py-3 font-medium text-right">Impr.</th>
               <th className="px-5 py-3 font-medium text-right">Clicks</th>
               <th className="px-5 py-3 font-medium text-right">CTR</th>
-              {showAwareness && has(data, "reach") && (
-                <th className="px-5 py-3 font-medium text-right">Reach</th>
-              )}
+              {/* No Reach column: reach/frequency only exist at audience
+                  (ad set) grain — campaign-grain reach never populates.
+                  See the Audience performance table for R&F. */}
               {showAwareness && has(data, "vcr") && (
                 <th className="px-5 py-3 font-medium text-right">VCR</th>
               )}
@@ -101,11 +101,6 @@ export function CampaignTable({
                   <td className="px-5 py-3 text-right tabular-nums text-slate-400">
                     {c.ctr != null ? formatPercent(c.ctr * 100) : "—"}
                   </td>
-                  {showAwareness && has(data, "reach") && (
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
-                      {c.reach ? formatNumber(c.reach) : "—"}
-                    </td>
-                  )}
                   {showAwareness && has(data, "vcr") && (
                     <td className="px-5 py-3 text-right tabular-nums text-slate-400">
                       {c.vcr != null ? formatPercent(c.vcr * 100) : "—"}

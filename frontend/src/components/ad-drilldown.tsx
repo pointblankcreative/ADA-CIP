@@ -6,6 +6,7 @@ import {
 import { Card } from "@/components/card";
 import {
   formatCurrency,
+  formatNumber,
   formatPercent,
   platformLabel,
   renderEngagementRate,
@@ -42,6 +43,8 @@ export function AdDrillDown({
               <th className="px-5 py-3 font-medium">Platform</th>
               <th className="px-5 py-3 font-medium text-right">Spend</th>
               <th className="px-5 py-3 font-medium text-right">CTR</th>
+              <th className="px-5 py-3 font-medium text-right">Conv.</th>
+              <th className="px-5 py-3 font-medium text-right">CPA</th>
               <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
               <th className="px-5 py-3 font-medium text-right">VCR</th>
             </tr>
@@ -64,6 +67,12 @@ export function AdDrillDown({
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-400">
                   {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                  {row.conversions > 0 ? formatNumber(Math.round(row.conversions)) : "—"}
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                  {row.conversions > 0 ? formatCurrency(row.spend / row.conversions) : "—"}
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-400">
                   {renderEngagementRate(row.engagement_rate, row.platform_id, engagementSupport)}

@@ -86,6 +86,13 @@ class PerformanceResponse(BaseModel):
     total_engagements: int | None = None
     total_cpa: float | None = None
     total_conversion_rate: float | None = None
+    # Conversion CPA (2026-06-05): spend and conversions from
+    # conversion-objective campaigns only — PB's default reporting KPI.
+    # total_cpa remains the effective (all-spend) CPA, which counts
+    # awareness spend in the numerator on mixed projects.
+    conversion_spend: float | None = None
+    conversion_conversions: float | None = None
+    conversion_cpa: float | None = None
     total_reach_adset: int | None = None
     avg_frequency_adset: float | None = None
     reach_platforms: list[str] = []
