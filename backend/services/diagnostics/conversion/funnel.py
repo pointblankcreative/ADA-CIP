@@ -195,6 +195,26 @@ def _compute_arch_mix(data: CampaignData) -> ArchMix:
     )
 
 
+def _arch_b_only_platforms(arch_mix: ArchMix) -> set[str]:
+    """Platform ids whose conversion lines are ALL Arch B (in-platform form).
+
+    Used by F2 to keep in-platform-form traffic out of the LP-load
+    denominator on mixed campaigns. Lead-form platforms still emit a
+    trickle of incidental landing_page_views (secondary CTAs, ad display
+    links), which makes them look like "reporting" platforms while their
+    click volume is lead-form traffic that was never meant to reach an
+    LP — reading a catastrophic load rate that says nothing about the LP
+    (seen on 26018: 2 LP views / 383 outbound clicks → score 0).
+
+    A platform that carries both Arch A and Arch B lines stays included —
+    architecture is line-grain and we can't split a platform's aggregated
+    traffic. See docs/diagnostics/phase-2-5-arch-mixing.md.
+    """
+    a = {l.platform_id for l in arch_mix.arch_a_lines if l.platform_id}
+    b = {l.platform_id for l in arch_mix.arch_b_lines if l.platform_id}
+    return b - a
+
+
 def _dominant_form_position(lines: list[MediaPlanLine]) -> str:
     """Determine the dominant form position for F3 discovery scoring.
 
@@ -570,6 +590,13 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
         (landing-page events outnumbering clicks by >10%), the
         diagnostic flags a likely pixel/organic-traffic issue instead of
         silently capping at 1.0 and reporting STRONG.
+
+    Updated 2026-06-05 (26018 regression):
+      - Platform-grain arch exclusion: on mixed campaigns, platforms
+        whose conversion lines are ALL Arch B are excluded entirely —
+        their incidental landing_page_views otherwise make them count
+        as "reporting" and their lead-form clicks poison the
+        denominator. See _arch_b_only_platforms.
     """
     if arch_mix.is_arch_b_only:
         return _guard_fail(
@@ -608,12 +635,29 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
     reporting_views = 0
     non_reporting_clicks = 0
     non_reporting_platforms: list[str] = []
+    excluded_arch_b_platforms: list[str] = []
+
+    # Platform-grain arch exclusion — see _arch_b_only_platforms docstring.
+    arch_b_platforms = _arch_b_only_platforms(arch_mix)
 
     for p in data.platform_metrics:
         denom = p.outbound_clicks if p.outbound_clicks > 0 else p.clicks
         denom_source = (
             "outbound_clicks" if p.outbound_clicks > 0 else "clicks"
         )
+        if p.platform_id in arch_b_platforms:
+            excluded_arch_b_platforms.append(p.platform_id)
+            per_platform[p.platform_id] = {
+                "clicks": p.clicks,
+                "outbound_clicks": p.outbound_clicks,
+                "denominator": denom,
+                "denominator_source": denom_source,
+                "landing_page_views": p.landing_page_views,
+                "rate": None,
+                "reporting": False,
+                "excluded_reason": "arch_b_platform_form",
+            }
+            continue
         if p.landing_page_views > 0:
             reporting_denominator += denom
             reporting_views += p.landing_page_views
@@ -643,6 +687,15 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
             }
 
     if reporting_denominator <= 0:
+        if excluded_arch_b_platforms:
+            return _guard_fail(
+                "F2", "Landing Page Load Rate", "no_arch_a_lp_reporting",
+                "No landing-page line is reporting landing_page_views — "
+                "in-platform-form platforms ("
+                + ", ".join(sorted(excluded_arch_b_platforms))
+                + ") are excluded from this signal. If the landing page "
+                "can't be tagged, F2 stays inactive.",
+            )
         return _guard_fail(
             "F2", "Landing Page Load Rate", "no_reporting_platforms",
             "No platform is reporting landing_page_views. Verify the LP "
@@ -692,6 +745,7 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
             "reporting_landing_page_views": reporting_views,
             "non_reporting_clicks": non_reporting_clicks,
             "non_reporting_platforms": non_reporting_platforms,
+            "excluded_arch_b_platforms": sorted(excluded_arch_b_platforms),
             "platforms": per_platform,
             "arch_a_share": round(arch_mix.arch_a_share, 3),
         },

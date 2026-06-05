@@ -494,6 +494,39 @@ class TestEdgeCases:
         assert conversion_data.total_spend == 2000
         assert conversion_data.total_conversions == 30
 
+    def test_ffs_inputs_parsed_from_json_string(self):
+        """26018 regression: _query_media_plan must load and parse
+        ffs_inputs (selected as TO_JSON_STRING). Before this, every
+        MediaPlanLine reached the funnel pillar with ffs_inputs=None, the
+        arch classifier never saw is_platform_form, and a pure lead-form
+        campaign scored F2 ('Landing Page Load Rate') at 0 off incidental
+        LP views."""
+        from backend.services.diagnostics.engine import run_diagnostics_for_project
+
+        lead_form_row = _media_plan_row("lead-form-line", "Conversions")
+        lead_form_row["ffs_inputs"] = (
+            '{"is_platform_form": true, "field_count": 4}'
+        )
+        no_ffs_row = _media_plan_row("plain-line", "Conversion")
+        no_ffs_row["ffs_inputs"] = None
+
+        digital = [
+            _fact_digital_row(
+                "facebook", "OUTCOME_LEADS",
+                spend=3000, impressions=300_000, clicks=4_000, conversions=1_000,
+            ),
+        ]
+        with _EngineContext([lead_form_row, no_ffs_row], digital, []) as ctx:
+            run_diagnostics_for_project("26018", date(2026, 6, 4))
+
+        data = ctx.captured_data[CampaignType.CONVERSION]
+        by_id = {l.line_id: l for l in data.media_plan}
+        assert by_id["lead-form-line"].ffs_inputs == {
+            "is_platform_form": True,
+            "field_count": 4,
+        }
+        assert by_id["plain-line"].ffs_inputs is None
+
     def test_per_subset_flight_derivation(self):
         """Persuasion and conversion subsets derive their own flight dates.
 
