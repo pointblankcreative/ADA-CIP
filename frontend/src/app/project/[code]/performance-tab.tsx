@@ -616,22 +616,76 @@ export function PerformanceTab({ code }: { code: string }) {
       )}
 
       {/* ── Conversion Charts ─────────────────────────────────────── */}
-      {showConversion && has(data, "cpa") && (
-        <Card>
-          <h4 className="mb-4 text-sm font-medium text-slate-400">CPA Trend</h4>
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v) ?? "0"}`} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "CPA"]} />
-                <Line type="monotone" dataKey="cpa" stroke="#22c55e" strokeWidth={2} dot={false} name="CPA" />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-      )}
+      {/* CPA Trend (2026-06-05): on mixed projects the chart plots two
+          series — Conversion CPA (default KPI, conversion-objective
+          spend only) and Effective CPA (all spend ÷ conversions). On
+          pure conversion projects the two are identical, so the single
+          line renders as before. */}
+      {showConversion && has(data, "cpa") && (() => {
+        const hasConversionSeries = chartData.some(
+          (d) => d.cpa_conversion != null,
+        );
+        return (
+          <Card>
+            <h4 className="mb-4 text-sm font-medium text-slate-400">
+              CPA Trend
+              {hasConversionSeries && (
+                <span className="ml-2 text-xs font-normal text-slate-600">
+                  Conversion CPA vs effective (all-spend) CPA.
+                </span>
+              )}
+            </h4>
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
+                  <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v) ?? "0"}`} />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    formatter={(v: number, name: string) => [formatCurrency(v), name]}
+                  />
+                  {hasConversionSeries ? (
+                    <>
+                      <Line
+                        type="monotone"
+                        dataKey="cpa_conversion"
+                        stroke="#22c55e"
+                        strokeWidth={2}
+                        dot={false}
+                        name="Conversion CPA"
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="cpa"
+                        stroke="#64748b"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 3"
+                        dot={false}
+                        name="Effective CPA"
+                      />
+                    </>
+                  ) : (
+                    <Line type="monotone" dataKey="cpa" stroke="#22c55e" strokeWidth={2} dot={false} name="CPA" />
+                  )}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {hasConversionSeries && (
+              <div className="mt-2 flex items-center gap-4 text-[11px] text-slate-500">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-0.5 w-4 rounded bg-emerald-500" />
+                  Conversion CPA
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-0 w-4 border-t border-dashed border-slate-500" />
+                  Effective CPA (all spend)
+                </span>
+              </div>
+            )}
+          </Card>
+        );
+      })()}
 
       {showConversion && has(data, "conversions") && (
         <Card>
