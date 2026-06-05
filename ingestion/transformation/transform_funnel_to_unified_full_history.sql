@@ -61,12 +61,21 @@ WITH platform_data AS (
     CAST(Video_thruplay__Facebook_Ads AS INT64) AS video_completions,
     -- Only count conversions for conversion-objective campaigns; zero for awareness/reach campaigns
     -- even if result_value is populated. COALESCE handles both non-conversion rows and NULL values.
+    -- Lead-objective campaigns: Funnel frequently leaves Campaign_Result_value
+    -- at 0/NULL while the actual on-platform lead-form submissions land in
+    -- Leads__Facebook_Ads (26018: 992 leads were invisible until 2026-06-04).
+    -- For these objectives the campaign result IS leads, so GREATEST of the
+    -- two sources takes whichever one Funnel populated without double-counting.
     COALESCE(
-      CASE WHEN Campaign_Objective__Facebook_Ads IN (
-             'CONVERSIONS', 'OUTCOME_LEADS', 'LEAD_GENERATION'
-           )
-           THEN CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC)
-           ELSE 0
+      CASE
+        WHEN Campaign_Objective__Facebook_Ads IN ('OUTCOME_LEADS', 'LEAD_GENERATION')
+          THEN GREATEST(
+            COALESCE(CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC), 0),
+            COALESCE(CAST(Leads__Facebook_Ads AS NUMERIC), 0)
+          )
+        WHEN Campaign_Objective__Facebook_Ads = 'CONVERSIONS'
+          THEN CAST(Campaign_Result_value__Facebook_Ads AS NUMERIC)
+        ELSE 0
       END,
       0
     ) AS conversions,
