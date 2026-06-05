@@ -768,6 +768,48 @@ async def get_performance(
         else None
     )
 
+    # Daily Conversion CPA series for the CPA Trend chart. Only needed on
+    # mixed projects — on pure conversion projects every campaign is
+    # conversion-objective, so the daily blended CPA already IS the
+    # conversion CPA and the chart renders a single line.
+    daily_conversion_cpa: dict[str, float] = {}
+    conversion_campaign_ids = [
+        r["campaign_id"]
+        for r, obj in zip(campaign_rows, campaign_objectives)
+        if obj == "conversion" and r.get("campaign_id")
+    ]
+    if project_objective == "mixed" and conversion_campaign_ids:
+        try:
+            conv_daily_sql = f"""
+                SELECT
+                    f.date,
+                    SUM(f.spend) AS conv_spend,
+                    SUM(f.conversions) AS conv_conversions
+                FROM {bq.table('fact_digital_daily')} f
+                WHERE {base_where}
+                  AND f.campaign_id IN UNNEST(@conversion_campaign_ids)
+                GROUP BY f.date
+            """
+            conv_daily_params = base_params + [
+                bq.array_param(
+                    "conversion_campaign_ids", "STRING", conversion_campaign_ids
+                )
+            ]
+            for cr in bq.run_query(conv_daily_sql, conv_daily_params):
+                conv = _float(cr.get("conv_conversions"))
+                if conv > 0:
+                    dk = (
+                        cr["date"].isoformat()
+                        if hasattr(cr["date"], "isoformat")
+                        else str(cr["date"])
+                    )
+                    daily_conversion_cpa[dk] = _float(cr.get("conv_spend")) / conv
+        except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+            logger.warning(
+                "Failed to fetch daily conversion CPA for %s: %s",
+                project_code, e, exc_info=True,
+            )
+
     # ── metric availability ─────────────────────────────────────────
     available: list[str] = ["spend", "impressions", "clicks", "cpm", "cpc", "ctr"]
     metric_platforms: dict[str, list[str]] = {}
@@ -918,6 +960,11 @@ async def get_performance(
                 vcr=_float_or_none(r.get("vcr")),
                 engagements=_int_or_none(r.get("engagements")),
                 cpa=_float_or_none(r.get("cpa")),
+                cpa_conversion=daily_conversion_cpa.get(
+                    r["date"].isoformat()
+                    if hasattr(r["date"], "isoformat")
+                    else str(r["date"])
+                ),
                 conversion_rate=_float_or_none(r.get("conversion_rate")),
             )
             for r in daily_rows

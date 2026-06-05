@@ -156,6 +156,10 @@ export interface DailyPerformance {
   vcr?: number | null;
   engagements?: number | null;
   cpa?: number | null;
+  /** Daily Conversion CPA: conversion-objective spend ÷ conversions.
+   *  Only populated on mixed projects; `cpa` stays the effective
+   *  (all-spend) daily CPA. */
+  cpa_conversion?: number | null;
   conversion_rate?: number | null;
 }
 
