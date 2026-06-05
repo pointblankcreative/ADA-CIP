@@ -19,6 +19,7 @@ design rationale.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -256,6 +257,7 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
             flight_start,
             flight_end,
             ffs_score,
+            TO_JSON_STRING(ffs_inputs) AS ffs_inputs,
             objective
         FROM (
             SELECT *,
@@ -292,6 +294,22 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
         except ValueError:
             audience_type = None
 
+        # Parse ffs_inputs JSON (selected as TO_JSON_STRING; same hydrate
+        # pattern as ffs_entries._hydrate_entry). Without this the funnel
+        # arch classifier never sees is_platform_form and silently defaults
+        # every line to Arch A — which is how a pure lead-form campaign ends
+        # up with a "Landing Page Load Rate scored 0" alert (seen on 26018).
+        raw_ffs_inputs = r.get("ffs_inputs")
+        ffs_inputs: dict | None = None
+        if isinstance(raw_ffs_inputs, dict):
+            ffs_inputs = raw_ffs_inputs
+        elif isinstance(raw_ffs_inputs, str) and raw_ffs_inputs:
+            try:
+                parsed = json.loads(raw_ffs_inputs)
+                ffs_inputs = parsed if isinstance(parsed, dict) else None
+            except (TypeError, ValueError):
+                ffs_inputs = None
+
         freq_cap = _parse_frequency_cap(r.get("frequency_cap"))
         planned_impressions = int(r.get("planned_impressions") or 0)
         # Derive planned_reach from impressions / frequency_cap when possible;
@@ -311,6 +329,7 @@ def _query_media_plan(project_code: str) -> list[MediaPlanLine]:
             flight_start=r.get("flight_start"),
             flight_end=r.get("flight_end"),
             ffs_score=float(r["ffs_score"]) if r.get("ffs_score") else None,
+            ffs_inputs=ffs_inputs,
             objective=r.get("objective"),
         ))
 

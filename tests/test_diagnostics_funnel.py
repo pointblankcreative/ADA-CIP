@@ -76,11 +76,12 @@ def _arch_a_line(
     ffs: float | None = 25.0,
     line_id: str = "line-a",
     below_fold: bool = False,
+    platform_id: str = "facebook",
 ) -> MediaPlanLine:
     """Landing-page media plan line (Arch A)."""
     return MediaPlanLine(
         line_id=line_id,
-        platform_id="facebook",
+        platform_id=platform_id,
         planned_budget=budget,
         planned_impressions=1_000_000,
         audience_type=AudienceType.MEMBER_LIST,
@@ -432,6 +433,84 @@ class TestF2LandingPageLoadRate:
             result.inputs["platforms"]["facebook"]["denominator_source"]
             == "outbound_clicks"
         )
+
+    def test_arch_b_only_platform_excluded_on_mixed_campaign(self):
+        """26018 regression: Meta runs pure lead-form lines but emits a
+        trickle of incidental landing_page_views, which used to make it a
+        'reporting' platform and score F2 at ~0 off lead-form clicks.
+        With the Arch A platform (google_ads) not reporting LP views,
+        F2 must guard-fail rather than score."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[
+                _meta_platform(clicks=4_300, lp_views=2, on_platform_leads=1_026),
+                PlatformMetrics(
+                    platform_id="google_ads",
+                    spend=430,
+                    impressions=10_000,
+                    clicks=25,
+                    landing_page_views=0,
+                ),
+            ],
+            media_plan=[
+                _arch_b_line(budget=3_283),  # facebook, is_platform_form=True
+                _arch_a_line(budget=430, line_id="line-g", platform_id="google_ads"),
+            ],
+        )
+        mix = _compute_arch_mix(data)
+        assert mix.is_mixed
+        result = compute_f2_lp_load_rate(data, mix)
+        assert not result.guard_passed
+        assert result.guard_reason == "no_arch_a_lp_reporting"
+        assert "facebook" in result.diagnostic
+
+    def test_arch_b_platform_excluded_but_arch_a_platform_scores(self):
+        """When an Arch A platform reports LP views, the Arch B platform's
+        clicks and stray LP views must not drag the rate."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[
+                _meta_platform(clicks=4_000, lp_views=3),  # lead-form noise
+                PlatformMetrics(
+                    platform_id="stackadapt",
+                    spend=1_000,
+                    impressions=100_000,
+                    clicks=2_000,
+                    landing_page_views=1_800,
+                ),
+            ],
+            media_plan=[
+                _arch_b_line(budget=5_000),  # facebook
+                _arch_a_line(budget=2_000, line_id="line-s", platform_id="stackadapt"),
+            ],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        # Rate from stackadapt only: 1800/2000 = 0.90
+        assert result.raw_value == pytest.approx(0.9, abs=0.01)
+        assert result.inputs["excluded_arch_b_platforms"] == ["facebook"]
+        assert (
+            result.inputs["platforms"]["facebook"]["excluded_reason"]
+            == "arch_b_platform_form"
+        )
+
+    def test_platform_with_both_arch_lines_stays_included(self):
+        """A platform carrying both Arch A and Arch B lines can't be split
+        at line grain — it stays in F2 (phase-2-5 limitation)."""
+        from backend.services.diagnostics.conversion.funnel import _compute_arch_mix
+        data = _campaign(
+            platform_metrics=[_meta_platform(clicks=5_000, lp_views=4_500)],
+            media_plan=[
+                _arch_a_line(budget=8_000),   # facebook
+                _arch_b_line(budget=2_000),   # facebook
+            ],
+        )
+        mix = _compute_arch_mix(data)
+        result = compute_f2_lp_load_rate(data, mix)
+        assert result.guard_passed
+        assert result.raw_value == pytest.approx(0.9, abs=0.01)
+        assert result.inputs["excluded_arch_b_platforms"] == []
 
     def test_falls_back_to_clicks_when_outbound_not_populated(self):
         """Platforms that don't report outbound_clicks (DSPs, LinkedIn
