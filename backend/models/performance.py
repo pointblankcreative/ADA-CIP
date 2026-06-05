@@ -25,6 +25,11 @@ class DailyMetric(BaseModel):
     vcr: float | None = None
     engagements: int | None = None
     cpa: float | None = None
+    # Daily Conversion CPA (2026-06-05): conversion-objective spend ÷
+    # conversions for the day. None on days with no conversion-campaign
+    # conversions, and never populated on non-mixed projects (where it
+    # would equal `cpa`). `cpa` stays the effective (all-spend) daily CPA.
+    cpa_conversion: float | None = None
     conversion_rate: float | None = None
 
 

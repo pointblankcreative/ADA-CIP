@@ -164,6 +164,86 @@ def test_conversion_cpa_none_when_no_conversion_campaigns():
     assert body["conversion_conversions"] is None
 
 
+def _daily_row(d, spend, conversions, cpa):
+    return {
+        "date": d,
+        "spend": spend,
+        "impressions": 70_000,
+        "clicks": 260,
+        "clicks_all": 920,
+        "conversions": conversions,
+        "cpm": 3.57,
+        "cpc": 0.96,
+        "ctr": 0.0037,
+        "reach": None,
+        "frequency": None,
+        "video_views": 0,
+        "video_completions": 0,
+        "vcr": None,
+        "engagements": 0,
+        "cpa": cpa,
+        "conversion_rate": 0.115,
+    }
+
+
+def test_daily_conversion_cpa_series_on_mixed_project():
+    """Mixed project: a 10th query (conversion campaigns only, by date)
+    feeds DailyMetric.cpa_conversion; daily `cpa` stays the effective
+    (all-spend) value for the chart's second line."""
+    rec = QueryRecorder()
+    rec.responses = [
+        [_totals_row()],
+        [_daily_row(D1, 400.0, 30.0, 13.33),
+         _daily_row(D2, 500.0, 40.0, 12.5)],            # daily_sql
+        [],                                              # adset_daily_sql
+        [{"max_reach": None, "avg_freq": None}],         # sum_sql
+        [],                                              # plat_sql
+        [],                                              # warn_sql
+        [{"platform_id": "meta", "spend": 12314.0, "impressions": 2_030_000,
+          "clicks": 7363, "clicks_all": 26012, "conversions": 1026.0,
+          "reach": None, "frequency": None, "video_views": 0,
+          "video_completions": 0, "engagements": 0}],    # platform_sql
+        [
+            _campaign_row("26018 Pre-Bargaining Awareness", 8776.0, 0.0,
+                          campaign_id="c-aw"),
+            _campaign_row("26018 Retargeting Conversions", 3538.0, 1026.0,
+                          campaign_id="c-conv"),
+        ],                                               # campaign_sql
+        [],                                              # media_plan_objectives
+        [{"date": D1, "conv_spend": 100.0, "conv_conversions": 30.0}],
+                                                         # conv_daily_sql
+    ]
+    resp = _get_performance(rec)
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # The conversion-daily query filtered to the conversion campaign ids
+    conv_sql, conv_params = rec.calls[-1]
+    assert "conversion_campaign_ids" in conv_sql
+    assert ("array", "conversion_campaign_ids", "STRING", ["c-conv"]) in conv_params
+
+    by_date = {d["date"]: d for d in body["daily"]}
+    d1 = by_date[D1.isoformat()]
+    assert abs(d1["cpa_conversion"] - 100.0 / 30.0) < 0.001
+    assert d1["cpa"] == 13.33  # effective stays untouched
+    # No conversion-campaign row for D2 → series gap, not zero
+    assert by_date[D2.isoformat()]["cpa_conversion"] is None
+
+
+def test_daily_conversion_query_skipped_on_pure_conversion_project():
+    """Pure conversion project: daily blended CPA already IS the
+    conversion CPA — no extra query, no cpa_conversion."""
+    rec = _responses(QueryRecorder(), [
+        _campaign_row("26018 Retargeting Conversions", 3538.0, 1026.0),
+    ])
+    rec.responses[1] = [_daily_row(D1, 400.0, 30.0, 13.33)]
+    resp = _get_performance(rec)
+    assert resp.status_code == 200
+    assert len(rec.calls) == 9  # no conv_daily_sql fired
+    body = resp.json()
+    assert body["daily"][0]["cpa_conversion"] is None
+
+
 def test_conversion_cpa_none_when_zero_conversions():
     """Conversion campaigns with no conversions yet: no divide-by-zero,
     CPA stays None (frontend renders the awaiting state)."""
