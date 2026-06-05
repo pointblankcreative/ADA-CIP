@@ -748,6 +748,26 @@ async def get_performance(
 
     project_objective = classify_project(campaign_objectives)
 
+    # ── Conversion CPA (2026-06-05) ─────────────────────────────────
+    # PB's default reporting KPI is CPA over conversion-objective spend
+    # only. total_cpa (all spend ÷ all conversions) stays as the
+    # effective CPA — on mixed projects it counts awareness spend in the
+    # numerator, which overstates acquisition cost (26018: $12 effective
+    # vs ~$3.50 conversion CPA). Rolled up from the campaign rows using
+    # the same objective classification the Campaigns table shows, so
+    # the two surfaces can't disagree.
+    conversion_spend = 0.0
+    conversion_conversions = 0.0
+    for r, obj in zip(campaign_rows, campaign_objectives):
+        if obj == "conversion":
+            conversion_spend += _float(r.get("spend"))
+            conversion_conversions += _float(r.get("conversions"))
+    conversion_cpa = (
+        conversion_spend / conversion_conversions
+        if conversion_conversions > 0
+        else None
+    )
+
     # ── metric availability ─────────────────────────────────────────
     available: list[str] = ["spend", "impressions", "clicks", "cpm", "cpc", "ctr"]
     metric_platforms: dict[str, list[str]] = {}
@@ -849,6 +869,9 @@ async def get_performance(
         total_engagements=_int_or_none(t.get("total_engagements")),
         total_cpa=_float_or_none(t.get("total_cpa")),
         total_conversion_rate=_float_or_none(t.get("total_conversion_rate")),
+        conversion_spend=round(conversion_spend, 2) if conversion_spend > 0 else None,
+        conversion_conversions=conversion_conversions if conversion_conversions > 0 else None,
+        conversion_cpa=conversion_cpa,
         total_reach_adset=total_reach_adset,
         avg_frequency_adset=avg_frequency_adset,
         reach_platforms=reach_platforms,
