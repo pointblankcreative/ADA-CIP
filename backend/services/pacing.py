@@ -37,6 +37,14 @@ PACING_UNDER_CRITICAL = 70.0
 FLIGHT_ENDING_DAYS = 7
 FLIGHT_ENDING_UNSPENT_PCT = 15.0
 
+# Post-flight reconciliation window: how many days after a project's booked
+# end_date the daily sweep keeps re-pacing it. Ad-platform spend for the final
+# 1-3 days of a flight typically lands in fact_digital_daily 1-2 days after the
+# campaign ends (Funnel reporting lag). Without this window, _auto_complete_projects
+# flips the project to 'completed' the morning after end_date and it drops out of
+# run_all_active, freezing budget_tracking at a partial-spend snapshot.
+POST_FLIGHT_RECONCILE_DAYS = 7
+
 
 def _float(v, default=0.0) -> float:
     if v is None:
@@ -755,6 +763,12 @@ def run_all_active(as_of_date: date, skip_writes: bool = False) -> dict:
     # Multi-plan support (2026-04-25): a project counts as having a media plan
     # if at least one of its registered, active sheets has a current row in
     # media_plans. Same JOIN shape as the per-project dedup guard.
+    #
+    # Post-flight reconciliation (2026-06-08): we also pick up projects that
+    # completed within the last POST_FLIGHT_RECONCILE_DAYS days. run_pacing_for_project
+    # already handles 'completed' line_status correctly, so re-running it after the
+    # flight ends simply overwrites the snapshot with the now-complete actual spend
+    # once trailing Funnel data has landed. See the 26018 CAPE spend-mismatch fix.
     projects_sql = f"""
         SELECT DISTINCT p.project_code
         FROM {bq.table('dim_projects')} p
@@ -765,8 +779,13 @@ def run_all_active(as_of_date: date, skip_writes: bool = False) -> dict:
          AND mp.sheet_id   = pmp.sheet_id
          AND pmp.is_active = TRUE
         WHERE p.status IN ('active', 'in_flight')
+           OR (
+                p.status = 'completed'
+                AND p.end_date IS NOT NULL
+                AND p.end_date >= DATE_SUB(@as_of_date, INTERVAL {POST_FLIGHT_RECONCILE_DAYS} DAY)
+              )
     """
-    projects = bq.run_query(projects_sql)
+    projects = bq.run_query(projects_sql, [bq.date_param("as_of_date", as_of_date)])
 
     results = []
     for row in projects:

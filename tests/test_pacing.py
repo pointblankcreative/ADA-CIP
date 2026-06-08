@@ -478,3 +478,53 @@ class TestBundleAwarePacing:
         # Actual spend comes from the per-code query ($3000), NOT from the
         # group-split fallback.
         assert rows[0]["actual_spend_to_date"] == pytest.approx(3000.0)
+
+
+class TestRunAllActivePostFlightReconciliation:
+    """run_all_active must keep re-pacing recently-completed projects.
+
+    Regression for the 26018 CAPE spend mismatch: _auto_complete_projects flips a
+    project to 'completed' the morning after end_date, dropping it from the sweep
+    before the final 1-3 days of Funnel spend land. budget_tracking then freezes at
+    a partial-spend snapshot while Meta shows the full amount. The selection query
+    must include projects whose end_date is within POST_FLIGHT_RECONCILE_DAYS days.
+    """
+
+    def _run(self, project_rows):
+        from unittest.mock import patch
+        from backend.services.pacing import run_all_active
+
+        captured = {}
+
+        def mock_run_query(sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+            return project_rows
+
+        with patch("backend.services.pacing.bq") as mock_bq, \
+             patch("backend.services.pacing.run_pacing_for_project") as mock_run_proj:
+            mock_bq.table.side_effect = lambda name: name
+            mock_bq.date_param.side_effect = lambda name, value: ("date_param", name, value)
+            mock_bq.run_query.side_effect = mock_run_query
+            mock_run_proj.return_value = {"lines_processed": 1, "alerts": 0}
+            result = run_all_active(date(2026, 6, 8))
+        return captured, mock_run_proj, result
+
+    def test_selection_includes_recently_completed_projects(self):
+        captured, _, _ = self._run([{"project_code": "26018"}])
+        sql = captured["sql"]
+        # Still picks up live projects …
+        assert "p.status IN ('active', 'in_flight')" in sql
+        # … and now recently-completed ones within the reconciliation window.
+        assert "p.status = 'completed'" in sql
+        assert "DATE_SUB(@as_of_date, INTERVAL 7 DAY)" in sql
+        # as_of_date is parameterised, not interpolated.
+        assert captured["params"] == [("date_param", "as_of_date", date(2026, 6, 8))]
+
+    def test_completed_project_in_window_gets_repaced(self):
+        _, mock_run_proj, result = self._run([{"project_code": "26018"}])
+        mock_run_proj.assert_called_once()
+        assert mock_run_proj.call_args.args[0] == "26018"
+        # as_of_date forwarded so spend is read through "today".
+        assert mock_run_proj.call_args.args[1] == date(2026, 6, 8)
+        assert result["projects_processed"] == 1
