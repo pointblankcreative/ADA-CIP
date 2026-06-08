@@ -37,6 +37,14 @@ PACING_UNDER_CRITICAL = 70.0
 FLIGHT_ENDING_DAYS = 7
 FLIGHT_ENDING_UNSPENT_PCT = 15.0
 
+# A line only fires a critical budget_exceeded alert when actual spend is more
+# than this many dollars above the line budget. Lifetime-budget delivery and the
+# budget-proportional spend split both routinely land a line at exactly 100% of
+# budget (or a sub-cent floating-point hair over), which previously tripped a
+# spurious "Budget exceeded — actual $239 exceeds budget $239" critical. The
+# buffer suppresses that noise while still catching any genuine dollar overage.
+BUDGET_EXCEEDED_TOLERANCE = 1.0
+
 # Post-flight reconciliation window: how many days after a project's booked
 # end_date the daily sweep keeps re-pacing it. Ad-platform spend for the final
 # 1-3 days of a flight typically lands in fact_digital_daily 1-2 days after the
@@ -122,12 +130,15 @@ def _generate_alerts(
             "slack_sent": False,
         })
 
-    if actual > planned_budget and planned_budget > 0:
+    if planned_budget > 0 and actual > planned_budget + BUDGET_EXCEEDED_TOLERANCE:
+        overage = actual - planned_budget
         _alert(
             "budget_exceeded", "critical",
             f"Budget exceeded — {line_label}",
-            f"Actual spend ${actual:,.0f} exceeds planned budget ${planned_budget:,.0f}",
-            {"line_id": line_id, "actual": actual, "budget": planned_budget},
+            f"Actual spend ${actual:,.2f} is ${overage:,.2f} "
+            f"({overage / planned_budget * 100:.1f}%) over the ${planned_budget:,.2f} budget",
+            {"line_id": line_id, "actual": actual, "budget": planned_budget,
+             "overage": overage},
         )
     elif pacing_pct > PACING_OVER_CRITICAL:
         _alert(

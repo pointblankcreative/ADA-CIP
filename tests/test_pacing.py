@@ -528,3 +528,52 @@ class TestRunAllActivePostFlightReconciliation:
         # as_of_date forwarded so spend is read through "today".
         assert mock_run_proj.call_args.args[1] == date(2026, 6, 8)
         assert result["projects_processed"] == 1
+
+
+class TestBudgetExceededAlert:
+    """budget_exceeded must not fire when a line merely lands at its budget.
+
+    Regression: lines #7/#8 on 26018 finished at exactly 100% of budget (actual
+    == budget), but the budget-proportional split left a sub-cent float over and
+    the message rounded both numbers to whole dollars — "actual $239 exceeds
+    budget $239" — firing a spurious critical. A $BUDGET_EXCEEDED_TOLERANCE buffer
+    is now required, and the message reports the real overage.
+    """
+
+    def _alerts(self, actual, budget, pacing_pct=100.0):
+        from backend.services.pacing import _generate_alerts
+        return _generate_alerts(
+            "26018", "L", "#7",
+            pacing_pct, actual, budget,
+            remaining_days=0, remaining_budget=budget - actual,
+        )
+
+    @staticmethod
+    def _types(alerts):
+        return {a["alert_type"] for a in alerts}
+
+    def test_exactly_at_budget_is_silent(self):
+        """A clean 100% completion fires nothing — the #7/#8 case."""
+        alerts = self._alerts(238.87, 238.87)
+        assert alerts == []
+
+    def test_subcent_float_over_does_not_fire(self):
+        """The proportional-split artifact: actual a floating-point hair over."""
+        alerts = self._alerts(238.87 + 1e-9, 238.87)
+        assert "budget_exceeded" not in self._types(alerts)
+
+    def test_within_tolerance_does_not_fire(self):
+        alerts = self._alerts(239.50, 238.87)  # $0.63 over, under the $1 buffer
+        assert "budget_exceeded" not in self._types(alerts)
+
+    def test_real_overage_fires_with_overage_in_message(self):
+        import json
+        alerts = self._alerts(250.00, 238.87)  # $11.13 over
+        be = [a for a in alerts if a["alert_type"] == "budget_exceeded"]
+        assert len(be) == 1
+        assert be[0]["severity"] == "critical"
+        # Message reports the real overage, not "$239 exceeds $239".
+        assert "$11.13" in be[0]["message"]
+        assert "$250.00" in be[0]["message"]
+        assert "exceeds planned budget" not in be[0]["message"]
+        assert json.loads(be[0]["metadata"])["overage"] == pytest.approx(11.13)
