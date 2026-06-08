@@ -16,6 +16,9 @@ gspread>=6.1.0
 # Slack
 slack-sdk>=3.34.0
 
+# Alert spend charts (rendered to PNG, uploaded to GCS, embedded in Slack alerts)
+matplotlib>=3.9.0
+
 # Firebase Auth
 firebase-admin>=6.6.0
 

@@ -14,6 +14,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from backend.config import settings
+from backend.services import alert_charts
 from backend.services import bigquery_client as bq
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,9 @@ def dispatch_unsent_alerts() -> dict:
         pcode = alert.get("project_code", "")
         channel = channel_map.get(pcode, DEFAULT_CHANNEL)
         blocks = _format_alert_blocks(alert, proj_info, line_info)
+        # Spend charts for over/under-spend alerts (best-effort; [] if disabled
+        # or anything fails) — appended so they render inside the same border.
+        blocks = blocks + alert_charts.build_alert_chart_blocks(alert)
         color = SEVERITY_COLORS.get(alert["severity"], "#6b7280")
         # `fallback` is the notification-preview text only. We deliberately do NOT
         # pass a top-level `text=` so nothing renders above (outside) the coloured
