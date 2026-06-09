@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { api, type PlatformFreshness, type IngestionRun } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
+import { Label } from "@/components/ui";
+import { TH_CLS } from "@/lib/chart-theme";
 import { cn, platformLabel } from "@/lib/utils";
 
 function timeAgo(dateStr: string | null): string {
@@ -66,16 +68,16 @@ export default function PipelinePage() {
   const totalRows = freshness.reduce((s, p) => s + p.total_rows, 0);
 
   return (
-    <div>
+    <div className="mx-auto max-w-[1100px]">
       <Link
         href="/admin"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors mb-3"
+        className="mb-3 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-fg-muted transition-colors hover:text-fg"
       >
-        <ArrowLeft className="h-4 w-4" /> Admin
+        <ArrowLeft className="h-3.5 w-3.5" /> Admin
       </Link>
 
-      <h1 className="text-xl font-semibold text-white">Pipeline Control</h1>
-      <p className="mt-1 text-sm text-slate-400">
+      <h1 className="text-xl font-extrabold tracking-tight text-fg">Pipeline Control</h1>
+      <p className="mt-1 text-sm text-fg-muted">
         Run transformations, check data freshness, and monitor ingestion.
       </p>
 
@@ -84,7 +86,7 @@ export default function PipelinePage() {
         <button
           onClick={() => runAction("daily", api.admin.dailyRun)}
           disabled={!!runningAction}
-          className="flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
+          className="flex items-center gap-2 rounded-sm border-2 border-accent bg-accent px-4 py-2.5 text-sm font-bold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           {runningAction === "daily" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
           Run Daily Pipeline
@@ -92,7 +94,7 @@ export default function PipelinePage() {
         <button
           onClick={() => runAction("full", () => api.admin.runTransformation("full"))}
           disabled={!!runningAction}
-          className="flex items-center gap-2 rounded-md border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50 transition-colors"
+          className="flex items-center gap-2 rounded-sm border-2 border-line px-4 py-2.5 text-sm font-bold text-fg transition-colors hover:border-line-strong disabled:opacity-50"
         >
           {runningAction === "full" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
           Full History Backfill
@@ -102,10 +104,8 @@ export default function PipelinePage() {
       {/* Action result */}
       {lastResult && (
         <Card className="mt-4">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-slate-500 mb-2">
-            Last Run Result
-          </h3>
-          <pre className="text-xs text-slate-300 whitespace-pre-wrap overflow-auto max-h-60">
+          <Label className="mb-2">Last Run Result</Label>
+          <pre className="max-h-60 overflow-auto whitespace-pre-wrap font-mono text-xs text-fg-secondary">
             {JSON.stringify(lastResult, null, 2)}
           </pre>
         </Card>
@@ -129,24 +129,24 @@ export default function PipelinePage() {
 
       {/* Data Freshness */}
       <Card className="mt-6 overflow-x-auto p-0">
-        <div className="px-4 py-3 border-b border-slate-800">
-          <h2 className="text-sm font-medium text-white">Data Freshness</h2>
+        <div className="border-b border-line-soft px-4 py-3">
+          <Label className="text-fg-secondary">Data Freshness</Label>
         </div>
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-800 text-left text-xs text-slate-500 uppercase tracking-wider">
-              <th className="px-4 py-3">Platform</th>
-              <th className="px-4 py-3">Latest Data</th>
-              <th className="px-4 py-3">Last Load</th>
-              <th className="px-4 py-3 text-right">Days</th>
-              <th className="px-4 py-3 text-right">Rows</th>
-              <th className="px-4 py-3 text-center">Status</th>
+            <tr className="border-b border-line-soft text-left">
+              <th className={TH_CLS}>Platform</th>
+              <th className={TH_CLS}>Latest Data</th>
+              <th className={TH_CLS}>Last Load</th>
+              <th className={cn(TH_CLS, "text-right")}>Days</th>
+              <th className={cn(TH_CLS, "text-right")}>Rows</th>
+              <th className={cn(TH_CLS, "text-center")}>Status</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-4 py-8 text-center text-fg-muted">
                   <Loader2 className="mx-auto h-5 w-5 animate-spin" />
                 </td>
               </tr>
@@ -159,30 +159,30 @@ export default function PipelinePage() {
               return (
                 <tr
                   key={p.platform_id}
-                  className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
+                  className="border-b border-line-soft transition-colors hover:bg-surface-sunken"
                 >
-                  <td className="px-4 py-3 text-white font-medium">
+                  <td className="px-4 py-3 font-medium text-fg">
                     {platformLabel(p.platform_id)}
                   </td>
-                  <td className="px-4 py-3 text-slate-400 tabular-nums">
+                  <td className="tnum px-4 py-3 font-mono text-fg-muted">
                     {p.latest_data_date ?? "—"}
                   </td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">
+                  <td className="px-4 py-3 font-mono text-xs text-fg-muted">
                     {timeAgo(p.latest_loaded_at)}
                   </td>
-                  <td className="px-4 py-3 text-right text-white tabular-nums">
+                  <td className="tnum px-4 py-3 text-right font-mono text-fg">
                     {p.total_days.toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 text-right text-white tabular-nums">
+                  <td className="tnum px-4 py-3 text-right font-mono text-fg">
                     {p.total_rows.toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-center">
                     {stale ? (
-                      <span className="inline-flex items-center gap-1 text-xs text-amber-400">
+                      <span className="inline-flex items-center gap-1 font-mono text-xs uppercase text-warn">
                         <Clock className="h-3 w-3" /> Stale
                       </span>
                     ) : (
-                      <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400" />
+                      <CheckCircle2 className="mx-auto h-4 w-4 text-ok" />
                     )}
                   </td>
                 </tr>
@@ -194,23 +194,23 @@ export default function PipelinePage() {
 
       {/* Ingestion Log */}
       <Card className="mt-6 overflow-x-auto p-0">
-        <div className="px-4 py-3 border-b border-slate-800">
-          <h2 className="text-sm font-medium text-white">Recent Ingestion Runs</h2>
+        <div className="border-b border-line-soft px-4 py-3">
+          <Label className="text-fg-secondary">Recent Ingestion Runs</Label>
         </div>
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-800 text-left text-xs text-slate-500 uppercase tracking-wider">
-              <th className="px-4 py-3">Pipeline</th>
-              <th className="px-4 py-3">Mode</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Rows</th>
-              <th className="px-4 py-3">Started</th>
+            <tr className="border-b border-line-soft text-left">
+              <th className={TH_CLS}>Pipeline</th>
+              <th className={TH_CLS}>Mode</th>
+              <th className={TH_CLS}>Status</th>
+              <th className={cn(TH_CLS, "text-right")}>Rows</th>
+              <th className={TH_CLS}>Started</th>
             </tr>
           </thead>
           <tbody>
             {runs.length === 0 && !loading && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={5} className="px-4 py-8 text-center text-fg-muted">
                   No ingestion runs yet.
                 </td>
               </tr>
@@ -218,27 +218,27 @@ export default function PipelinePage() {
             {runs.map((r, i) => (
               <tr
                 key={r.run_id ?? i}
-                className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
+                className="border-b border-line-soft transition-colors hover:bg-surface-sunken"
               >
-                <td className="px-4 py-3 text-white">{r.pipeline_name}</td>
-                <td className="px-4 py-3 text-slate-400 text-xs">{r.mode}</td>
+                <td className="px-4 py-3 font-medium text-fg">{r.pipeline_name}</td>
+                <td className="px-4 py-3 font-mono text-xs text-fg-muted">{r.mode}</td>
                 <td className="px-4 py-3">
                   {r.status === "success" ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
+                    <span className="inline-flex items-center gap-1 font-mono text-xs uppercase text-ok">
                       <CheckCircle2 className="h-3 w-3" /> success
                     </span>
                   ) : r.status === "error" ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-red-400">
+                    <span className="inline-flex items-center gap-1 font-mono text-xs uppercase text-danger">
                       <XCircle className="h-3 w-3" /> error
                     </span>
                   ) : (
-                    <span className="text-xs text-slate-400">{r.status}</span>
+                    <span className="font-mono text-xs text-fg-muted">{r.status}</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-right text-white tabular-nums">
+                <td className="tnum px-4 py-3 text-right font-mono text-fg">
                   {(r.rows_processed ?? 0).toLocaleString()}
                 </td>
-                <td className="px-4 py-3 text-xs text-slate-400">
+                <td className="px-4 py-3 font-mono text-xs text-fg-muted">
                   {r.started_at ? new Date(r.started_at).toLocaleString() : "—"}
                 </td>
               </tr>

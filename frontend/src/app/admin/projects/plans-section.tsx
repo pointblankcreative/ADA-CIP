@@ -19,6 +19,9 @@ interface PlansSectionProps {
   onChange?: () => void;
 }
 
+const INPUT_CLS =
+  "rounded-sm border-2 border-line bg-surface-card px-2 py-1.5 text-xs text-fg placeholder:text-fg-faint outline-none focus:border-accent";
+
 export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
   const [plans, setPlans] = useState<ProjectPlan[]>([]);
   const [loading, setLoading] = useState(true);
@@ -162,9 +165,9 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
   }
 
   return (
-    <div className="space-y-3 px-4 py-4 bg-slate-900/40 border-t border-slate-800">
+    <div className="space-y-3 border-t border-line-soft bg-surface-sunken px-4 py-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-xs uppercase tracking-wider text-slate-500">
+        <h4 className="label text-[10px]">
           Media Plan Sheets ({plans.filter((p) => p.is_active).length} active
           {plans.some((p) => !p.is_active) ? ` / ${plans.length} total` : ""})
         </h4>
@@ -172,14 +175,14 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
           <button
             onClick={handleSyncAll}
             disabled={actionLoading === "sync-all" || plans.filter((p) => p.is_active).length === 0}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-sm border-2 border-line px-3 py-1.5 text-xs font-bold text-fg transition-colors hover:border-line-strong disabled:opacity-40"
           >
             <RefreshCw className={cn("h-3.5 w-3.5", actionLoading === "sync-all" && "animate-spin")} />
             Sync all
           </button>
           <button
             onClick={() => setAdding((a) => !a)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-500"
+            className="inline-flex items-center gap-1.5 rounded-sm border-2 border-accent bg-accent px-3 py-1.5 text-xs font-bold text-on-accent transition-colors hover:bg-accent-hover"
           >
             <Plus className="h-3.5 w-3.5" />
             Add sheet
@@ -188,8 +191,8 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
       </div>
 
       {adding && (
-        <div className="rounded-md border border-slate-700 bg-slate-900 p-3 space-y-2">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <div className="space-y-2 rounded-sm border-2 border-line-soft bg-surface-card p-3">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
             <input
               autoFocus
               value={addFields.sheet_url_or_id}
@@ -197,7 +200,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                 setAddFields((f) => ({ ...f, sheet_url_or_id: e.target.value }))
               }
               placeholder="Sheet URL or ID"
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white md:col-span-1"
+              className={cn(INPUT_CLS, "bg-surface-sunken font-mono md:col-span-1")}
             />
             <input
               value={addFields.phase_label}
@@ -205,7 +208,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                 setAddFields((f) => ({ ...f, phase_label: e.target.value }))
               }
               placeholder='Phase label (e.g. "Pre-writ")'
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white"
+              className={cn(INPUT_CLS, "bg-surface-sunken")}
             />
             <input
               value={addFields.display_order}
@@ -214,14 +217,14 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
               }
               placeholder="Order (1, 2, …)"
               type="number"
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white"
+              className={cn(INPUT_CLS, "bg-surface-sunken")}
             />
           </div>
           <div className="flex gap-2">
             <button
               onClick={handleAdd}
               disabled={actionLoading === "add" || !addFields.sheet_url_or_id.trim()}
-              className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-500 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-sm border-2 border-accent bg-accent px-3 py-1.5 text-xs font-bold text-on-accent hover:bg-accent-hover disabled:opacity-40"
             >
               {actionLoading === "add" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -232,7 +235,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
             </button>
             <button
               onClick={() => setAdding(false)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+              className="inline-flex items-center gap-1.5 rounded-sm border-2 border-line px-3 py-1.5 text-xs text-fg-muted hover:text-fg"
             >
               <X className="h-3.5 w-3.5" />
               Cancel
@@ -244,10 +247,10 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
       {syncSummary && (
         <div
           className={cn(
-            "rounded-md border px-3 py-2 text-xs",
+            "rounded-sm border-2 px-3 py-2 text-xs",
             syncSummary.sheets_failed > 0
-              ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
-              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+              ? "border-tint-warn bg-tint-warn text-warn"
+              : "border-tint-ok bg-tint-ok text-ok",
           )}
         >
           Synced {syncSummary.sheets_succeeded}/{syncSummary.sheets_attempted} sheets
@@ -263,30 +266,30 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
       )}
 
       {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+        <div className="rounded-sm border-2 border-tint-danger bg-tint-danger px-3 py-2 text-xs text-danger">
           {error}
         </div>
       )}
 
       {loading ? (
         <div className="flex items-center justify-center py-4">
-          <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+          <Loader2 className="h-4 w-4 animate-spin text-fg-muted" />
         </div>
       ) : plans.length === 0 ? (
-        <div className="text-xs text-slate-500 py-2">
+        <div className="py-2 text-xs text-fg-muted">
           No media plan sheets registered. Add one to enable pacing &amp; diagnostics.
         </div>
       ) : (
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500">
-              <th className="px-2 py-1 w-12">#</th>
-              <th className="px-2 py-1">Phase</th>
-              <th className="px-2 py-1">Sheet ID</th>
-              <th className="px-2 py-1 text-right">Lines</th>
-              <th className="px-2 py-1">Last sync</th>
-              <th className="px-2 py-1">Status</th>
-              <th className="px-2 py-1 text-right">Actions</th>
+            <tr className="text-left">
+              <th className="w-12 px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">#</th>
+              <th className="px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">Phase</th>
+              <th className="px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">Sheet ID</th>
+              <th className="px-2 py-1 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">Lines</th>
+              <th className="px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">Last sync</th>
+              <th className="px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">Status</th>
+              <th className="px-2 py-1 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-faint">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -296,11 +299,11 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                 <tr
                   key={p.sheet_id}
                   className={cn(
-                    "border-t border-slate-800/50",
+                    "border-t border-line-soft",
                     !p.is_active && "opacity-50",
                   )}
                 >
-                  <td className="px-2 py-1.5 text-slate-500">
+                  <td className="px-2 py-1.5 font-mono text-fg-muted">
                     {isEditing ? (
                       <input
                         value={editFields.display_order}
@@ -308,7 +311,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                           setEditFields((f) => ({ ...f, display_order: e.target.value }))
                         }
                         type="number"
-                        className="w-12 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-xs text-white"
+                        className={cn(INPUT_CLS, "w-12 px-1 py-0.5")}
                       />
                     ) : (
                       p.display_order ?? "—"
@@ -322,10 +325,10 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                           setEditFields((f) => ({ ...f, phase_label: e.target.value }))
                         }
                         placeholder="Phase label"
-                        className="w-32 rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-xs text-white"
+                        className={cn(INPUT_CLS, "w-32 px-1.5 py-0.5")}
                       />
                     ) : (
-                      <span className={cn(p.phase_label ? "text-white" : "text-slate-500")}>
+                      <span className={cn(p.phase_label ? "font-medium text-fg" : "text-fg-muted")}>
                         {p.phase_label ?? "—"}
                       </span>
                     )}
@@ -335,25 +338,25 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                       href={`https://docs.google.com/spreadsheets/d/${p.sheet_id}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="font-mono text-[11px] text-brand-400 hover:underline"
+                      className="font-mono text-[11px] text-accent-ink hover:underline"
                       title={p.sheet_id}
                     >
                       {p.sheet_id.slice(0, 12)}…
                     </a>
                   </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-300">
-                    {p.line_count > 0 ? p.line_count : <span className="text-slate-600">0</span>}
+                  <td className="tnum px-2 py-1.5 text-right font-mono text-fg-secondary">
+                    {p.line_count > 0 ? p.line_count : <span className="text-fg-faint">0</span>}
                   </td>
-                  <td className="px-2 py-1.5 text-slate-400">
-                    {p.last_synced_at ? p.last_synced_at.slice(0, 10) : <span className="text-slate-600">never</span>}
+                  <td className="px-2 py-1.5 font-mono text-fg-muted">
+                    {p.last_synced_at ? p.last_synced_at.slice(0, 10) : <span className="text-fg-faint">never</span>}
                   </td>
                   <td className="px-2 py-1.5">
                     {p.is_active ? (
-                      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+                      <span className="rounded-pill bg-tint-ok px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-ok">
                         active
                       </span>
                     ) : (
-                      <span className="rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                      <span className="rounded-pill bg-tint-done px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-done">
                         retired
                       </span>
                     )}
@@ -365,14 +368,14 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                           <button
                             onClick={() => saveEdit(p.sheet_id)}
                             disabled={actionLoading === `edit-${p.sheet_id}`}
-                            className="rounded bg-brand-600 p-1 text-white hover:bg-brand-500 disabled:opacity-40"
+                            className="rounded-sm border-2 border-accent bg-accent p-1 text-on-accent hover:bg-accent-hover disabled:opacity-40"
                             title="Save"
                           >
                             <Save className="h-3 w-3" />
                           </button>
                           <button
                             onClick={() => setEditingSheet(null)}
-                            className="rounded border border-slate-700 p-1 text-slate-400 hover:text-white"
+                            className="rounded-sm border-2 border-line p-1 text-fg-muted hover:text-fg"
                             title="Cancel"
                           >
                             <X className="h-3 w-3" />
@@ -382,7 +385,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                         <>
                           <button
                             onClick={() => startEdit(p)}
-                            className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400 hover:text-white"
+                            className="rounded-sm border-2 border-line px-1.5 py-0.5 text-[10px] text-fg-muted hover:text-fg"
                           >
                             Edit
                           </button>
@@ -390,7 +393,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                             <button
                               onClick={() => handleRetire(p.sheet_id)}
                               disabled={actionLoading === `retire-${p.sheet_id}`}
-                              className="rounded border border-slate-700 p-1 text-amber-400 hover:bg-amber-500/10 disabled:opacity-40"
+                              className="rounded-sm border-2 border-line p-1 text-warn hover:bg-tint-warn disabled:opacity-40"
                               title="Retire (soft delete — preserves retrospective)"
                             >
                               <Trash2 className="h-3 w-3" />
@@ -400,7 +403,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                               <button
                                 onClick={() => handleReactivate(p.sheet_id)}
                                 disabled={actionLoading === `reactivate-${p.sheet_id}`}
-                                className="rounded border border-slate-700 p-1 text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-40"
+                                className="rounded-sm border-2 border-line p-1 text-ok hover:bg-tint-ok disabled:opacity-40"
                                 title="Reactivate"
                               >
                                 <Undo2 className="h-3 w-3" />
@@ -408,7 +411,7 @@ export function PlansSection({ projectCode, onChange }: PlansSectionProps) {
                               <button
                                 onClick={() => handleHardDelete(p.sheet_id)}
                                 disabled={actionLoading === `delete-${p.sheet_id}`}
-                                className="rounded border border-slate-700 p-1 text-red-400 hover:bg-red-500/10 disabled:opacity-40"
+                                className="rounded-sm border-2 border-line p-1 text-danger hover:bg-tint-danger disabled:opacity-40"
                                 title="Hard delete"
                               >
                                 <Trash2 className="h-3 w-3" />

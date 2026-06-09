@@ -10,7 +10,7 @@
  * asOfDate prop (commit 6). Layout differs from the live page in two
  * deliberate ways:
  *
- *   1. Amber banner at the top makes it visually obvious the user is
+ *   1. Warn-toned banner at the top makes it visually obvious the user is
  *      looking at historical data, with a "Back to live" link.
  *   2. Date picker in the header lets the user navigate to other historical
  *      dates without hand-typing URLs. Picking a date pushes a new history
@@ -34,6 +34,7 @@ import {
   DiagnosticsTab,
   type RetrospectiveMetadata,
 } from "../../diagnostics-tab";
+import { CodeChip, Label, StatusPill } from "@/components/ui";
 import { cn, formatCurrency } from "@/lib/utils";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -93,147 +94,146 @@ export default function RetrospectivePage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="border-b border-slate-800 bg-surface px-4 py-4 sm:px-6 lg:px-8">
-        {/* Top row: back-to-live + project label */}
-        <div className="flex items-center gap-3 pl-10 md:pl-0">
-          <Link
-            href={`/project/${code}`}
-            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
-            aria-label="Back to live view"
-            title="Back to live view"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-400">
-                {code}
-              </span>
-              {loadingProject ? (
-                <div className="h-5 w-48 animate-pulse rounded bg-slate-700" />
-              ) : (
-                <h1 className="truncate text-base font-semibold text-white sm:text-lg">
-                  {project?.project_name || `Project ${code}`}
-                </h1>
-              )}
-              <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-amber-300">
-                Historical
-              </span>
-            </div>
-            {project && (
-              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-slate-500">
-                <span>Budget: {formatCurrency(project.net_budget)}{project.currency ? ` ${project.currency}` : ""}</span>
-                <span>
-                  Flight: {project.start_date} to {project.end_date}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Banner: viewing as of DATE */}
-        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex min-h-[calc(100vh-58px)] flex-col">
+      <header className="border-b-2 border-line-soft bg-surface-page px-5 py-4 sm:px-7">
+        <div className="mx-auto max-w-[1340px]">
+          {/* Top row: back-to-live + project label */}
           <div className="flex items-center gap-3">
-            <Clock className="h-5 w-5 flex-shrink-0 text-amber-400" />
-            <div>
-              <p className="text-sm font-medium text-amber-300">
-                {dateValid ? (
-                  <>Viewing as of {formatLongDate(date)}</>
-                ) : (
-                  <>Invalid date in URL</>
-                )}
-              </p>
-              <p className="mt-0.5 text-xs text-amber-400/80">
-                {dateValid ? (
-                  <>
-                    Pacing and diagnostics shown reflect this project&rsquo;s
-                    state on that day. Plan and FFS configuration shown
-                    reflect today&rsquo;s values. Retired phases are
-                    re-included so historical pacing roll-ups are complete.
-                    {meta && (
-                      <>
-                        {" · "}
-                        {meta.cached
-                          ? "From snapshot cache"
-                          : "Just computed"}
-                        {" · engine "}
-                        <span className="font-mono">
-                          {meta.engineVersion.slice(0, 8)}
-                        </span>
-                      </>
-                    )}
-                  </>
-                ) : (
-                  <>Date must be in YYYY-MM-DD format. Pick a valid date below.</>
-                )}
-              </p>
-            </div>
-          </div>
-
-          {/* Date picker + day-step buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => dateValid && goToDate(shiftDate(date, -1))}
-              disabled={!dateValid}
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-md border border-amber-500/30 text-amber-300 transition-colors",
-                dateValid
-                  ? "hover:bg-amber-500/20"
-                  : "cursor-not-allowed opacity-50"
-              )}
-              aria-label="Previous day"
-              title="Previous day"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <input
-              type="date"
-              value={dateValid ? date : ""}
-              onChange={(e) => goToDate(e.target.value)}
-              className="rounded-md border border-amber-500/30 bg-slate-900/50 px-2 py-1 text-sm text-amber-200 focus:border-amber-400 focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={() => dateValid && goToDate(shiftDate(date, 1))}
-              disabled={!dateValid}
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-md border border-amber-500/30 text-amber-300 transition-colors",
-                dateValid
-                  ? "hover:bg-amber-500/20"
-                  : "cursor-not-allowed opacity-50"
-              )}
-              aria-label="Next day"
-              title="Next day"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
             <Link
               href={`/project/${code}`}
-              className="ml-2 rounded-md border border-amber-500/30 px-3 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/20 transition-colors"
+              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-sm text-fg-muted transition-colors hover:bg-surface-sunken hover:text-fg"
+              aria-label="Back to live view"
+              title="Back to live view"
             >
-              Back to live
+              <ArrowLeft className="h-4 w-4" />
             </Link>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                <CodeChip>{code}</CodeChip>
+                {loadingProject ? (
+                  <div className="h-5 w-48 animate-pulse rounded bg-surface-sunken" />
+                ) : (
+                  <h1 className="truncate text-base font-extrabold tracking-tight text-fg sm:text-lg">
+                    {project?.project_name || `Project ${code}`}
+                  </h1>
+                )}
+                <StatusPill label="Historical" color="var(--warn)" dot={false} size="sm" />
+              </div>
+              {project && (
+                <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 font-mono text-[11px] tracking-[0.04em] text-fg-muted">
+                  <span>
+                    Budget {formatCurrency(project.net_budget)}
+                    {project.currency ? ` ${project.currency}` : ""}
+                  </span>
+                  <span>
+                    Flight {project.start_date} to {project.end_date}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Banner: viewing as of DATE */}
+          <div className="mt-4 flex flex-col gap-3 rounded-md border-2 border-tint-warn bg-tint-warn px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <Clock className="h-5 w-5 flex-shrink-0 text-warn" />
+              <div>
+                <p className="text-sm font-bold text-warn">
+                  {dateValid ? (
+                    <>Viewing as of {formatLongDate(date)}</>
+                  ) : (
+                    <>Invalid date in URL</>
+                  )}
+                </p>
+                <p className="mt-0.5 text-xs text-fg-secondary">
+                  {dateValid ? (
+                    <>
+                      Pacing and diagnostics shown reflect this project&rsquo;s
+                      state on that day. Plan and FFS configuration shown
+                      reflect today&rsquo;s values. Retired phases are
+                      re-included so historical pacing roll-ups are complete.
+                      {meta && (
+                        <>
+                          {" · "}
+                          {meta.cached
+                            ? "From snapshot cache"
+                            : "Just computed"}
+                          {" · engine "}
+                          <span className="font-mono">
+                            {meta.engineVersion.slice(0, 8)}
+                          </span>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>Date must be in YYYY-MM-DD format. Pick a valid date below.</>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* Date picker + day-step buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => dateValid && goToDate(shiftDate(date, -1))}
+                disabled={!dateValid}
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-sm border-2 border-tint-warn text-warn transition-colors",
+                  dateValid ? "hover:bg-surface-card" : "cursor-not-allowed opacity-50"
+                )}
+                aria-label="Previous day"
+                title="Previous day"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <input
+                type="date"
+                value={dateValid ? date : ""}
+                onChange={(e) => goToDate(e.target.value)}
+                className="rounded-sm border-2 border-tint-warn bg-surface-card px-2 py-1 font-mono text-sm text-fg outline-none focus:border-warn"
+              />
+              <button
+                type="button"
+                onClick={() => dateValid && goToDate(shiftDate(date, 1))}
+                disabled={!dateValid}
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-sm border-2 border-tint-warn text-warn transition-colors",
+                  dateValid ? "hover:bg-surface-card" : "cursor-not-allowed opacity-50"
+                )}
+                aria-label="Next day"
+                title="Next day"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <Link
+                href={`/project/${code}`}
+                className="ml-2 rounded-sm border-2 border-tint-warn px-3 py-1 text-xs font-bold text-warn transition-colors hover:bg-surface-card"
+              >
+                Back to live
+              </Link>
+            </div>
           </div>
         </div>
       </header>
 
       {/* Body: pacing + diagnostics, vertically stacked. Same components as
           the live page, just driven by asOfDate. */}
-      <div className="flex-1 space-y-8 p-4 sm:p-6 lg:p-8">
+      <div className="mx-auto w-full max-w-[1340px] flex-1 space-y-8 px-5 py-6 pb-20 sm:px-7">
         {dateValid ? (
           <>
             <section>
-              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Pacing
-              </h2>
+              <div className="mb-3 flex items-center gap-3">
+                <Label className="text-fg-secondary">Pacing</Label>
+                <div className="h-px flex-1 bg-line-soft" />
+              </div>
               <PacingTab code={code} asOfDate={date} />
             </section>
             <section>
-              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Diagnostics
-              </h2>
+              <div className="mb-3 flex items-center gap-3">
+                <Label className="text-fg-secondary">Diagnostics</Label>
+                <div className="h-px flex-1 bg-line-soft" />
+              </div>
               <DiagnosticsTab
                 code={code}
                 asOfDate={date}
@@ -242,10 +242,10 @@ export default function RetrospectivePage() {
             </section>
           </>
         ) : (
-          <div className="rounded-md border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-400">
+          <div className="rounded-md border-2 border-line-soft bg-surface-card p-6 text-sm text-fg-secondary">
             <p>The date <span className="font-mono">{date}</span> is not a valid YYYY-MM-DD.</p>
             <p className="mt-2">Pick a valid date in the picker above, or go{" "}
-              <Link href={`/project/${code}`} className="text-amber-300 hover:underline">
+              <Link href={`/project/${code}`} className="text-warn hover:underline">
                 back to live
               </Link>.
             </p>

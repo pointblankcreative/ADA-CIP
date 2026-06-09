@@ -1,16 +1,11 @@
 /**
- * MIGRATION PIN — admin pages are still slate-styled (re-skin Phase 9).
- * Pinning them dark keeps the legacy palette coherent on the light app.
- * Delete this layout when the admin screens move to tokens.
+ * Admin layout — shared padding for the admin pages (they historically
+ * rendered without a padded wrapper of their own).
  */
 export default function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <div data-theme="dark" className="min-h-[calc(100vh-58px)] p-6 lg:p-8">
-      {children}
-    </div>
-  );
+  return <div className="p-5 pb-20 pt-7 sm:p-7 sm:pb-20">{children}</div>;
 }

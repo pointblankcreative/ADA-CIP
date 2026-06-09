@@ -1,24 +1,27 @@
 "use client";
 
 import { useState, useEffect, Suspense, useCallback } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Loader2, CheckCircle2, Copy, Check } from "lucide-react";
 import Link from "next/link";
 import { api, type ProjectCreatePayload } from "@/lib/api";
 import { Card } from "@/components/card";
+import { cn } from "@/lib/utils";
 
 const SERVICE_ACCOUNT_EMAIL = "cip-sheets-reader@point-blank-ada.iam.gserviceaccount.com";
 
+const INPUT_CLS =
+  "w-full rounded-sm border-2 border-line bg-surface-sunken px-3 py-2 text-sm text-fg placeholder:text-fg-faint outline-none focus:border-accent";
+
 export default function NewProjectPage() {
   return (
-    <Suspense fallback={<div className="text-slate-400 text-sm">Loading...</div>}>
+    <Suspense fallback={<div className="text-sm text-fg-muted">Loading...</div>}>
       <NewProjectForm />
     </Suspense>
   );
 }
 
 function NewProjectForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const prefillCode = searchParams.get("code") ?? "";
 
@@ -84,13 +87,13 @@ function NewProjectForm() {
     <div className="max-w-2xl">
       <Link
         href="/admin"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors mb-4"
+        className="mb-4 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-fg-muted transition-colors hover:text-fg"
       >
-        <ArrowLeft className="h-4 w-4" /> Admin
+        <ArrowLeft className="h-3.5 w-3.5" /> Admin
       </Link>
 
-      <h1 className="text-xl font-semibold text-white">Create New Project</h1>
-      <p className="mt-1 text-sm text-slate-400">
+      <h1 className="text-xl font-extrabold tracking-tight text-fg">Create New Project</h1>
+      <p className="mt-1 text-sm text-fg-muted">
         The project will be created, optionally synced with a media plan, and made visible in the dashboard.
       </p>
 
@@ -99,85 +102,85 @@ function NewProjectForm() {
           <div className="space-y-4">
             {/* Project Code */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-                Project Code <span className="text-red-400">*</span>
+              <label className="label mb-1.5 block text-[10px]">
+                Project Code <span className="text-danger">*</span>
               </label>
               <input
                 required
                 placeholder="e.g. 26015"
                 value={form.project_code}
                 onChange={(e) => set("project_code", e.target.value)}
-                className={`w-full rounded-md border bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600 ${
-                  form.project_code && !codeValid
-                    ? "border-red-500"
-                    : "border-slate-700"
-                }`}
+                className={cn(
+                  INPUT_CLS,
+                  "font-mono",
+                  form.project_code && !codeValid && "border-danger"
+                )}
               />
               {form.project_code && !codeValid && (
-                <p className="mt-1 text-xs text-red-400">Must be YYNNN format (e.g. 25013, 26009)</p>
+                <p className="mt-1 text-xs text-danger">Must be YYNNN format (e.g. 25013, 26009)</p>
               )}
             </div>
 
             {/* Client Name */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-                Client Name <span className="text-red-400">*</span>
+              <label className="label mb-1.5 block text-[10px]">
+                Client Name <span className="text-danger">*</span>
               </label>
               <input
                 required
                 placeholder="e.g. BCGEU"
                 value={form.client_name}
                 onChange={(e) => set("client_name", e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                className={INPUT_CLS}
               />
             </div>
 
             {/* Project Name */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-                Project Name <span className="text-red-400">*</span>
+              <label className="label mb-1.5 block text-[10px]">
+                Project Name <span className="text-danger">*</span>
               </label>
               <input
                 required
                 placeholder="e.g. BCGEU Bargaining Escalation"
                 value={form.project_name}
                 onChange={(e) => set("project_name", e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                className={INPUT_CLS}
               />
             </div>
 
             {/* Dates */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-                  Start Date <span className="text-red-400">*</span>
+                <label className="label mb-1.5 block text-[10px]">
+                  Start Date <span className="text-danger">*</span>
                 </label>
                 <input
                   required
                   type="date"
                   value={form.start_date}
                   onChange={(e) => set("start_date", e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  className={INPUT_CLS}
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-                  End Date <span className="text-red-400">*</span>
+                <label className="label mb-1.5 block text-[10px]">
+                  End Date <span className="text-danger">*</span>
                 </label>
                 <input
                   required
                   type="date"
                   value={form.end_date}
                   onChange={(e) => set("end_date", e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-600"
+                  className={INPUT_CLS}
                 />
               </div>
             </div>
 
             {/* Budget */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-                Net Budget (CAD) <span className="text-red-400">*</span>
+              <label className="label mb-1.5 block text-[10px]">
+                Net Budget (CAD) <span className="text-danger">*</span>
               </label>
               <input
                 required
@@ -187,27 +190,27 @@ function NewProjectForm() {
                 placeholder="e.g. 50000"
                 value={form.net_budget || ""}
                 onChange={(e) => set("net_budget", parseFloat(e.target.value) || 0)}
-                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                className={cn(INPUT_CLS, "tnum font-mono")}
               />
             </div>
           </div>
         </Card>
 
         <Card>
-          <h2 className="text-sm font-medium text-white mb-4">Optional Configuration</h2>
+          <h2 className="mb-4 text-sm font-bold text-fg">Optional Configuration</h2>
           <div className="space-y-4">
             {/* Media Plan Sheet */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+              <label className="label mb-1.5 block text-[10px]">
                 Media Plan Sheet URL
               </label>
               <input
                 placeholder="https://docs.google.com/spreadsheets/d/..."
                 value={form.media_plan_sheet_url}
                 onChange={(e) => set("media_plan_sheet_url", e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                className={cn(INPUT_CLS, "font-mono text-[13px]")}
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-fg-muted">
                 If provided, the media plan will be synced automatically.
               </p>
               <MediaPlanSharingInstructions />
@@ -215,32 +218,32 @@ function NewProjectForm() {
 
             {/* Media Plan Tab Name */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+              <label className="label mb-1.5 block text-[10px]">
                 Media Plan Tab Name
               </label>
               <input
                 placeholder="e.g. Media Plan V2"
                 value={form.media_plan_tab_name}
                 onChange={(e) => set("media_plan_tab_name", e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                className={INPUT_CLS}
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-fg-muted">
                 If set, only this tab will be synced. Leave blank to sync all matching tabs.
               </p>
             </div>
 
             {/* Slack Channel */}
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+              <label className="label mb-1.5 block text-[10px]">
                 Slack Channel
               </label>
               <input
                 placeholder="e.g. #cip-bcgeu or C06ABC123"
                 value={form.slack_channel_id}
                 onChange={(e) => set("slack_channel_id", e.target.value)}
-                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                className={cn(INPUT_CLS, "font-mono text-[13px]")}
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-fg-muted">
                 Channel name or ID for pacing alerts. Defaults to #cip-alerts if empty.
               </p>
             </div>
@@ -248,26 +251,30 @@ function NewProjectForm() {
         </Card>
 
         {error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <div className="rounded-md border-2 border-tint-danger bg-tint-danger px-4 py-3 text-sm text-danger">
             {error}
           </div>
         )}
 
         {success && (
-          <div className={`rounded-md px-5 py-4 ${
-            success.mediaPlanStatus === "error"
-              ? "border border-amber-500/30 bg-amber-500/10"
-              : "border border-emerald-500/30 bg-emerald-500/10"
-          }`}>
-            <div className={`flex items-center gap-2 text-sm font-medium ${
-              success.mediaPlanStatus === "error" ? "text-amber-400" : "text-emerald-400"
-            }`}>
+          <div
+            className={cn(
+              "rounded-md border-2 px-5 py-4",
+              success.mediaPlanStatus === "error"
+                ? "border-tint-warn bg-tint-warn"
+                : "border-tint-ok bg-tint-ok"
+            )}
+          >
+            <div
+              className={cn(
+                "flex items-center gap-2 text-sm font-bold",
+                success.mediaPlanStatus === "error" ? "text-warn" : "text-ok"
+              )}
+            >
               <CheckCircle2 className="h-4 w-4" />
               Project {success.code} created successfully
             </div>
-            <p className={`mt-1 text-xs ${
-              success.mediaPlanStatus === "error" ? "text-amber-400/70" : "text-emerald-400/70"
-            }`}>
+            <p className="mt-1 text-xs text-fg-secondary">
               {success.mediaPlanStatus === "success"
                 ? `Media plan synced successfully — ${success.linesCreated ?? 0} line items imported. Pacing and alerts are now active.`
                 : success.mediaPlanStatus === "error"
@@ -277,13 +284,13 @@ function NewProjectForm() {
             <div className="mt-3 flex gap-3">
               <Link
                 href={`/project/${success.code}`}
-                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 transition-colors"
+                className="rounded-sm border-2 border-accent bg-accent px-4 py-2 text-sm font-bold text-on-accent transition-colors hover:bg-accent-hover"
               >
                 View Project
               </Link>
               <Link
                 href="/admin/projects"
-                className="rounded-md border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                className="rounded-sm border-2 border-line px-4 py-2 text-sm font-bold text-fg transition-colors hover:border-line-strong"
               >
                 Manage Projects
               </Link>
@@ -295,7 +302,7 @@ function NewProjectForm() {
           <button
             type="submit"
             disabled={submitting || !codeValid || !form.client_name || !form.project_name}
-            className="flex items-center gap-2 rounded-md bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-2 rounded-sm border-2 border-accent bg-accent px-5 py-2.5 text-sm font-bold text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
             {submitting ? "Creating..." : "Create Project"}
@@ -320,24 +327,24 @@ function MediaPlanSharingInstructions() {
   }, []);
 
   return (
-    <div className="mt-3 rounded-md border border-blue-500/20 bg-blue-500/5 px-4 py-3">
-      <p className="text-xs font-medium text-blue-400">
+    <div className="mt-3 rounded-md border-2 border-tint-info bg-tint-info px-4 py-3">
+      <p className="text-xs font-bold text-info">
         Share your media plan with ADA
       </p>
-      <p className="mt-1 text-xs text-slate-400">
-        To allow ADA to read this spreadsheet, share it as <strong className="text-slate-300">Viewer</strong> with:
+      <p className="mt-1 text-xs text-fg-secondary">
+        To allow ADA to read this spreadsheet, share it as <strong className="text-fg">Viewer</strong> with:
       </p>
       <div className="mt-2 flex items-center gap-2">
-        <code className="flex-1 rounded bg-slate-900 px-2.5 py-1.5 text-xs text-blue-300 font-mono select-all">
+        <code className="flex-1 select-all rounded-sm border border-line-soft bg-surface-card px-2.5 py-1.5 font-mono text-xs text-info">
           {SERVICE_ACCOUNT_EMAIL}
         </code>
         <button
           type="button"
           onClick={copyEmail}
-          className="flex-shrink-0 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
+          className="flex-shrink-0 rounded-sm border-2 border-line px-2.5 py-1.5 text-xs font-bold text-fg transition-colors hover:border-line-strong"
         >
           {copied ? (
-            <span className="flex items-center gap-1 text-emerald-400">
+            <span className="flex items-center gap-1 text-ok">
               <Check className="h-3 w-3" /> Copied
             </span>
           ) : (
