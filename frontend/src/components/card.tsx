@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import type { CSSProperties, MouseEventHandler, ReactNode } from "react";
 
 interface CardProps {
-  children: ReactNode;
+  children?: ReactNode;
   className?: string;
   /** Native browser tooltip (AI-102: used for per-platform metric definitions). */
   title?: string;
