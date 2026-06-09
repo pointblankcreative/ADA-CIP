@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Sidebar } from "@/components/sidebar";
+import { AppShell } from "@/components/app-shell";
 import { fontVariables } from "@/lib/fonts";
 import "./globals.css";
 
@@ -21,8 +21,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-theme="dark">
       <body className={`${fontVariables} min-h-screen font-sans`}>
-        <Sidebar />
-        <main className="min-h-screen md:ml-56">{children}</main>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

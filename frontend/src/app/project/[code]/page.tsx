@@ -91,7 +91,7 @@ export default function ProjectDetailPage() {
     <div className="flex min-h-screen flex-col">
       {/* Top bar */}
       <header className="border-b border-slate-800 bg-surface px-4 py-4 sm:px-6 lg:px-8">
-        <div className="flex items-center gap-3 pl-10 md:pl-0">
+        <div className="flex items-center gap-3">
           <Link
             href="/"
             className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
