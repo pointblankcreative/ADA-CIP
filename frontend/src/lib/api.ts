@@ -545,6 +545,7 @@ export interface OrphanProject {
   dismissed_at: string | null;
   dismissed_by: string | null;
   dismissed_reason: string | null;
+  level: string | null; // 'dismissed' | 'archived' | null (not suppressed)
 }
 
 export interface OrphanListResponse {
@@ -950,19 +951,12 @@ export const api = {
       }),
   },
   orphans: {
+    // Read-only. Suppression (dismissed / archived) is managed by editing the
+    // dismissed_orphans control table in BigQuery directly — there is no write
+    // endpoint, by design, so nothing can suppress a code by accident.
     list: (includeDismissed = false) =>
       apiFetch<OrphanListResponse>(
         `/api/orphan-projects${includeDismissed ? "?include_dismissed=true" : ""}`
-      ),
-    dismiss: (projectCode: string, reason?: string) =>
-      apiFetch<OrphanProject>(`/api/orphan-projects/${projectCode}/dismiss`, {
-        method: "POST",
-        body: JSON.stringify({ reason: reason ?? null }),
-      }),
-    undismiss: (projectCode: string) =>
-      apiFetch<{ status: string; project_code: string }>(
-        `/api/orphan-projects/${projectCode}/undismiss`,
-        { method: "POST" }
       ),
   },
 };

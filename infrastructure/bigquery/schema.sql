@@ -755,13 +755,14 @@ OPTIONS(
 CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.dismissed_orphans` (
   project_code  STRING    NOT NULL,               -- orphan project code (e.g. '25034')
   dismissed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-  dismissed_by  STRING,                           -- PB email from IAP header
+  dismissed_by  STRING,                           -- PB email of whoever added the row
   reason        STRING,                           -- optional free-text note
+  level         STRING DEFAULT 'dismissed',       -- 'dismissed' = hidden from active panel, shown under "show dismissed"; 'archived' = hidden from both views (data retained)
   PRIMARY KEY (project_code) NOT ENFORCED
 )
 CLUSTER BY project_code
 OPTIONS(
-  description='Project codes with spend in fact_* tables that have been explicitly dismissed from the orphan auto-discovery scanner. Permanent until someone removes the row.'
+  description='Control table for the orphan auto-discovery scanner. Edited by hand in BigQuery (no UI write path). A row suppresses a project_code: level=dismissed hides it from the active panel but keeps it under "show dismissed"; level=archived hides it everywhere. Reversible by editing/deleting the row; never deletes fact data.'
 );
 
 
