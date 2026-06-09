@@ -5,6 +5,8 @@ import {
   type PerformanceResponse,
 } from "@/lib/api";
 import { Card } from "@/components/card";
+import { Label } from "@/components/ui";
+import { OBJECTIVE_BADGE, TH_CLS } from "@/lib/chart-theme";
 import {
   formatCurrency,
   formatNumber,
@@ -12,12 +14,6 @@ import {
   platformLabel,
   cn,
 } from "@/lib/utils";
-
-const OBJECTIVE_BADGE: Record<ObjectiveType, { label: string; cls: string }> = {
-  awareness: { label: "Awareness", cls: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-  conversion: { label: "Conversion", cls: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" },
-  mixed: { label: "Mixed", cls: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
-};
 
 function has(data: PerformanceResponse, metric: string): boolean {
   return data.available_metrics.includes(metric);
@@ -39,29 +35,29 @@ export function CampaignTable({
   return (
     <Card className="overflow-hidden !p-0">
       <div className="px-5 py-4">
-        <h4 className="text-sm font-medium text-slate-400">Campaigns</h4>
+        <Label className="text-fg-secondary">Campaigns</Label>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
-            <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-              <th className="px-5 py-3 font-medium">Campaign</th>
-              <th className="px-5 py-3 font-medium">Platform</th>
-              <th className="px-5 py-3 font-medium">Objective</th>
-              <th className="px-5 py-3 font-medium text-right">Spend</th>
-              <th className="px-5 py-3 font-medium text-right">Impr.</th>
-              <th className="px-5 py-3 font-medium text-right">Clicks</th>
-              <th className="px-5 py-3 font-medium text-right">CTR</th>
+            <tr className="border-t border-line-soft">
+              <th className={TH_CLS}>Campaign</th>
+              <th className={TH_CLS}>Platform</th>
+              <th className={TH_CLS}>Objective</th>
+              <th className={cn(TH_CLS, "text-right")}>Spend</th>
+              <th className={cn(TH_CLS, "text-right")}>Impr.</th>
+              <th className={cn(TH_CLS, "text-right")}>Clicks</th>
+              <th className={cn(TH_CLS, "text-right")}>CTR</th>
               {/* No Reach column: reach/frequency only exist at audience
                   (ad set) grain — campaign-grain reach never populates.
                   See the Audience performance table for R&F. */}
               {showAwareness && has(data, "vcr") && (
-                <th className="px-5 py-3 font-medium text-right">VCR</th>
+                <th className={cn(TH_CLS, "text-right")}>VCR</th>
               )}
               {showConversion && has(data, "conversions") && (
                 <>
-                  <th className="px-5 py-3 font-medium text-right">Conv.</th>
-                  <th className="px-5 py-3 font-medium text-right">CPA</th>
+                  <th className={cn(TH_CLS, "text-right")}>Conv.</th>
+                  <th className={cn(TH_CLS, "text-right")}>CPA</th>
                 </>
               )}
             </tr>
@@ -72,46 +68,46 @@ export function CampaignTable({
               return (
                 <tr
                   key={`${c.campaign_id}-${i}`}
-                  className="border-t border-slate-800/50 transition-colors hover:bg-slate-800/30"
+                  className="border-t border-line-soft transition-colors hover:bg-surface-sunken"
                 >
-                  <td className="max-w-[260px] truncate px-5 py-3 text-slate-200">
+                  <td className="max-w-[260px] truncate px-5 py-3 font-medium text-fg">
                     {c.campaign_name}
                   </td>
-                  <td className="px-5 py-3 text-slate-400">
+                  <td className="px-5 py-3 text-fg-muted">
                     {platformLabel(c.platform_id)}
                   </td>
                   <td className="px-5 py-3">
                     {objBadge ? (
-                      <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-medium", objBadge.cls)}>
+                      <span className={cn("rounded-pill border px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em]", objBadge.cls)}>
                         {objBadge.label}
                       </span>
                     ) : (
-                      <span className="text-slate-600">—</span>
+                      <span className="text-fg-faint">—</span>
                     )}
                   </td>
-                  <td className="px-5 py-3 text-right tabular-nums text-slate-200">
+                  <td className="tnum px-5 py-3 text-right font-mono text-fg">
                     {formatCurrency(c.spend)}
                   </td>
-                  <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                  <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
                     {formatNumber(c.impressions)}
                   </td>
-                  <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                  <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
                     {formatNumber(c.clicks)}
                   </td>
-                  <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                  <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
                     {c.ctr != null ? formatPercent(c.ctr * 100) : "—"}
                   </td>
                   {showAwareness && has(data, "vcr") && (
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                    <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
                       {c.vcr != null ? formatPercent(c.vcr * 100) : "—"}
                     </td>
                   )}
                   {showConversion && has(data, "conversions") && (
                     <>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
                         {c.conversions ? formatNumber(Math.round(c.conversions)) : "—"}
                       </td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+                      <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
                         {c.cpa != null ? formatCurrency(c.cpa) : "—"}
                       </td>
                     </>

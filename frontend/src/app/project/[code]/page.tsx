@@ -230,9 +230,17 @@ export default function ProjectDetailPage() {
         </div>
       </header>
 
-      {/* Tab content. Summary + Pacing are tokens (light); the remaining
-          legacy tabs stay pinned dark until their re-skin phases land. */}
-      {activeTab === "summary" || activeTab === "pacing" ? (
+      {/* Tab content. Summary + Pacing + Performance are tokens (light);
+          the remaining legacy tabs stay pinned dark until their re-skin
+          phases land. */}
+      {activeTab === "diagnostics" || activeTab === "settings" ? (
+        <div data-theme="dark" className="flex-1">
+          <div className="mx-auto w-full max-w-[1340px] px-5 py-6 pb-20 sm:px-7">
+            {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
+            {activeTab === "settings" && <SettingsTab code={code} />}
+          </div>
+        </div>
+      ) : (
         <div className="mx-auto w-full max-w-[1340px] flex-1 px-5 py-6 pb-20 sm:px-7">
           {activeTab === "summary" && project && (
             <SummaryTab
@@ -243,14 +251,7 @@ export default function ProjectDetailPage() {
             />
           )}
           {activeTab === "pacing" && <PacingTab code={code} />}
-        </div>
-      ) : (
-        <div data-theme="dark" className="flex-1">
-          <div className="mx-auto w-full max-w-[1340px] px-5 py-6 pb-20 sm:px-7">
-            {activeTab === "performance" && <PerformanceTab code={code} />}
-            {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
-            {activeTab === "settings" && <SettingsTab code={code} />}
-          </div>
+          {activeTab === "performance" && <PerformanceTab code={code} />}
         </div>
       )}
     </div>

@@ -19,7 +19,6 @@ import {
 import {
   api,
   type PerformanceResponse,
-  type ObjectiveType,
   type GA4PerformanceResponse,
   type BenchmarkResponse,
   type BenchmarkValue,
@@ -29,9 +28,19 @@ import {
   type CreativeVariantRow,
 } from "@/lib/api";
 import { Card, KpiCard, type BenchmarkIndicator } from "@/components/card";
+import { Label } from "@/components/ui";
 import { CampaignTable } from "@/components/campaign-table";
 import { AdSetDrillDown } from "@/components/adset-drilldown";
 import { AdDrillDown } from "@/components/ad-drilldown";
+import { PLATFORM_COLORS } from "@/components/platform-icon";
+import {
+  CHART_GRID,
+  CHART_TICK,
+  CHART_TOOLTIP_STYLE,
+  OBJECTIVE_BADGE,
+  SERIES,
+  TH_CLS,
+} from "@/lib/chart-theme";
 import {
   formatCurrency,
   formatCurrencyTick,
@@ -49,32 +58,6 @@ const RANGE_OPTIONS = [
   { label: "30d", days: 30 },
   { label: "All", days: 0 },
 ];
-
-const PLATFORM_COLORS: Record<string, string> = {
-  meta: "#3b82f6",
-  google_ads: "#22c55e",
-  stackadapt: "#a855f7",
-  linkedin: "#0ea5e9",
-  tiktok: "#f43f5e",
-  snapchat: "#eab308",
-  perion: "#f97316",
-  reddit: "#ff4500",
-  pinterest: "#e60023",
-};
-
-const OBJECTIVE_BADGE: Record<ObjectiveType, { label: string; cls: string }> = {
-  awareness: { label: "Awareness", cls: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-  conversion: { label: "Conversion", cls: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" },
-  mixed: { label: "Mixed", cls: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
-};
-
-const TOOLTIP_STYLE = {
-  background: "#1e293b",
-  border: "1px solid #334155",
-  borderRadius: "0.5rem",
-  fontSize: "0.75rem",
-  color: "#e2e8f0",
-};
 
 function has(data: PerformanceResponse, metric: string): boolean {
   return data.available_metrics.includes(metric);
@@ -144,13 +127,6 @@ const fmtPct = (v: number | null): string | null => v != null ? `${(v * 100).toF
 const fmtCad = (v: number | null): string | null => v != null ? `$${v.toFixed(2)}` : null;
 const safeFix = (v: number | null, d = 0): string | null => v != null ? v.toFixed(d) : null;
 
-function freqHealthDot(f: number | null | undefined): string | null {
-  if (f == null || f <= 0) return null;
-  if (f <= 3) return "bg-emerald-500";
-  if (f <= 5) return "bg-amber-400";
-  return "bg-red-500";
-}
-
 export function PerformanceTab({ code }: { code: string }) {
   const [data, setData] = useState<PerformanceResponse | null>(null);
   const [ga4Data, setGa4Data] = useState<GA4PerformanceResponse | null>(null);
@@ -218,8 +194,8 @@ export function PerformanceTab({ code }: { code: string }) {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {Array.from({ length: 5 }).map((_, i) => (
           <Card key={i} className="animate-pulse">
-            <div className="h-3 w-20 rounded bg-slate-700" />
-            <div className="mt-3 h-7 w-28 rounded bg-slate-700" />
+            <div className="h-3 w-20 rounded bg-surface-sunken" />
+            <div className="mt-3 h-7 w-28 rounded bg-surface-sunken" />
           </Card>
         ))}
       </div>
@@ -229,7 +205,7 @@ export function PerformanceTab({ code }: { code: string }) {
   if (!data) {
     return (
       <Card>
-        <p className="text-slate-400">No performance data available.</p>
+        <p className="text-fg-secondary">No performance data available.</p>
       </Card>
     );
   }
@@ -287,30 +263,30 @@ export function PerformanceTab({ code }: { code: string }) {
   return (
     <div className="space-y-6">
       {/* Header: date range + objective badge */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
+          <Label className="text-fg-secondary">
             {data.start_date} — {data.end_date}
-          </h3>
+          </Label>
           <span
             className={cn(
-              "rounded-full border px-2.5 py-0.5 text-xs font-medium",
+              "rounded-pill border px-2.5 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.06em]",
               badge.cls
             )}
           >
             {badge.label}
           </span>
         </div>
-        <div className="flex gap-1 rounded-md border border-slate-800 bg-surface-raised p-0.5">
+        <div className="inline-flex rounded-sm border-2 border-line-soft bg-surface-sunken p-0.5">
           {RANGE_OPTIONS.map((opt) => (
             <button
               key={opt.days}
               onClick={() => setDays(opt.days)}
               className={cn(
-                "rounded px-3 py-1 text-xs font-medium transition-colors",
+                "rounded-xs px-3 py-1 font-mono text-[11.5px] font-bold uppercase tracking-[0.06em] transition-all duration-fast",
                 days === opt.days
-                  ? "bg-brand-600/20 text-brand-400"
-                  : "text-slate-500 hover:text-slate-300"
+                  ? "bg-accent text-on-accent"
+                  : "text-fg-muted hover:text-fg"
               )}
             >
               {opt.label}
@@ -320,8 +296,8 @@ export function PerformanceTab({ code }: { code: string }) {
       </div>
 
       {data.high_frequency_warning && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          <span className="font-medium">High frequency — </span>
+        <div className="rounded-md border-2 border-tint-warn bg-tint-warn px-4 py-3 text-sm text-fg">
+          <span className="font-bold text-warn">High frequency — </span>
           {data.high_frequency_warning}
         </div>
       )}
@@ -331,8 +307,8 @@ export function PerformanceTab({ code }: { code: string }) {
           gate client-side on showConversion to defensively hide it on
           awareness-only projects. */}
       {showConversion && data.zero_conversion_warning && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          <span className="font-medium">Conversion tracking — </span>
+        <div className="rounded-md border-2 border-tint-warn bg-tint-warn px-4 py-3 text-sm text-fg">
+          <span className="font-bold text-warn">Conversion tracking — </span>
           {data.zero_conversion_warning}
         </div>
       )}
@@ -342,9 +318,7 @@ export function PerformanceTab({ code }: { code: string }) {
       {showAwareness && (
         <div>
           {objective === "mixed" && (
-            <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-purple-400">
-              Awareness Metrics
-            </h4>
+            <Label className="mb-3 text-info">Awareness Metrics</Label>
           )}
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
             <KpiCard label="Spend" value={formatCurrency(data.total_spend)} />
@@ -422,9 +396,7 @@ export function PerformanceTab({ code }: { code: string }) {
       {showConversion && (
         <div>
           {objective === "mixed" && (
-            <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-emerald-400">
-              Conversion Metrics
-            </h4>
+            <Label className="mb-3 text-ok">Conversion Metrics</Label>
           )}
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
             {objective !== "mixed" && (
@@ -442,7 +414,7 @@ export function PerformanceTab({ code }: { code: string }) {
                   label="Conversions"
                   value={formatNumber(conv)}
                   sub={metricNote(data, "conversions")}
-                  accent={isZeroAlarm ? "text-red-400" : undefined}
+                  accent={isZeroAlarm ? "text-danger" : undefined}
                 />
               );
             })()}
@@ -519,7 +491,7 @@ export function PerformanceTab({ code }: { code: string }) {
                   label="Conv. Rate"
                   value={formatPercent(cvr * 100)}
                   benchmark={toBenchmark(bm.conversion_rate, cvr, { format: (v) => fmtPct(v) ?? "—" })}
-                  accent={isZeroAlarm ? "text-red-400" : undefined}
+                  accent={isZeroAlarm ? "text-danger" : undefined}
                 />
               );
             })()}
@@ -529,21 +501,21 @@ export function PerformanceTab({ code }: { code: string }) {
 
       {/* ── Daily Spend Chart (always shown) ──────────────────────── */}
       <Card>
-        <h4 className="mb-4 text-sm font-medium text-slate-400">Daily Spend</h4>
+        <Label className="mb-4 text-fg-secondary">Daily Spend</Label>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData}>
               <defs>
                 <linearGradient id="spendGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  <stop offset="5%" stopColor={SERIES.spendFill} stopOpacity={0.35} />
+                  <stop offset="95%" stopColor={SERIES.spendFill} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-              <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-              <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={formatCurrencyTick} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
-              <Area type="monotone" dataKey="spend" stroke="#3b82f6" strokeWidth={2} fill="url(#spendGrad)" />
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+              <XAxis dataKey="dateLabel" tick={CHART_TICK} tickLine={false} stroke={CHART_GRID} />
+              <YAxis tick={CHART_TICK} tickLine={false} axisLine={false} tickFormatter={formatCurrencyTick} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
+              <Area type="monotone" dataKey="spend" stroke={SERIES.spend} strokeWidth={2} fill="url(#spendGrad)" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -552,41 +524,39 @@ export function PerformanceTab({ code }: { code: string }) {
       {/* ── Awareness Charts ──────────────────────────────────────── */}
       {showAwareness && (has(data, "reach") || hasAdsetReachSeries) && (
         <Card>
-          <h4 className="mb-4 text-sm font-medium text-slate-400">
+          <Label className="mb-4 text-fg-secondary">
             Reach &amp; Frequency
             {metricNote(data, "reach") && (
-              <span className="ml-2 text-xs font-normal text-slate-600">
+              <span className="ml-2 font-mono text-[10px] normal-case tracking-normal text-fg-faint">
                 {metricNote(data, "reach")}
               </span>
             )}
-          </h4>
+          </Label>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                <XAxis dataKey="dateLabel" tick={CHART_TICK} tickLine={false} stroke={CHART_GRID} />
                 <YAxis
                   yAxisId="left"
-                  stroke="#475569"
-                  fontSize={11}
+                  tick={CHART_TICK}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={(v) => formatNumber(v)}
-                  label={{ value: "Reach", angle: -90, position: "insideLeft", style: { fill: "#a855f7", fontSize: 11, textAnchor: "middle" } }}
+                  label={{ value: "Reach", angle: -90, position: "insideLeft", style: { fill: SERIES.reach, fontSize: 11, textAnchor: "middle" } }}
                 />
                 <YAxis
                   yAxisId="right"
                   orientation="right"
-                  stroke="#475569"
-                  fontSize={11}
+                  tick={CHART_TICK}
                   tickLine={false}
                   axisLine={false}
                   domain={[0, "auto"]}
-                  label={{ value: "Frequency", angle: -90, position: "insideRight", style: { fill: "#f59e0b", fontSize: 11, textAnchor: "middle" } }}
+                  label={{ value: "Frequency", angle: -90, position: "insideRight", style: { fill: SERIES.frequency, fontSize: 11, textAnchor: "middle" } }}
                 />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Bar yAxisId="left" dataKey="reach" fill="#a855f7" opacity={0.4} radius={[2, 2, 0, 0]} name="Reach" />
-                <Line yAxisId="right" type="monotone" dataKey="frequency" stroke="#f59e0b" strokeWidth={2} dot={false} name="Frequency" />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                <Bar yAxisId="left" dataKey="reach" fill={SERIES.reach} opacity={0.4} radius={[2, 2, 0, 0]} name="Reach" />
+                <Line yAxisId="right" type="monotone" dataKey="frequency" stroke={SERIES.frequency} strokeWidth={2} dot={false} name="Frequency" />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -595,20 +565,20 @@ export function PerformanceTab({ code }: { code: string }) {
 
       {showAwareness && has(data, "vcr") && (
         <Card>
-          <h4 className="mb-4 text-sm font-medium text-slate-400">
+          <Label className="mb-4 text-fg-secondary">
             Video Completion Rate
             {metricNote(data, "video_views") && (
-              <span className="ml-2 text-xs font-normal text-slate-600">{metricNote(data, "video_views")}</span>
+              <span className="ml-2 font-mono text-[10px] normal-case tracking-normal text-fg-faint">{metricNote(data, "video_views")}</span>
             )}
-          </h4>
+          </Label>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, (dataMax: number) => Math.max(Math.ceil(dataMax * 1.2), 5)]} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${(v ?? 0).toFixed(1)}%`, "VCR"]} />
-                <Line type="monotone" dataKey="vcrPct" stroke="#a855f7" strokeWidth={2} dot={false} name="VCR" />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                <XAxis dataKey="dateLabel" tick={CHART_TICK} tickLine={false} stroke={CHART_GRID} />
+                <YAxis tick={CHART_TICK} tickLine={false} axisLine={false} tickFormatter={(v) => `${safeFix(v) ?? "0"}%`} domain={[0, (dataMax: number) => Math.max(Math.ceil(dataMax * 1.2), 5)]} />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: number) => [`${(v ?? 0).toFixed(1)}%`, "VCR"]} />
+                <Line type="monotone" dataKey="vcrPct" stroke={SERIES.vcr} strokeWidth={2} dot={false} name="VCR" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -627,22 +597,22 @@ export function PerformanceTab({ code }: { code: string }) {
         );
         return (
           <Card>
-            <h4 className="mb-4 text-sm font-medium text-slate-400">
+            <Label className="mb-4 text-fg-secondary">
               CPA Trend
               {hasConversionSeries && (
-                <span className="ml-2 text-xs font-normal text-slate-600">
+                <span className="ml-2 font-mono text-[10px] normal-case tracking-normal text-fg-faint">
                   Conversion CPA vs effective (all-spend) CPA.
                 </span>
               )}
-            </h4>
+            </Label>
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                  <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
-                  <YAxis stroke="#475569" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v) ?? "0"}`} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                  <XAxis dataKey="dateLabel" tick={CHART_TICK} tickLine={false} stroke={CHART_GRID} />
+                  <YAxis tick={CHART_TICK} tickLine={false} axisLine={false} tickFormatter={(v) => `$${safeFix(v) ?? "0"}`} />
                   <Tooltip
-                    contentStyle={TOOLTIP_STYLE}
+                    contentStyle={CHART_TOOLTIP_STYLE}
                     formatter={(v: number, name: string) => [formatCurrency(v), name]}
                   />
                   {hasConversionSeries ? (
@@ -650,7 +620,7 @@ export function PerformanceTab({ code }: { code: string }) {
                       <Line
                         type="monotone"
                         dataKey="cpa_conversion"
-                        stroke="#22c55e"
+                        stroke={SERIES.cpa}
                         strokeWidth={2}
                         dot={false}
                         name="Conversion CPA"
@@ -658,7 +628,7 @@ export function PerformanceTab({ code }: { code: string }) {
                       <Line
                         type="monotone"
                         dataKey="cpa"
-                        stroke="#64748b"
+                        stroke={SERIES.cpaEffective}
                         strokeWidth={1.5}
                         strokeDasharray="4 3"
                         dot={false}
@@ -666,19 +636,19 @@ export function PerformanceTab({ code }: { code: string }) {
                       />
                     </>
                   ) : (
-                    <Line type="monotone" dataKey="cpa" stroke="#22c55e" strokeWidth={2} dot={false} name="CPA" />
+                    <Line type="monotone" dataKey="cpa" stroke={SERIES.cpa} strokeWidth={2} dot={false} name="CPA" />
                   )}
                 </LineChart>
               </ResponsiveContainer>
             </div>
             {hasConversionSeries && (
-              <div className="mt-2 flex items-center gap-4 text-[11px] text-slate-500">
+              <div className="mt-2 flex items-center gap-4 font-mono text-[10.5px] text-fg-muted">
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block h-0.5 w-4 rounded bg-emerald-500" />
+                  <span className="inline-block h-0.5 w-4 rounded bg-ok" />
                   Conversion CPA
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block h-0 w-4 border-t border-dashed border-slate-500" />
+                  <span className="inline-block h-0 w-4 border-t border-dashed border-line-strong" />
                   Effective CPA (all spend)
                 </span>
               </div>
@@ -689,34 +659,32 @@ export function PerformanceTab({ code }: { code: string }) {
 
       {showConversion && has(data, "conversions") && (
         <Card>
-          <h4 className="mb-4 text-sm font-medium text-slate-400">Conversion Volume &amp; Rate</h4>
+          <Label className="mb-4 text-fg-secondary">Conversion Volume &amp; Rate</Label>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                <XAxis dataKey="dateLabel" tick={CHART_TICK} tickLine={false} stroke={CHART_GRID} />
                 <YAxis
                   yAxisId="left"
-                  stroke="#475569"
-                  fontSize={11}
+                  tick={CHART_TICK}
                   tickLine={false}
                   axisLine={false}
-                  label={{ value: "Conversions", angle: -90, position: "insideLeft", style: { fill: "#22c55e", fontSize: 11, textAnchor: "middle" } }}
+                  label={{ value: "Conversions", angle: -90, position: "insideLeft", style: { fill: SERIES.conversions, fontSize: 11, textAnchor: "middle" } }}
                 />
                 <YAxis
                   yAxisId="right"
                   orientation="right"
-                  stroke="#475569"
-                  fontSize={11}
+                  tick={CHART_TICK}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={(v) => `${safeFix(v) ?? "0"}%`}
-                  label={{ value: "Conv. Rate", angle: -90, position: "insideRight", style: { fill: "#10b981", fontSize: 11, textAnchor: "middle" } }}
+                  label={{ value: "Conv. Rate", angle: -90, position: "insideRight", style: { fill: SERIES.conversionRate, fontSize: 11, textAnchor: "middle" } }}
                 />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Bar yAxisId="left" dataKey="conversions" fill="#22c55e" opacity={0.5} radius={[2, 2, 0, 0]} name="Conversions" />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                <Bar yAxisId="left" dataKey="conversions" fill={SERIES.conversions} opacity={0.5} radius={[2, 2, 0, 0]} name="Conversions" />
                 {has(data, "conversion_rate") && (
-                  <Line yAxisId="right" type="monotone" dataKey="convRatePct" stroke="#10b981" strokeWidth={2} dot={false} name="Conv. Rate %" />
+                  <Line yAxisId="right" type="monotone" dataKey="convRatePct" stroke={SERIES.conversionRate} strokeWidth={2} dot={false} name="Conv. Rate %" />
                 )}
               </ComposedChart>
             </ResponsiveContainer>
@@ -727,7 +695,7 @@ export function PerformanceTab({ code }: { code: string }) {
       {/* ── Platform Breakdown (always shown) ─────────────────────── */}
       {data.by_platform && data.by_platform.length > 0 && (
         <Card>
-          <h4 className="mb-4 text-sm font-medium text-slate-400">Platform Breakdown</h4>
+          <Label className="mb-4 text-fg-secondary">Platform Breakdown</Label>
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
@@ -737,13 +705,13 @@ export function PerformanceTab({ code }: { code: string }) {
                 }))}
                 layout="vertical"
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                <XAxis type="number" stroke="#475569" fontSize={11} tickFormatter={formatCurrencyTick} />
-                <YAxis type="category" dataKey="name" stroke="#475569" fontSize={11} width={80} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} horizontal={false} />
+                <XAxis type="number" tick={CHART_TICK} stroke={CHART_GRID} tickFormatter={formatCurrencyTick} />
+                <YAxis type="category" dataKey="name" tick={CHART_TICK} width={80} stroke={CHART_GRID} />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: number) => [formatCurrency(v), "Spend"]} />
                 <Bar dataKey="spend" radius={[0, 4, 4, 0]}>
                   {(data.by_platform ?? []).map((entry) => (
-                    <Cell key={entry.platform_id} fill={PLATFORM_COLORS[entry.platform_id] ?? "#64748b"} />
+                    <Cell key={entry.platform_id} fill={PLATFORM_COLORS[entry.platform_id] ?? "var(--text-faint)"} />
                   ))}
                 </Bar>
               </BarChart>
@@ -800,10 +768,10 @@ export function PerformanceTab({ code }: { code: string }) {
       {/* ── GA4 Web Analytics Section ─────────────────────────────── */}
       {ga4Data?.has_ga4 && ga4Data.daily.length > 0 && (
         <>
-          <div className="border-t border-slate-800 pt-6">
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500 mb-4">
+          <div className="border-t-2 border-line-soft pt-6">
+            <Label className="mb-4 text-fg-secondary">
               Web Analytics (GA4)
-            </h3>
+            </Label>
           </div>
 
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -818,32 +786,30 @@ export function PerformanceTab({ code }: { code: string }) {
           </div>
 
           <Card>
-            <h4 className="mb-4 text-sm font-medium text-slate-400">Sessions &amp; GA4 Conversions</h4>
+            <Label className="mb-4 text-fg-secondary">Sessions &amp; GA4 Conversions</Label>
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={ga4Data.daily.map((d) => ({ ...d, dateLabel: d.date.slice(5) }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                  <XAxis dataKey="dateLabel" stroke="#475569" fontSize={11} tickLine={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                  <XAxis dataKey="dateLabel" tick={CHART_TICK} tickLine={false} stroke={CHART_GRID} />
                   <YAxis
                     yAxisId="left"
-                    stroke="#475569"
-                    fontSize={11}
+                    tick={CHART_TICK}
                     tickLine={false}
                     axisLine={false}
-                    label={{ value: "Sessions", angle: -90, position: "insideLeft", style: { fill: "#6366f1", fontSize: 11, textAnchor: "middle" } }}
+                    label={{ value: "Sessions", angle: -90, position: "insideLeft", style: { fill: SERIES.sessions, fontSize: 11, textAnchor: "middle" } }}
                   />
                   <YAxis
                     yAxisId="right"
                     orientation="right"
-                    stroke="#475569"
-                    fontSize={11}
+                    tick={CHART_TICK}
                     tickLine={false}
                     axisLine={false}
-                    label={{ value: "Conversions", angle: -90, position: "insideRight", style: { fill: "#22c55e", fontSize: 11, textAnchor: "middle" } }}
+                    label={{ value: "Conversions", angle: -90, position: "insideRight", style: { fill: SERIES.conversions, fontSize: 11, textAnchor: "middle" } }}
                   />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Bar yAxisId="left" dataKey="sessions" fill="#6366f1" opacity={0.4} radius={[2, 2, 0, 0]} name="Sessions" />
-                  <Line yAxisId="right" type="monotone" dataKey="conversions" stroke="#22c55e" strokeWidth={2} dot={false} name="GA4 Conversions" />
+                  <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                  <Bar yAxisId="left" dataKey="sessions" fill={SERIES.sessions} opacity={0.4} radius={[2, 2, 0, 0]} name="Sessions" />
+                  <Line yAxisId="right" type="monotone" dataKey="conversions" stroke={SERIES.conversions} strokeWidth={2} dot={false} name="GA4 Conversions" />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -918,20 +884,20 @@ function CreativeVariantsTable({
     <Card className="overflow-hidden !p-0">
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="flex w-full items-center justify-between px-5 py-4 border-b border-slate-800 hover:bg-slate-800/30 transition-colors"
+        className="flex w-full items-center justify-between border-b border-line-soft px-5 py-4 transition-colors hover:bg-surface-sunken"
       >
-        <h4 className="text-sm font-medium text-slate-400">
+        <Label className="text-fg-secondary">
           Creative variants
-          <span className="ml-2 text-slate-600">
+          <span className="ml-2 text-fg-faint">
             ({data.creatives.length})
           </span>
-        </h4>
+        </Label>
         <svg
           xmlns="http://www.w3.org/2000/svg"
           viewBox="0 0 16 16"
           fill="currentColor"
           className={cn(
-            "h-4 w-4 text-slate-600 transition-transform",
+            "h-4 w-4 text-fg-faint transition-transform",
             collapsed && "-rotate-90"
           )}
         >
@@ -946,17 +912,17 @@ function CreativeVariantsTable({
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-t border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                <th className="px-5 py-3 font-medium">Creative Variant</th>
-                <th className="px-5 py-3 font-medium">Platforms</th>
-                <th className="px-5 py-3 font-medium text-right">Ad Sets</th>
-                <th className="px-5 py-3 font-medium text-right">Ads</th>
-                <th className="px-5 py-3 font-medium text-right">Spend</th>
-                <th className="px-5 py-3 font-medium text-right">CTR</th>
-                <th className="px-5 py-3 font-medium text-right">Conv.</th>
-                <th className="px-5 py-3 font-medium text-right">CPA</th>
-                <th className="px-5 py-3 font-medium text-right">Eng. rate</th>
-                <th className="px-5 py-3 font-medium text-right">VCR</th>
+              <tr>
+                <th className={TH_CLS}>Creative Variant</th>
+                <th className={TH_CLS}>Platforms</th>
+                <th className={cn(TH_CLS, "text-right")}>Ad Sets</th>
+                <th className={cn(TH_CLS, "text-right")}>Ads</th>
+                <th className={cn(TH_CLS, "text-right")}>Spend</th>
+                <th className={cn(TH_CLS, "text-right")}>CTR</th>
+                <th className={cn(TH_CLS, "text-right")}>Conv.</th>
+                <th className={cn(TH_CLS, "text-right")}>CPA</th>
+                <th className={cn(TH_CLS, "text-right")}>Eng. rate</th>
+                <th className={cn(TH_CLS, "text-right")}>VCR</th>
               </tr>
             </thead>
             <tbody>
@@ -1018,7 +984,7 @@ function VariantRowGroup({
   return (
     <>
       <tr
-        className="border-t border-slate-800/50 hover:bg-slate-800/30 cursor-pointer"
+        className="cursor-pointer border-t border-line-soft hover:bg-surface-sunken"
         onClick={onToggle}
       >
         <td className="px-5 py-3">
@@ -1028,7 +994,7 @@ function VariantRowGroup({
               viewBox="0 0 16 16"
               fill="currentColor"
               className={cn(
-                "h-3 w-3 text-slate-600 transition-transform flex-shrink-0",
+                "h-3 w-3 flex-shrink-0 text-fg-faint transition-transform",
                 isExpanded && "rotate-90"
               )}
             >
@@ -1045,11 +1011,11 @@ function VariantRowGroup({
                   if (e.key === "Escape") onRenameCancel();
                 }}
                 onClick={(e) => e.stopPropagation()}
-                className="rounded border border-slate-600 bg-slate-800 px-2 py-0.5 text-sm text-blue-300 outline-none focus:border-blue-500 w-64"
+                className="w-64 rounded-sm border-2 border-line bg-surface-sunken px-2 py-0.5 text-sm text-accent-ink outline-none focus:border-accent"
               />
             ) : (
               <>
-                <span className="text-slate-200 truncate max-w-[250px]">
+                <span className="max-w-[250px] truncate font-medium text-fg">
                   {row.creative_variant}
                 </span>
                 <button
@@ -1057,7 +1023,7 @@ function VariantRowGroup({
                     e.stopPropagation();
                     onStartRename();
                   }}
-                  className="text-slate-600 hover:text-slate-400 transition-colors flex-shrink-0"
+                  className="flex-shrink-0 text-fg-faint transition-colors hover:text-fg-muted"
                   title="Rename variant"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3">
@@ -1073,10 +1039,10 @@ function VariantRowGroup({
             {row.platforms.map((p) => (
               <span
                 key={p}
-                className="inline-block rounded-full px-2 py-0.5 text-[10px] font-medium"
+                className="inline-block rounded-pill px-2 py-0.5 font-mono text-[10px] font-medium"
                 style={{
-                  backgroundColor: `${PLATFORM_COLORS[p] || "#64748b"}20`,
-                  color: PLATFORM_COLORS[p] || "#94a3b8",
+                  backgroundColor: `${PLATFORM_COLORS[p] || "#9a9a9a"}20`,
+                  color: PLATFORM_COLORS[p] || "var(--text-muted)",
                 }}
               >
                 {platformLabel(p)}
@@ -1084,28 +1050,28 @@ function VariantRowGroup({
             ))}
           </div>
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {row.ad_set_names.length}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {row.ad_count}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-300">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg">
           {formatCurrency(row.spend)}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {row.ctr != null ? formatPercent(row.ctr * 100) : "—"}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {row.conversions > 0 ? formatNumber(Math.round(row.conversions)) : "—"}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {row.conversions > 0 ? formatCurrency(row.spend / row.conversions) : "—"}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {renderEngagementRateMulti(row.engagement_rate, row.platforms, engagementSupport)}
         </td>
-        <td className="px-5 py-3 text-right tabular-nums text-slate-400">
+        <td className="tnum px-5 py-3 text-right font-mono text-fg-secondary">
           {row.vcr != null ? formatPercent(row.vcr * 100) : "—"}
         </td>
       </tr>
@@ -1116,17 +1082,17 @@ function VariantRowGroup({
           {row.ad_names.map((adName, i) => (
             <tr
               key={`${row.creative_variant}-detail-${i}`}
-              className="bg-slate-900/50 border-t border-slate-800/30"
+              className="border-t border-line-soft bg-surface-sunken"
             >
-              <td className="pl-12 pr-5 py-2 text-xs text-slate-500 truncate max-w-[300px]" colSpan={2}>
+              <td className="max-w-[300px] truncate py-2 pl-12 pr-5 text-xs text-fg-muted" colSpan={2}>
                 {adName}
               </td>
               <td colSpan={8} />
             </tr>
           ))}
           {row.ad_set_names.length > 0 && (
-            <tr className="bg-slate-900/50 border-t border-slate-800/30">
-              <td className="pl-12 pr-5 py-2 text-xs text-slate-600" colSpan={10}>
+            <tr className="border-t border-line-soft bg-surface-sunken">
+              <td className="py-2 pl-12 pr-5 text-xs text-fg-faint" colSpan={10}>
                 Ad sets: {row.ad_set_names.join(", ")}
               </td>
             </tr>
