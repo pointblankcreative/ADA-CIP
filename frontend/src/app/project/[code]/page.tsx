@@ -230,14 +230,12 @@ export default function ProjectDetailPage() {
         </div>
       </header>
 
-      {/* Tab content. Summary + Pacing + Performance are tokens (light);
-          the remaining legacy tabs stay pinned dark until their re-skin
-          phases land. */}
-      {activeTab === "diagnostics" || activeTab === "settings" ? (
+      {/* Tab content. Everything except Settings is on tokens (light);
+          Settings stays pinned dark until its re-skin phase (8) lands. */}
+      {activeTab === "settings" ? (
         <div data-theme="dark" className="flex-1">
           <div className="mx-auto w-full max-w-[1340px] px-5 py-6 pb-20 sm:px-7">
-            {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
-            {activeTab === "settings" && <SettingsTab code={code} />}
+            <SettingsTab code={code} />
           </div>
         </div>
       ) : (
@@ -252,6 +250,7 @@ export default function ProjectDetailPage() {
           )}
           {activeTab === "pacing" && <PacingTab code={code} />}
           {activeTab === "performance" && <PerformanceTab code={code} />}
+          {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
         </div>
       )}
     </div>
