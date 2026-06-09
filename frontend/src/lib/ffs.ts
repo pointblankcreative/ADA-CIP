@@ -86,38 +86,39 @@ export function computeFFS(inputs: FFSInputs): number {
   return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
 }
 
-/** Bucket a score into a severity label + colour class. */
+/** Bucket a score into a severity label + colour class (design-system tokens). */
 export function ffsBucket(score: number): {
   label: string;
   color: string;
   bg: string;
+  /** Tinted border class — pairs with a `border` width utility. */
   ring: string;
   fill: string;
 } {
   if (score < 20) {
     return {
       label: "Low friction",
-      color: "text-emerald-400",
-      bg: "bg-emerald-500/10",
-      ring: "ring-emerald-500/30",
-      fill: "bg-emerald-400",
+      color: "text-ok",
+      bg: "bg-tint-ok",
+      ring: "border-tint-ok",
+      fill: "bg-ok",
     };
   }
   if (score < 50) {
     return {
       label: "Moderate friction",
-      color: "text-amber-400",
-      bg: "bg-amber-500/10",
-      ring: "ring-amber-500/30",
-      fill: "bg-amber-400",
+      color: "text-warn",
+      bg: "bg-tint-warn",
+      ring: "border-tint-warn",
+      fill: "bg-warn",
     };
   }
   return {
     label: "High friction",
-    color: "text-red-400",
-    bg: "bg-red-500/10",
-    ring: "ring-red-500/30",
-    fill: "bg-red-400",
+    color: "text-danger",
+    bg: "bg-tint-danger",
+    ring: "border-tint-danger",
+    fill: "bg-danger",
   };
 }
 

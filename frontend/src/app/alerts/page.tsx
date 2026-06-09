@@ -7,13 +7,28 @@ import {
   CheckCircle2,
   Clock,
   Info,
-  Filter,
+  OctagonAlert,
   RefreshCw,
 } from "lucide-react";
 import { api, type Alert } from "@/lib/api";
 import { Card } from "@/components/card";
-import { cn, severityColor } from "@/lib/utils";
+import { Btn, CodeChip, Eyebrow } from "@/components/ui";
+import { cn, severityVar } from "@/lib/utils";
 import { formatAlertSource } from "@/lib/alert-labels";
+
+const FILTERS: Array<[string, string]> = [
+  ["", "All"],
+  ["critical", "Critical"],
+  ["warning", "Warning"],
+  ["info", "Info"],
+];
+
+function filterColor(sev: string): string {
+  if (sev === "critical") return "var(--danger)";
+  if (sev === "warning") return "var(--warn)";
+  if (sev === "info") return "var(--info)";
+  return "var(--accent-ink)";
+}
 
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -37,66 +52,80 @@ export default function AlertsPage() {
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [severity]);
 
   const criticalCount = alerts.filter((a) => a.severity === "critical").length;
   const warningCount = alerts.filter((a) => a.severity === "warning").length;
 
   return (
-    <div className="p-6 lg:p-8">
-      <div className="flex items-center justify-between">
+    <div className="mx-auto max-w-[980px] px-5 pb-20 pt-7 sm:px-7">
+      <div className="flex flex-wrap items-end justify-between gap-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">
+          <Eyebrow>Pacing · health · data integrity</Eyebrow>
+          <h1 className="display mt-2.5 text-[38px] text-fg sm:text-[44px]">
             Alerts
           </h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-3 text-sm text-fg-muted">
             {criticalCount > 0
-              ? `${criticalCount} critical, ${warningCount} warning`
-              : "All clear"}
+              ? `${criticalCount} critical, ${warningCount} warning — newest first.`
+              : "All clear. Signals land here the moment something drifts."}
           </p>
         </div>
-        <button
+        <Btn
+          variant="outline"
+          size="sm"
           onClick={load}
           disabled={loading}
-          className="flex items-center gap-2 rounded-md border border-slate-700 bg-surface-raised px-3.5 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-700 disabled:opacity-50"
+          icon={<RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />}
         >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           Refresh
-        </button>
+        </Btn>
       </div>
 
       {/* Filters */}
-      <div className="mt-5 flex items-center gap-2">
-        <Filter className="h-4 w-4 text-slate-500" />
-        {["", "critical", "warning", "info"].map((sev) => (
-          <button
-            key={sev}
-            onClick={() => setSeverity(sev)}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-              severity === sev
-                ? "bg-brand-600/20 text-brand-400"
-                : "text-slate-500 hover:bg-slate-800 hover:text-slate-300"
-            )}
-          >
-            {sev || "All"}
-          </button>
-        ))}
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        {FILTERS.map(([sev, label]) => {
+          const active = severity === sev;
+          const c = filterColor(sev);
+          return (
+            <button
+              key={sev}
+              onClick={() => setSeverity(sev)}
+              className="rounded-pill px-3.5 py-[7px] font-mono text-[11.5px] font-semibold uppercase tracking-[0.06em] transition-all duration-fast"
+              style={
+                active
+                  ? {
+                      color: c,
+                      border: `2px solid ${c}`,
+                      backgroundColor: `color-mix(in srgb, ${c} 14%, transparent)`,
+                    }
+                  : {
+                      color: "var(--text-secondary)",
+                      border: "2px solid var(--border)",
+                      backgroundColor: "transparent",
+                    }
+              }
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Alert list */}
-      <div className="mt-5 space-y-2">
+      <div className="mt-5 space-y-2.5">
         {loading ? (
           Array.from({ length: 5 }).map((_, i) => (
             <Card key={i} className="animate-pulse">
-              <div className="h-4 w-48 rounded bg-slate-700" />
-              <div className="mt-2 h-3 w-72 rounded bg-slate-700" />
+              <div className="h-4 w-48 rounded bg-surface-sunken" />
+              <div className="mt-2 h-3 w-72 rounded bg-surface-sunken" />
             </Card>
           ))
         ) : alerts.length === 0 ? (
           <Card className="flex flex-col items-center py-12">
-            <CheckCircle2 className="h-10 w-10 text-emerald-500/50" />
-            <p className="mt-3 text-slate-400">No alerts</p>
+            <CheckCircle2 className="h-10 w-10 text-ok opacity-60" />
+            <p className="mt-3 text-fg-muted">No alerts</p>
           </Card>
         ) : (
           alerts.map((alert) => (
@@ -109,68 +138,60 @@ export default function AlertsPage() {
 }
 
 function AlertRow({ alert }: { alert: Alert }) {
+  const c = severityVar(alert.severity);
   const SeverityIcon =
     alert.severity === "critical"
-      ? AlertTriangle
+      ? OctagonAlert
       : alert.severity === "warning"
-      ? AlertTriangle
-      : Info;
+        ? AlertTriangle
+        : Info;
 
   const timeAgo = formatTimeAgo(alert.created_at);
 
   return (
-    <Card className="!p-4">
-      <div className="flex items-start gap-3">
-        <div
-          className={cn(
-            "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border",
-            severityColor(alert.severity)
-          )}
-        >
-          <SeverityIcon className="h-4 w-4" />
+    <div
+      className="flex items-start gap-3.5 rounded-md border-2 border-line-soft bg-surface-card px-4 py-[15px]"
+      style={{ borderLeft: `3px solid ${c}` }}
+    >
+      <SeverityIcon
+        className="mt-0.5 h-[17px] w-[17px] flex-shrink-0"
+        style={{ color: c }}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: c }}
+          >
+            {alert.title}
+          </span>
+          <span className="h-[3px] w-[3px] rounded-full bg-line" />
+          <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-fg-faint">
+            {formatAlertSource(alert.alert_type)}
+          </span>
+          <span className="h-[3px] w-[3px] rounded-full bg-line" />
+          <Link
+            href={`/project/${alert.project_code}`}
+            className="transition-opacity hover:opacity-70"
+          >
+            <CodeChip>{alert.project_code}</CodeChip>
+          </Link>
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-white">
-              {alert.title}
-            </span>
-            <span
-              className={cn(
-                "inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                severityColor(alert.severity)
-              )}
-            >
-              {alert.severity}
-            </span>
-            <Link
-              href={`/project/${alert.project_code}`}
-              className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400 hover:text-brand-400 transition-colors"
-            >
-              {alert.project_code}
-            </Link>
-          </div>
-          <p className="mt-0.5 text-xs text-slate-400">{alert.message}</p>
-          <div className="mt-2 flex items-center gap-3 text-[10px] text-slate-500">
-            <span className="flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {timeAgo}
-            </span>
-            <span
-              className="rounded bg-slate-800 px-1.5 py-0.5"
-              title={alert.alert_type}
-            >
-              {formatAlertSource(alert.alert_type)}
-            </span>
-            {alert.acknowledged_at && (
-              <span className="flex items-center gap-1 text-emerald-500">
-                <CheckCircle2 className="h-3 w-3" />
-                Acknowledged
-              </span>
-            )}
-          </div>
-        </div>
+        <p className="mt-[7px] text-[13.5px] leading-normal text-fg-secondary">
+          {alert.message}
+        </p>
+        {alert.acknowledged_at && (
+          <span className="mt-1.5 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ok">
+            <CheckCircle2 className="h-3 w-3" />
+            Acknowledged
+          </span>
+        )}
       </div>
-    </Card>
+      <span className="inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[10.5px] text-fg-faint">
+        <Clock className="h-3 w-3" />
+        {timeAgo}
+      </span>
+    </div>
   );
 }
 

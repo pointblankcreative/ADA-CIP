@@ -230,29 +230,21 @@ export default function ProjectDetailPage() {
         </div>
       </header>
 
-      {/* Tab content. Everything except Settings is on tokens (light);
-          Settings stays pinned dark until its re-skin phase (8) lands. */}
-      {activeTab === "settings" ? (
-        <div data-theme="dark" className="flex-1">
-          <div className="mx-auto w-full max-w-[1340px] px-5 py-6 pb-20 sm:px-7">
-            <SettingsTab code={code} />
-          </div>
-        </div>
-      ) : (
-        <div className="mx-auto w-full max-w-[1340px] flex-1 px-5 py-6 pb-20 sm:px-7">
-          {activeTab === "summary" && project && (
-            <SummaryTab
-              project={project}
-              code={code}
-              alerts={alerts}
-              onTab={(t) => setActiveTab(t as TabId)}
-            />
-          )}
-          {activeTab === "pacing" && <PacingTab code={code} />}
-          {activeTab === "performance" && <PerformanceTab code={code} />}
-          {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
-        </div>
-      )}
+      {/* Tab content — fully on tokens. */}
+      <div className="mx-auto w-full max-w-[1340px] flex-1 px-5 py-6 pb-20 sm:px-7">
+        {activeTab === "summary" && project && (
+          <SummaryTab
+            project={project}
+            code={code}
+            alerts={alerts}
+            onTab={(t) => setActiveTab(t as TabId)}
+          />
+        )}
+        {activeTab === "pacing" && <PacingTab code={code} />}
+        {activeTab === "performance" && <PerformanceTab code={code} />}
+        {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
+        {activeTab === "settings" && <SettingsTab code={code} />}
+      </div>
     </div>
   );
 }

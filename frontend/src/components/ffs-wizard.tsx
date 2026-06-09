@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { X, Loader2, Info, Plus, Trash2 } from "lucide-react";
+import { X, Loader2, Info, Plus } from "lucide-react";
 import type {
   FFSEntry,
   FFSInputs,
@@ -57,6 +57,9 @@ const PLATFORM_OPTIONS = [
   { id: "tiktok", label: "TikTok" },
   { id: "google", label: "Google Ads" },
 ];
+
+const INPUT_CLS =
+  "w-full rounded-sm border-2 border-line bg-surface-sunken px-3 py-2 text-sm text-fg placeholder:text-fg-faint outline-none focus:border-accent";
 
 export function FFSWizard({
   open,
@@ -152,39 +155,40 @@ export function FFSWizard({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "color-mix(in srgb, var(--dark-900) 62%, transparent)" }}
       onClick={onClose}
     >
       <div
-        className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-lg border border-slate-800 bg-surface-raised shadow-2xl flex flex-col"
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border-2 border-line bg-surface-card shadow-soft"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+        <div className="flex items-center justify-between border-b-2 border-line-soft px-6 py-4">
           <div>
-            <h2 className="text-base font-semibold text-white">
+            <h2 className="text-base font-bold text-fg">
               {mode === "edit" ? "Edit Form Friction entry" : "New Form Friction entry"}
             </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
+            <p className="mt-0.5 text-xs text-fg-muted">
               Score this form once; apply it to every line using it.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300 transition-colors"
+            className="rounded-sm p-1.5 text-fg-muted transition-colors hover:bg-surface-sunken hover:text-fg"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_260px] gap-6 p-6">
+          <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1fr_260px]">
             {/* ── Left: inputs ─────────────────────────────────────── */}
-            <div className="space-y-5 min-w-0">
+            <div className="min-w-0 space-y-5">
               {/* Arch A/B toggle */}
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                <label className="label mb-1.5 block text-[10px]">
                   Form type
                 </label>
                 <div className="grid grid-cols-2 gap-2">
@@ -192,26 +196,26 @@ export function FFSWizard({
                     type="button"
                     onClick={() => setIsPlatformForm(false)}
                     className={cn(
-                      "rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                      "rounded-sm border-2 px-3 py-2 text-left text-sm transition-colors duration-fast",
                       !isPlatformForm
-                        ? "border-brand-500 bg-brand-600/10 text-brand-300"
-                        : "border-slate-700 bg-slate-900/50 text-slate-400 hover:bg-slate-800"
+                        ? "border-accent bg-tint-accent text-fg"
+                        : "border-line-soft bg-surface-sunken text-fg-muted hover:border-line"
                     )}
                   >
-                    <div className="font-medium">Landing page form</div>
+                    <div className="font-bold">Landing page form</div>
                     <div className="mt-0.5 text-xs opacity-70">Hosted on your LP</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => setIsPlatformForm(true)}
                     className={cn(
-                      "rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                      "rounded-sm border-2 px-3 py-2 text-left text-sm transition-colors duration-fast",
                       isPlatformForm
-                        ? "border-brand-500 bg-brand-600/10 text-brand-300"
-                        : "border-slate-700 bg-slate-900/50 text-slate-400 hover:bg-slate-800"
+                        ? "border-accent bg-tint-accent text-fg"
+                        : "border-line-soft bg-surface-sunken text-fg-muted hover:border-line"
                     )}
                   >
-                    <div className="font-medium">In-platform lead form</div>
+                    <div className="font-bold">In-platform lead form</div>
                     <div className="mt-0.5 text-xs opacity-70">Meta, LinkedIn, TikTok</div>
                   </button>
                 </div>
@@ -220,38 +224,38 @@ export function FFSWizard({
               {/* Label + URL (or platform picker for Arch B) */}
               <div className="grid grid-cols-1 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">
-                    Label <span className="text-slate-600">(optional)</span>
+                  <label className="label mb-1 block text-[10px]">
+                    Label <span className="normal-case text-fg-faint">(optional)</span>
                   </label>
                   <input
                     placeholder="e.g. underfunded.ca signup form"
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                    className={INPUT_CLS}
                   />
                 </div>
 
                 {!isPlatformForm ? (
                   <div>
-                    <label className="block text-xs font-medium text-slate-400 mb-1">
+                    <label className="label mb-1 block text-[10px]">
                       Landing page URL
                     </label>
                     <input
                       placeholder="https://underfunded.ca/signup"
                       value={lpUrl}
                       onChange={(e) => setLpUrl(e.target.value)}
-                      className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-600"
+                      className={cn(INPUT_CLS, "font-mono text-[13px]")}
                     />
                   </div>
                 ) : (
                   <div>
-                    <label className="block text-xs font-medium text-slate-400 mb-1">
+                    <label className="label mb-1 block text-[10px]">
                       Platform
                     </label>
                     <select
                       value={platformId ?? ""}
                       onChange={(e) => setPlatformId(e.target.value || null)}
-                      className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-600"
+                      className={INPUT_CLS}
                     >
                       <option value="">Select platform…</option>
                       {PLATFORM_OPTIONS.map((p) => (
@@ -290,7 +294,7 @@ export function FFSWizard({
 
                 {/* Field type picker */}
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  <label className="label mb-1.5 block text-[10px]">
                     Field types present
                   </label>
                   <div className="grid grid-cols-2 gap-1.5">
@@ -299,10 +303,10 @@ export function FFSWizard({
                         key={ft}
                         type="button"
                         onClick={() => addFieldType(ft)}
-                        className="flex items-center justify-between rounded border border-slate-700 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-brand-500/50 hover:bg-brand-600/10 transition-colors"
+                        className="flex items-center justify-between rounded-sm border border-line-soft bg-surface-sunken px-2.5 py-1.5 text-xs text-fg-secondary transition-colors duration-fast hover:border-accent hover:bg-tint-accent"
                       >
                         <span className="truncate">{FIELD_TYPE_LABELS[ft]}</span>
-                        <Plus className="h-3 w-3 flex-shrink-0 text-slate-500" />
+                        <Plus className="h-3 w-3 flex-shrink-0 text-fg-faint" />
                       </button>
                     ))}
                   </div>
@@ -313,7 +317,7 @@ export function FFSWizard({
                           key={idx}
                           type="button"
                           onClick={() => removeFieldTypeAt(idx)}
-                          className="flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                          className="flex items-center gap-1 rounded-pill border border-line-soft bg-surface-sunken px-2 py-0.5 text-xs text-fg-secondary transition-colors hover:bg-tint-danger hover:text-danger"
                         >
                           {FIELD_TYPE_LABELS[ft] ?? ft}
                           <X className="h-2.5 w-2.5" />
@@ -321,7 +325,7 @@ export function FFSWizard({
                       ))}
                     </div>
                   )}
-                  <p className="mt-1 text-xs text-slate-600">
+                  <p className="mt-1 text-xs text-fg-faint">
                     Click a type to add it; click a chip to remove. Count per instance (e.g. two phone fields → click &quot;Phone&quot; twice).
                   </p>
                 </div>
@@ -351,13 +355,13 @@ export function FFSWizard({
               {/* Apply-to-lines picker */}
               {lines.length > 0 && (
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  <label className="label mb-1.5 block text-[10px]">
                     Apply to media plan lines
-                    <span className="ml-2 text-slate-600">
+                    <span className="ml-2 normal-case text-fg-faint">
                       ({appliedLineIds.length} selected)
                     </span>
                   </label>
-                  <div className="max-h-48 overflow-y-auto rounded-md border border-slate-700 bg-slate-900/50">
+                  <div className="max-h-48 overflow-y-auto rounded-sm border-2 border-line-soft bg-surface-sunken">
                     {lines.map((line) => {
                       const linkedTo = existingLineLinks[line.line_id];
                       const linkedToOther = linkedTo && entry?.entry_id !== linkedTo;
@@ -366,26 +370,26 @@ export function FFSWizard({
                         <label
                           key={line.line_id}
                           className={cn(
-                            "flex items-center gap-2.5 border-b border-slate-800 px-3 py-2 last:border-b-0 cursor-pointer hover:bg-slate-800/50",
-                            selected && "bg-brand-600/5"
+                            "flex cursor-pointer items-center gap-2.5 border-b border-line-soft px-3 py-2 last:border-b-0 hover:bg-surface-card",
+                            selected && "bg-tint-accent"
                           )}
                         >
                           <input
                             type="checkbox"
                             checked={selected}
                             onChange={() => toggleLine(line.line_id)}
-                            className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-brand-600 focus:ring-brand-600 focus:ring-offset-0"
+                            className="h-3.5 w-3.5 rounded-xs border-line accent-[var(--accent)]"
                           />
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs text-slate-200">
+                            <p className="truncate text-xs font-medium text-fg">
                               {line.audience_name || line.line_code || line.line_id}
                             </p>
-                            <p className="truncate text-[10px] text-slate-500">
+                            <p className="truncate font-mono text-[10px] text-fg-muted">
                               {platformLabel(line.platform_id)} · {line.channel_category}
                             </p>
                           </div>
                           {linkedToOther && (
-                            <span className="flex-shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">
+                            <span className="flex-shrink-0 rounded-xs bg-tint-warn px-1.5 py-0.5 font-mono text-[10px] text-warn">
                               already linked
                             </span>
                           )}
@@ -401,36 +405,35 @@ export function FFSWizard({
             <aside className="space-y-3">
               <div
                 className={cn(
-                  "rounded-lg border px-4 py-4 ring-1",
+                  "rounded-md border-2 px-4 py-4",
                   bucket.bg,
-                  bucket.ring,
-                  "border-transparent"
+                  bucket.ring
                 )}
               >
-                <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                <p className="label text-[10px]">
                   Form Friction Score
                 </p>
-                <p className={cn("mt-1 text-4xl font-bold tabular-nums", bucket.color)}>
+                <p className={cn("tnum mt-1 font-display text-4xl", bucket.color)}>
                   {previewScore.toFixed(0)}
                 </p>
-                <p className={cn("text-xs font-medium", bucket.color)}>
+                <p className={cn("font-mono text-xs font-semibold uppercase tracking-[0.06em]", bucket.color)}>
                   {bucket.label}
                 </p>
-                <div className="mt-3 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                <div className="mt-3 h-1.5 overflow-hidden rounded-pill bg-surface-sunken">
                   <div
-                    className={cn("h-full transition-all", bucket.fill)}
+                    className={cn("h-full transition-all duration-base ease-snap", bucket.fill)}
                     style={{ width: `${previewScore}%` }}
                   />
                 </div>
-                <div className="mt-1 flex justify-between text-[9px] text-slate-600">
+                <div className="mt-1 flex justify-between font-mono text-[9px] text-fg-faint">
                   <span>0</span><span>50</span><span>100</span>
                 </div>
               </div>
 
-              <div className="rounded-md border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
-                <div className="mb-1.5 flex items-center gap-1.5 text-slate-500">
+              <div className="rounded-sm border-2 border-line-soft bg-surface-sunken p-3 text-xs text-fg-secondary">
+                <div className="mb-1.5 flex items-center gap-1.5 text-fg-muted">
                   <Info className="h-3 w-3" />
-                  <span className="font-medium">How this is used</span>
+                  <span className="font-bold">How this is used</span>
                 </div>
                 <p className="leading-relaxed">
                   FFS adjusts the CVR benchmark used by the F2/F4/C1 diagnostic signals so a
@@ -439,7 +442,7 @@ export function FFSWizard({
               </div>
 
               {isPlatformForm && (
-                <div className="rounded-md border border-brand-500/30 bg-brand-600/10 p-3 text-xs text-brand-300">
+                <div className="rounded-sm border-2 border-tint-accent bg-tint-accent p-3 text-xs font-medium text-accent-ink">
                   Platform-form discount (−5) auto-applied.
                 </div>
               )}
@@ -447,14 +450,14 @@ export function FFSWizard({
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between gap-3 border-t border-slate-800 bg-slate-900/30 px-6 py-3">
-            <div className="flex-1 text-xs text-red-400">{error}</div>
+          <div className="flex items-center justify-between gap-3 border-t-2 border-line-soft bg-surface-sunken px-6 py-3">
+            <div className="flex-1 text-xs text-danger">{error}</div>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={onClose}
                 disabled={submitting}
-                className="rounded-md border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                className="rounded-sm border-2 border-line px-4 py-2 text-sm font-bold text-fg transition-colors hover:border-line-strong disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -465,7 +468,7 @@ export function FFSWizard({
                   inputs.field_count === 0 ||
                   (isPlatformForm && !platformId)
                 }
-                className="flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
+                className="flex items-center gap-1.5 rounded-sm border-2 border-accent bg-accent px-4 py-2 text-sm font-bold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
               >
                 {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 {mode === "edit" ? "Save changes" : "Create entry"}
@@ -495,7 +498,7 @@ function NumberField({
 }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1">{label}</label>
+      <label className="label mb-1 block text-[10px]">{label}</label>
       <input
         type="number"
         min={min}
@@ -505,7 +508,7 @@ function NumberField({
           const n = parseInt(e.target.value || "0", 10);
           if (!Number.isNaN(n)) onChange(Math.max(min, Math.min(max, n)));
         }}
-        className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-600"
+        className={cn(INPUT_CLS, "tnum font-mono")}
       />
     </div>
   );
@@ -521,14 +524,14 @@ function Checkbox({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 cursor-pointer">
+    <label className="flex cursor-pointer items-center gap-2">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-brand-600 focus:ring-brand-600 focus:ring-offset-0"
+        className="h-3.5 w-3.5 rounded-xs border-line accent-[var(--accent)]"
       />
-      <span className="text-sm text-slate-300">{label}</span>
+      <span className="text-sm text-fg-secondary">{label}</span>
     </label>
   );
 }
