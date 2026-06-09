@@ -1,80 +1,72 @@
 /**
- * Platform brand icons for ad channels.
+ * Platform icons for ad channels — Point Blank design system.
  *
- * Uses react-icons/si (Simple Icons) for real brand logos.
- * StackAdapt and Perion fall back to styled text abbreviations.
+ * Sharp tile with a brand-tinted mono glyph (design: charts.jsx
+ * PlatformIcon). Replaces the react-icons brand logos: the tinted
+ * letter tiles sit better with Chivo Mono labels and the flat,
+ * hard-edged surface language, and read clearly at 24–34px.
  */
+import { cn } from "@/lib/utils";
 
-import {
-  SiMeta,
-  SiGoogleads,
-  SiTiktok,
-  SiSnapchat,
-  SiReddit,
-  SiPinterest,
-} from "react-icons/si";
-import { FaLinkedinIn } from "react-icons/fa6";
-import type { IconType } from "react-icons";
-
-const BRAND_COLORS: Record<string, string> = {
-  meta: "#0081FB",
-  google_ads: "#4285F4",
-  linkedin: "#0A66C2",
-  tiktok: "#FF004F",
-  snapchat: "#FFFC00",
-  reddit: "#FF4500",
-  pinterest: "#E60023",
-  stackadapt: "#7C3AED",
-  perion: "#F97316",
+/**
+ * Channel accent colours from the design prototype (data.js). Tuned for
+ * tinted-tile use on both themes — these are identity hues, not raw
+ * brand hexes, and only ever appear through color-mix tints.
+ */
+export const PLATFORM_COLORS: Record<string, string> = {
+  meta: "#3b9aff",
+  google_ads: "#7aa6ff",
+  linkedin: "#3f9af0",
+  tiktok: "#ff5a7a",
+  snapchat: "#e0b50f",
+  stackadapt: "#a78bfa",
+  perion: "#fb923c",
+  reddit: "#ff6a3d",
+  pinterest: "#e60023",
 };
 
-const SI_ICONS: Record<string, IconType> = {
-  meta: SiMeta,
-  google_ads: SiGoogleads,
-  linkedin: FaLinkedinIn,
-  tiktok: SiTiktok,
-  snapchat: SiSnapchat,
-  reddit: SiReddit,
-  pinterest: SiPinterest,
-};
-
-const TEXT_LABELS: Record<string, string> = {
+const SHORT_LABELS: Record<string, string> = {
+  meta: "M",
+  google_ads: "G",
+  linkedin: "in",
+  tiktok: "TT",
+  snapchat: "S",
   stackadapt: "SA",
   perion: "Pe",
+  reddit: "R",
+  pinterest: "Pi",
 };
 
 export function PlatformIcon({
   platformId,
+  size = 32,
   className,
 }: {
   platformId: string;
+  /** Tile edge length in px (design default 30; legacy default was h-8 = 32). */
+  size?: number;
   className?: string;
 }) {
-  const SiIcon = SI_ICONS[platformId];
-  const color = BRAND_COLORS[platformId] || "#64748b";
-  const textLabel = TEXT_LABELS[platformId];
+  const color = PLATFORM_COLORS[platformId] ?? "var(--text-faint)";
+  const short =
+    SHORT_LABELS[platformId] ?? platformId.charAt(0).toUpperCase();
 
   return (
     <div
-      className={
-        className ??
-        "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-slate-800/60"
-      }
-    >
-      {SiIcon ? (
-        <SiIcon size={16} color={color} />
-      ) : textLabel ? (
-        <span
-          className="flex h-5 w-5 items-center justify-center rounded text-[9px] font-bold text-white"
-          style={{ backgroundColor: color }}
-        >
-          {textLabel}
-        </span>
-      ) : (
-        <span className="text-xs font-bold" style={{ color }}>
-          {platformId.charAt(0).toUpperCase()}
-        </span>
+      className={cn(
+        "flex flex-shrink-0 items-center justify-center rounded-sm font-mono font-bold tracking-[0.02em]",
+        className
       )}
+      style={{
+        width: size,
+        height: size,
+        fontSize: size * 0.36,
+        color,
+        backgroundColor: `color-mix(in srgb, ${color} 16%, var(--surface-sunken))`,
+        border: `1.5px solid color-mix(in srgb, ${color} 38%, transparent)`,
+      }}
+    >
+      {short}
     </div>
   );
 }

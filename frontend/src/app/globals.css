@@ -2,27 +2,320 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* ============================================================
+   ADA · Campaign Intelligence Platform — Point Blank Design System
+   Tokens ported from the _ds export (tokens/*.css) + the ADA
+   prototype's brand.css ("dark-first data tool" reinterpretation).
 
+   LIGHT is the default context (:root). The full dark ramp lives
+   under [data-theme="dark"]; flipping themes is an attribute flip.
+   During migration, legacy (slate-styled) routes are pinned dark
+   via data-theme="dark" on their page root.
+
+   Adherence: components consume the SEMANTIC aliases (--surface-*,
+   --text-*, --border*, --accent*, status colours) — never raw hex.
+   ============================================================ */
+
+:root {
+  /* ---- Brand core (the only four brand colours) ---- */
+  --pb-dark: #222020;
+  --pb-chartreuse: #caff28;
+  --pb-light: #f2f2f2;
+  --pb-white: #ffffff;
+
+  /* ---- Dark ramp (derived, for elevation / borders on dark) ---- */
+  --dark-900: #141313;
+  --dark-850: #191818;
+  --dark-800: #1c1b1b;
+  --dark-700: #222020;
+  --dark-650: #272525;
+  --dark-600: #2c2a2a;
+  --dark-500: #3a3838;
+  --dark-450: #474444;
+  --dark-400: #4a4747;
+
+  /* ---- Chartreuse shades (hover / press / muted meta) ---- */
+  --chart-bright: #d8ff52;
+  --chart-deep: #a8d800;
+  --chart-dim: #8fa830;
+
+  /* ---- Neutral ramp ---- */
+  --gray-50: #f7f7f7;
+  --gray-100: #ececec;
+  --gray-200: #dcdcdc;
+  --gray-300: #c4c4c4;
+  --gray-400: #9a9a9a;
+  --gray-500: #6f6e6e;
+  --gray-600: #514f4f;
+
+  /* ============================================================
+     SEMANTIC ALIASES — LIGHT (default)
+     ============================================================ */
+  --surface-page: #f5f4f1;
+  --surface-card: var(--pb-white);
+  --surface-raised: #fbfbfa;
+  --surface-sunken: #eceae6;
+  --surface-inverse: var(--pb-dark);
+
+  --text-primary: var(--pb-dark);
+  --text-secondary: var(--gray-600);
+  --text-muted: var(--gray-500);
+  --text-faint: var(--gray-400);
+  --text-meta: #6c7a1e;
+  --text-inverse: var(--pb-white);
+
+  --border: #dddad3;
+  --border-soft: #e7e4de;
+  --border-strong: var(--pb-dark);
+
+  /* Status — restrained, darkened for light surfaces */
+  --ok: #6f8c00;
+  --warn: #b97d08;
+  --danger: #c4392e;
+  --info: #3f6fb0;
+  --done: #8a8888;
+
+  --accent: var(--pb-chartreuse);
+  --accent-ink: color-mix(in srgb, var(--accent) 52%, #181808);
+  --accent-hover: var(--chart-bright);
+  --accent-press: var(--chart-deep);
+  --on-accent: var(--pb-dark);
+  --focus-ring: var(--pb-dark);
+
+  --shadow-hard: 4px 4px 0 var(--pb-dark);
+  --shadow-hard-accent: 4px 4px 0 var(--pb-chartreuse);
+  --shadow-soft: 0 8px 30px rgba(34, 32, 32, 0.14);
+
+  --ease-snap: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+}
+
+/* ============================================================
+   DARK CONTEXT — the brand's signature mode.
+   Applied per-region via data-theme="dark" (or globally on <html>).
+   ============================================================ */
+[data-theme="dark"] {
+  --surface-page: var(--dark-900);
+  --surface-card: var(--dark-700);
+  --surface-raised: var(--dark-600);
+  --surface-sunken: var(--dark-850);
+  --surface-inverse: var(--pb-light);
+
+  --text-primary: var(--pb-white);
+  --text-secondary: var(--gray-300);
+  --text-muted: var(--gray-400);
+  --text-faint: var(--gray-500);
+  --text-meta: var(--chart-dim);
+  --text-inverse: var(--pb-dark);
+
+  --border: var(--dark-500);
+  --border-soft: var(--dark-600);
+  --border-strong: var(--gray-300);
+
+  /* Status — brightened for dark surfaces; healthy = the hero colour */
+  --ok: var(--pb-chartreuse);
+  --warn: #f0b73e;
+  --danger: #e5594e;
+  --info: #5b8fd6;
+  --done: #9a9a9a;
+
+  --accent-ink: var(--pb-chartreuse);
+  --focus-ring: var(--pb-chartreuse);
+
+  --shadow-soft: 0 8px 30px rgba(0, 0, 0, 0.45);
+
+  background-color: var(--surface-page);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Semantic font stacks — composed from next/font variables
+   (see src/lib/fonts.ts) plus brand fallbacks.
+   ============================================================ */
+:root {
+  --font-display: var(--font-folsom), "Arial Narrow", system-ui, sans-serif;
+  --font-body: var(--font-inter), system-ui, -apple-system, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: var(--font-chivo), ui-monospace, "SF Mono", Menlo, Consolas,
+    monospace;
+  --font-script: var(--font-desmontilles), "Brush Script MT", cursive;
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
 @layer base {
   body {
-    @apply bg-surface text-slate-100 antialiased;
+    background-color: var(--surface-page);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--pb-chartreuse);
+    color: var(--pb-dark);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  button {
+    font-family: inherit;
+  }
+
+  /* Thin, square-ish scrollbars (brand: sharp, not soft) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 0;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
+    background-clip: content-box;
   }
 }
 
+/* ============================================================
+   Type helpers (mirrors the prototype's brand.css classes)
+   ============================================================ */
+@layer components {
+  /* Folsom display — ALL CAPS, tight, stacked impact */
+  .display {
+    font-family: var(--font-display);
+    font-weight: 900;
+    text-transform: uppercase;
+    line-height: 0.92;
+    letter-spacing: 0.005em;
+  }
+
+  /* Chivo Mono tracked-uppercase label */
+  .label {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  /* Eyebrow — label + the asterisk logomark as punctuation */
+  .eyebrow {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-meta);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .eyebrow::before {
+    content: "✱";
+    color: var(--accent);
+    font-size: 13px;
+    line-height: 1;
+  }
+
+  .script {
+    font-family: var(--font-script);
+    font-weight: 400;
+  }
+}
+
+/* ============================================================
+   Utilities — status tints (color-mix; Tailwind alpha modifiers
+   don't compose with CSS-variable colours) + legacy scrollbar.
+   ============================================================ */
 @layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 13% tinted backgrounds */
+  .bg-tint-ok {
+    background-color: color-mix(in srgb, var(--ok) 13%, transparent);
+  }
+  .bg-tint-warn {
+    background-color: color-mix(in srgb, var(--warn) 13%, transparent);
+  }
+  .bg-tint-danger {
+    background-color: color-mix(in srgb, var(--danger) 13%, transparent);
+  }
+  .bg-tint-info {
+    background-color: color-mix(in srgb, var(--info) 13%, transparent);
+  }
+  .bg-tint-done {
+    background-color: color-mix(in srgb, var(--done) 13%, transparent);
+  }
+  .bg-tint-accent {
+    background-color: color-mix(in srgb, var(--accent) 13%, transparent);
+  }
+
+  /* 35% tinted borders */
+  .border-tint-ok {
+    border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+  }
+  .border-tint-warn {
+    border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  }
+  .border-tint-danger {
+    border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  }
+  .border-tint-info {
+    border-color: color-mix(in srgb, var(--info) 35%, transparent);
+  }
+  .border-tint-done {
+    border-color: color-mix(in srgb, var(--done) 35%, transparent);
+  }
+  .border-tint-accent {
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+
+  /* kept from legacy globals — used by scroll containers */
   .scrollbar-thin {
     scrollbar-width: thin;
-    scrollbar-color: theme('colors.slate.700') transparent;
+    scrollbar-color: var(--border) transparent;
   }
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 6px;
+}
+
+/* ============================================================
+   Motion — "clean, snappy, quick, bold." No bounce, no drift.
+   ============================================================ */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: transparent;
+  to {
+    opacity: 1;
+    transform: none;
   }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: theme('colors.slate.700');
-    border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
   }
 }

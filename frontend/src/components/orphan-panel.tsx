@@ -82,7 +82,7 @@ export function OrphanPanel() {
       </div>
 
       <p className="mt-1 text-xs text-slate-500">
-        Active spend in these project codes hasn&apos;t been configured in CIP
+        Active spend in these project codes hasn&apos;t been configured in ADA
         yet. Configure to start tracking. To set a code aside, add it to the{" "}
         <span className="font-mono text-slate-400">dismissed_orphans</span>{" "}
         table in BigQuery (dismissed = hidden here, archived = hidden

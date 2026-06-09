@@ -64,44 +64,60 @@ export function pacingStatus(percentage: number | null | undefined): PacingStatu
 
 export function pacingColor(status: PacingStatus): string {
   const colors: Record<PacingStatus, string> = {
-    "critical-over": "text-red-400",
-    "warning-over": "text-amber-400",
-    "on-track": "text-emerald-400",
-    "warning-under": "text-amber-400",
-    "critical-under": "text-red-400",
-    unknown: "text-slate-500",
+    "critical-over": "text-danger",
+    "warning-over": "text-warn",
+    "on-track": "text-ok",
+    "warning-under": "text-warn",
+    "critical-under": "text-danger",
+    unknown: "text-fg-faint",
   };
   return colors[status];
 }
 
 export function pacingBg(status: PacingStatus): string {
   const colors: Record<PacingStatus, string> = {
-    "critical-over": "bg-red-500/20 border-red-500/30",
-    "warning-over": "bg-amber-500/20 border-amber-500/30",
-    "on-track": "bg-emerald-500/20 border-emerald-500/30",
-    "warning-under": "bg-amber-500/20 border-amber-500/30",
-    "critical-under": "bg-red-500/20 border-red-500/30",
-    unknown: "bg-slate-500/20 border-slate-500/30",
+    "critical-over": "bg-tint-danger border-tint-danger",
+    "warning-over": "bg-tint-warn border-tint-warn",
+    "on-track": "bg-tint-ok border-tint-ok",
+    "warning-under": "bg-tint-warn border-tint-warn",
+    "critical-under": "bg-tint-danger border-tint-danger",
+    unknown: "bg-tint-done border-tint-done",
   };
   return colors[status];
 }
 
 export function pacingBarColor(status: PacingStatus): string {
   const colors: Record<PacingStatus, string> = {
-    "critical-over": "bg-red-500",
-    "warning-over": "bg-amber-500",
-    "on-track": "bg-emerald-500",
-    "warning-under": "bg-amber-500",
-    "critical-under": "bg-red-500",
-    unknown: "bg-slate-600",
+    "critical-over": "bg-danger",
+    "warning-over": "bg-warn",
+    "on-track": "bg-ok",
+    "warning-under": "bg-warn",
+    "critical-under": "bg-danger",
+    unknown: "bg-done",
   };
   return colors[status];
 }
 
+/** Raw CSS colour token for a pacing status — for SVG/inline-style use. */
+export function pacingVar(status: PacingStatus): string {
+  if (status === "on-track") return "var(--ok)";
+  if (status.includes("critical")) return "var(--danger)";
+  if (status.includes("over") || status.includes("under")) return "var(--warn)";
+  return "var(--text-faint)";
+}
+
 export function severityColor(severity: string): string {
-  if (severity === "critical") return "text-red-400 bg-red-500/15 border-red-500/30";
-  if (severity === "warning") return "text-amber-400 bg-amber-500/15 border-amber-500/30";
-  return "text-blue-400 bg-blue-500/15 border-blue-500/30";
+  if (severity === "critical")
+    return "text-danger bg-tint-danger border-tint-danger";
+  if (severity === "warning") return "text-warn bg-tint-warn border-tint-warn";
+  return "text-info bg-tint-info border-tint-info";
+}
+
+/** Raw CSS colour token for an alert severity — for SVG/inline-style use. */
+export function severityVar(severity: string): string {
+  if (severity === "critical") return "var(--danger)";
+  if (severity === "warning") return "var(--warn)";
+  return "var(--info)";
 }
 
 export function platformLabel(id: string): string {

@@ -8,11 +8,15 @@ interface CardProps {
   title?: string;
 }
 
+/**
+ * Card — flat fill, 2px border, tight radius. Point Blank cards are not
+ * floaty drop-shadow cards; the border is the structuring device.
+ */
 export function Card({ children, className, title }: CardProps) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-slate-800 bg-surface-raised p-5",
+        "rounded-md border-2 border-line-soft bg-surface-card p-[18px]",
         className
       )}
       title={title}
@@ -39,19 +43,21 @@ interface KpiCardProps {
   benchmark?: BenchmarkIndicator;
   /** Native browser tooltip on hover (AI-102: per-platform clicks definitions). */
   title?: string;
+  /** Folsom display treatment for hero numbers (design: Kpi `big`). */
+  big?: boolean;
 }
 
 function benchmarkColor(bm: BenchmarkIndicator): string {
   const { current, p25, p75, lowerIsBetter } = bm;
-  if (current == null || p25 == null || p75 == null) return "text-slate-400";
+  if (current == null || p25 == null || p75 == null) return "text-fg-muted";
   if (lowerIsBetter) {
-    if (current <= p25) return "text-emerald-400";
-    if (current >= p75) return "text-red-400";
-    return "text-slate-400";
+    if (current <= p25) return "text-ok";
+    if (current >= p75) return "text-danger";
+    return "text-fg-muted";
   }
-  if (current >= p75) return "text-emerald-400";
-  if (current <= p25) return "text-red-400";
-  return "text-slate-400";
+  if (current >= p75) return "text-ok";
+  if (current <= p25) return "text-danger";
+  return "text-fg-muted";
 }
 
 function benchmarkBarPosition(bm: BenchmarkIndicator): number {
@@ -61,37 +67,47 @@ function benchmarkBarPosition(bm: BenchmarkIndicator): number {
   return Math.max(0, Math.min(100, pos));
 }
 
-export function KpiCard({ label, value, sub, accent, benchmark, title }: KpiCardProps) {
+export function KpiCard({
+  label,
+  value,
+  sub,
+  accent,
+  benchmark,
+  title,
+  big = false,
+}: KpiCardProps) {
   const fmt = benchmark?.format ?? ((v: number) => (v ?? 0).toFixed(2));
 
   return (
-    <Card title={title}>
-      <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-        {label}
-      </p>
-      <p className={cn("mt-1.5 text-lg font-semibold tabular-nums sm:text-2xl break-all sm:break-normal", accent ?? "text-white")}>
+    <Card title={title} className="p-4">
+      <p className="label text-[10.5px]">{label}</p>
+      <p
+        className={cn(
+          "mt-2 tnum break-all leading-none sm:break-normal",
+          big
+            ? "font-display text-3xl uppercase tracking-[0.01em] sm:text-4xl"
+            : "text-xl font-extrabold tracking-tight sm:text-[27px]",
+          accent ?? "text-fg"
+        )}
+      >
         {value}
       </p>
-      {sub && <p className="mt-0.5 text-xs text-slate-500">{sub}</p>}
+      {sub && <p className="mt-[7px] text-xs text-fg-faint">{sub}</p>}
       {benchmark && (
-        <div className="mt-2 space-y-1">
-          <div className="flex items-center justify-between text-[10px]">
-            <span className={cn("font-medium", benchmarkColor(benchmark))}>
-              Benchmark: {fmt(benchmark.p50)}
-            </span>
+        <div className="mt-[11px] space-y-[5px]">
+          <div
+            className={cn(
+              "font-mono text-[10px] uppercase tracking-[0.06em]",
+              benchmarkColor(benchmark)
+            )}
+          >
+            Bench {fmt(benchmark.p50)}
           </div>
-          <div className="relative h-1.5 rounded-full bg-slate-800">
-            <div
-              className="absolute top-0 h-full rounded-full bg-slate-600"
-              style={{
-                left: "0%",
-                width: "100%",
-              }}
-            />
+          <div className="relative h-1 rounded-pill bg-surface-sunken">
             <div
               className={cn(
-                "absolute top-[-1px] h-2 w-2 rounded-full border border-slate-900",
-                benchmarkColor(benchmark).replace("text-", "bg-"),
+                "absolute top-[-2px] h-2 w-2 rounded-full border-[1.5px] border-surface-card",
+                benchmarkColor(benchmark).replace("text-", "bg-")
               )}
               style={{
                 left: `${benchmarkBarPosition(benchmark)}%`,
@@ -99,7 +115,7 @@ export function KpiCard({ label, value, sub, accent, benchmark, title }: KpiCard
               }}
             />
           </div>
-          <div className="flex justify-between text-[9px] text-slate-600">
+          <div className="flex justify-between font-mono text-[9px] text-fg-faint">
             <span>{fmt(benchmark.p25)}</span>
             <span>{fmt(benchmark.p75)}</span>
           </div>

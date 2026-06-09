@@ -325,7 +325,7 @@ function MediaPlanSharingInstructions() {
         Share your media plan with ADA
       </p>
       <p className="mt-1 text-xs text-slate-400">
-        To allow CIP to read this spreadsheet, share it as <strong className="text-slate-300">Viewer</strong> with:
+        To allow ADA to read this spreadsheet, share it as <strong className="text-slate-300">Viewer</strong> with:
       </p>
       <div className="mt-2 flex items-center gap-2">
         <code className="flex-1 rounded bg-slate-900 px-2.5 py-1.5 text-xs text-blue-300 font-mono select-all">

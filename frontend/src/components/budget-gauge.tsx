@@ -13,16 +13,15 @@ export function BudgetGauge({ spent, budget, className }: BudgetGaugeProps) {
   const capped = Math.min(pct, 100);
 
   // Color based on budget utilization, not pacing:
-  // green for normal spend, amber when >90%, red when over budget
-  const barColor =
-    pct > 100 ? "bg-red-500" : pct > 90 ? "bg-amber-500" : "bg-emerald-500";
+  // healthy for normal spend, warn when >90%, danger when over budget
+  const barColor = pct > 100 ? "bg-danger" : pct > 90 ? "bg-warn" : "bg-ok";
 
   return (
     <div className={cn("w-full", className)}>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+      <div className="h-2 w-full overflow-hidden rounded-pill bg-surface-sunken">
         <div
           className={cn(
-            "h-full rounded-full transition-all duration-500",
+            "h-full rounded-pill transition-all duration-700 ease-snap",
             barColor
           )}
           style={{ width: `${capped}%` }}

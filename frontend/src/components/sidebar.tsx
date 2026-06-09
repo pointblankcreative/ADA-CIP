@@ -57,10 +57,10 @@ export function Sidebar() {
           <Gauge className="h-4 w-4 text-white" />
         </div>
         <span className="text-sm font-semibold tracking-tight text-white">
-          CIP
+          ADA
         </span>
-        <span className="ml-auto rounded bg-brand-600/20 px-1.5 py-0.5 text-[10px] font-medium text-brand-400 md:ml-auto">
-          v0.1
+        <span className="ml-auto rounded bg-brand-600/20 px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-meta text-brand-400 md:ml-auto">
+          Intel
         </span>
         <button
           onClick={() => setOpen(false)}
