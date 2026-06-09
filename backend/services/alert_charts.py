@@ -220,17 +220,42 @@ def _render_cumulative_png(cum, proj, projected_end: float, budget: float) -> by
 
 
 def _upload_png(png: bytes, object_name: str) -> str | None:
-    """Upload to the configured bucket and return the object's public URL."""
+    """Upload to the configured bucket and return a short-lived signed GET URL.
+
+    The bucket enforces Public Access Prevention, so we keep objects private and
+    hand Slack a V4 signed URL instead. Cloud Run's runtime service account has
+    no local key, so signing goes through the IAM signBlob API — the SA needs
+    roles/iam.serviceAccountTokenCreator on itself. Slack fetches and caches the
+    image when the message is posted, so a 7-day expiry is plenty.
+    """
     bucket_name = settings.alert_charts_bucket
     if not bucket_name:
         return None
+
+    import google.auth
+    from google.auth.transport import requests as ga_requests
     from google.cloud import storage
 
     client = storage.Client(project=settings.gcp_project_id)
     blob = client.bucket(bucket_name).blob(object_name)
-    blob.cache_control = "public, max-age=31536000"
+    blob.cache_control = "private, max-age=604800"
     blob.upload_from_string(png, content_type="image/png")
-    return f"https://storage.googleapis.com/{bucket_name}/{object_name}"
+
+    creds = getattr(client, "_credentials", None)
+    if creds is None:
+        creds, _ = google.auth.default()
+    try:
+        creds.refresh(ga_requests.Request())
+    except Exception:
+        pass
+
+    return blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(days=7),
+        method="GET",
+        service_account_email=getattr(creds, "service_account_email", None),
+        access_token=getattr(creds, "token", None),
+    )
 
 
 def build_alert_chart_blocks(alert: dict, as_of: date | None = None) -> list[dict]:
