@@ -4,25 +4,27 @@ Scans the fact tables for ``project_code`` values that appear in spend/activity
 data but do NOT have a matching row in ``dim_projects``. These are "orphans" —
 campaigns that have been ingested but never configured in CIP.
 
-The Overview page surfaces orphans with two CTAs:
+The Overview page surfaces orphans with a single **Configure** CTA (a redirect
+to ``/admin/projects/new?code={project_code}``). Suppression is intentionally
+NOT a UI action — to stop a code surfacing you add a row to the
+``dismissed_orphans`` control table in BigQuery by hand. The ``level`` column
+gives two tiers:
 
-- **Configure** — redirect to ``/admin/projects/new?code={project_code}`` so
-  the existing project-creation form can prefill the code. We do not create
-  a skeleton ``dim_projects`` row here; a project_code without client +
-  project_name + dates is not a real project.
-- **Dismiss** — insert a row into ``dismissed_orphans``. Permanent until the
-  user explicitly un-dismisses. Typical reason: "test account spend" or
-  "client code mismatch, real code is 25XXX".
+- ``dismissed`` — hidden from the active panel, still listed under "show
+  dismissed" so you can see what you've set aside.
+- ``archived`` — hidden from BOTH the active panel and the dismissed list, for
+  codes that will never be recoverable into CIP and would otherwise show
+  confusing partial data. The spend data stays intact in the fact tables; the
+  control-table row is the record of why it was set aside.
+
+Doing this by table edit (rather than a button) is deliberate: nobody can
+suppress a code by accident, and every suppression is an explicit, attributable
+row.
 
 Scanner unions three sources so we catch all forms of activity:
-
 - ``fact_digital_daily`` — digital spend, impressions, clicks, etc.
 - ``fact_dooh_daily`` — DOOH (Perion) spend
 - ``fact_adset_daily`` — reach/frequency (no spend column)
-
-A project is an orphan if it has at least one row in any of the three and is
-missing from ``dim_projects``. By default dismissed orphans are hidden; pass
-``include_dismissed=True`` to surface them for un-dismiss UI.
 """
 
 from __future__ import annotations
@@ -33,6 +35,39 @@ from typing import Any
 from backend.services import bigquery_client as bq
 
 logger = logging.getLogger(__name__)
+
+# Suppression tiers stored in the dismissed_orphans.level column.
+LEVEL_DISMISSED = "dismissed"
+LEVEL_ARCHIVED = "archived"
+
+_SCHEMA_ENSURED = False
+
+
+def _ensure_schema() -> None:
+    """Idempotently add the ``level`` column to dismissed_orphans.
+
+    Mirrors the self-healing migration in services/pacing.py so a deploy never
+    depends on a separate manual ALTER landing first. Best-effort: a failure
+    here only logs; the scan that follows surfaces a real error if the column
+    is genuinely missing.
+    """
+    global _SCHEMA_ENSURED
+    if _SCHEMA_ENSURED:
+        return
+    from google.cloud import bigquery
+
+    from backend.config import settings
+
+    client = bigquery.Client(project=settings.gcp_project_id, location=settings.gcp_region)
+    try:
+        client.query(
+            f"ALTER TABLE {bq.table('dismissed_orphans')} "
+            "ADD COLUMN IF NOT EXISTS level STRING"
+        ).result()
+    except Exception as e:  # noqa: BLE001 — never block a scan on migration
+        if "Already Exists" not in str(e) and "Duplicate" not in str(e):
+            logger.warning("dismissed_orphans schema migration warning: %s", e)
+    _SCHEMA_ENSURED = True
 
 
 def _hydrate_row(row: dict) -> dict[str, Any]:
@@ -67,15 +102,21 @@ def _hydrate_row(row: dict) -> dict[str, Any]:
         "dismissed_at": dismissed_at.isoformat() if dismissed_at else None,
         "dismissed_by": row.get("dismissed_by"),
         "dismissed_reason": row.get("dismissed_reason"),
+        "level": row.get("level"),
     }
 
 
 def scan_orphans(include_dismissed: bool = False) -> list[dict[str, Any]]:
     """Return all project_codes with spend/activity that aren't in dim_projects.
 
-    Sorted by total_spend DESC, then project_code. If ``include_dismissed`` is
-    True, dismissed orphans are included (for an un-dismiss UI).
+    Visibility follows the suppression ``level`` in ``dismissed_orphans``:
+    - not in the table              → always returned
+    - level ``dismissed`` (or NULL) → returned only when ``include_dismissed``
+    - level ``archived``            → never returned (hidden from both views)
+
+    Sorted by total_spend DESC, then project_code.
     """
+    _ensure_schema()
     sql = f"""
     WITH digital_activity AS (
       SELECT project_code, platform_id,
@@ -150,12 +191,16 @@ def scan_orphans(include_dismissed: bool = False) -> list[dict[str, Any]]:
       p.by_platform,
       d.dismissed_at,
       d.dismissed_by,
-      d.reason AS dismissed_reason
+      d.reason AS dismissed_reason,
+      d.level
     FROM per_project p
     LEFT JOIN {bq.table('dim_projects')} dp USING (project_code)
     LEFT JOIN {bq.table('dismissed_orphans')} d USING (project_code)
     WHERE dp.project_code IS NULL
-      AND (@include_dismissed OR d.project_code IS NULL)
+      AND (
+        d.project_code IS NULL
+        OR (@include_dismissed AND COALESCE(d.level, '{LEVEL_DISMISSED}') = '{LEVEL_DISMISSED}')
+      )
     ORDER BY p.total_spend DESC, p.project_code
     """
 
@@ -165,82 +210,8 @@ def scan_orphans(include_dismissed: bool = False) -> list[dict[str, Any]]:
 
 
 def get_orphan(project_code: str) -> dict[str, Any] | None:
-    """Fetch a single orphan by project_code (include dismissed)."""
-    all_rows = scan_orphans(include_dismissed=True)
-    for r in all_rows:
+    """Fetch a single orphan by project_code (includes dismissed, not archived)."""
+    for r in scan_orphans(include_dismissed=True):
         if r["project_code"] == project_code:
             return r
     return None
-
-
-def dismiss(
-    project_code: str,
-    dismissed_by: str | None = None,
-    reason: str | None = None,
-) -> dict[str, Any]:
-    """Mark a project_code as dismissed. Idempotent (MERGE).
-
-    Returns the hydrated orphan row after dismissal, or a minimal record if
-    the underlying activity has since disappeared.
-    """
-    sql = f"""
-    MERGE {bq.table('dismissed_orphans')} t
-    USING (
-      SELECT
-        @project_code     AS project_code,
-        CURRENT_TIMESTAMP() AS dismissed_at,
-        @dismissed_by     AS dismissed_by,
-        @reason           AS reason
-    ) s
-    ON t.project_code = s.project_code
-    WHEN NOT MATCHED THEN
-      INSERT (project_code, dismissed_at, dismissed_by, reason)
-      VALUES (s.project_code, s.dismissed_at, s.dismissed_by, s.reason)
-    WHEN MATCHED THEN
-      UPDATE SET
-        dismissed_at = s.dismissed_at,
-        dismissed_by = s.dismissed_by,
-        reason       = s.reason
-    """
-
-    params = [
-        bq.string_param("project_code", project_code),
-        bq.string_param("dismissed_by", dismissed_by or ""),
-        bq.string_param("reason", reason or ""),
-    ]
-    bq.run_query(sql, params=params)
-
-    # Return the hydrated orphan (may be None if activity has been purged).
-    existing = get_orphan(project_code)
-    if existing is not None:
-        return existing
-    return {
-        "project_code": project_code,
-        "total_spend": 0.0,
-        "total_rows": 0,
-        "first_date": None,
-        "last_date": None,
-        "by_platform": [],
-        "dismissed": True,
-        "dismissed_at": None,
-        "dismissed_by": dismissed_by,
-        "dismissed_reason": reason,
-    }
-
-
-def undismiss(project_code: str) -> bool:
-    """Remove a dismissal row. Returns True if a row was removed."""
-    from google.cloud import bigquery
-
-    sql = f"""
-    DELETE FROM {bq.table('dismissed_orphans')}
-    WHERE project_code = @project_code
-    """
-    client = bq.get_client()
-    result = client.query(
-        sql,
-        job_config=bigquery.QueryJobConfig(
-            query_parameters=[bq.string_param("project_code", project_code)],
-        ),
-    ).result()
-    return (result.num_dml_affected_rows or 0) > 0

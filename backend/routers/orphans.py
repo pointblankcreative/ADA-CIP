@@ -1,21 +1,28 @@
 """Orphan Project Auto-Discovery endpoints.
 
 Surfaces project_codes with spend/activity in fact_* tables that are NOT in
-dim_projects and have not been dismissed. The Overview page uses these to
-render a panel with Configure / Dismiss CTAs.
+dim_projects and have not been suppressed. The Overview page renders a panel
+with a single **Configure** CTA (a pure frontend redirect to
+``/admin/projects/new?code=X``; no endpoint needed here).
 
-- Configure is a pure frontend redirect to ``/admin/projects/new?code=X`` —
-  no endpoint needed here; the existing admin create-project flow prefills
-  the code and handles the rest.
-- Dismiss / un-dismiss persist to the ``dismissed_orphans`` BigQuery table.
+Suppression is intentionally not exposed over HTTP. To stop a code surfacing,
+add a row to the ``dismissed_orphans`` control table in BigQuery directly:
+
+    INSERT INTO `point-blank-ada.cip.dismissed_orphans`
+      (project_code, dismissed_by, reason, level)
+    VALUES ('25034', 'you@pointblankcreative.ca', 'old test account', 'dismissed');
+
+``level`` is ``dismissed`` (hidden from the active panel, visible under "show
+dismissed") or ``archived`` (hidden everywhere). This read-only surface means
+no one can suppress a code by accident, and every suppression is an explicit,
+attributable row.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
 
 from backend.services import orphans as svc
 
@@ -24,24 +31,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/orphan-projects", tags=["orphans"])
 
 
-# ── Request/response schemas ────────────────────────────────────────────────
-
-
-class OrphanDismissRequest(BaseModel):
-    reason: str | None = None
-
-
-# ── Endpoints ───────────────────────────────────────────────────────────────
-
-
 @router.get("")
 async def list_orphan_projects(include_dismissed: bool = False):
     """List orphan project_codes (spend in fact_* not in dim_projects).
 
     Query params:
-    - ``include_dismissed`` (default false) — include dismissed orphans in
-      the response. Dismissed entries have ``dismissed=true`` and a
-      ``dismissed_at`` timestamp.
+    - ``include_dismissed`` (default false) — also include codes set to
+      ``level = 'dismissed'`` in the control table. Codes set to ``archived``
+      are never returned.
     """
     try:
         rows = svc.scan_orphans(include_dismissed=include_dismissed)
@@ -49,38 +46,3 @@ async def list_orphan_projects(include_dismissed: bool = False):
     except Exception as e:
         logger.exception("Failed to scan orphan projects")
         raise HTTPException(500, f"Failed to scan orphan projects: {e}")
-
-
-@router.post("/{project_code}/dismiss")
-async def dismiss_orphan(project_code: str, body: OrphanDismissRequest, request: Request):
-    """Mark an orphan project_code as dismissed.
-
-    Dismissal is permanent until someone calls the un-dismiss endpoint.
-    Idempotent: repeat calls update the reason + timestamp but don't error.
-    """
-    user = getattr(request.state, "user", None) or {}
-    dismissed_by = user.get("email") if isinstance(user, dict) else None
-
-    try:
-        return svc.dismiss(
-            project_code=project_code,
-            dismissed_by=dismissed_by,
-            reason=body.reason,
-        )
-    except Exception as e:
-        logger.exception("Failed to dismiss orphan %s", project_code)
-        raise HTTPException(500, f"Failed to dismiss orphan: {e}")
-
-
-@router.post("/{project_code}/undismiss")
-async def undismiss_orphan(project_code: str):
-    """Remove a dismissal. The project_code will surface again on next scan."""
-    try:
-        removed = svc.undismiss(project_code)
-    except Exception as e:
-        logger.exception("Failed to undismiss orphan %s", project_code)
-        raise HTTPException(500, f"Failed to undismiss orphan: {e}")
-
-    if not removed:
-        raise HTTPException(404, "No dismissal found for that project_code")
-    return {"status": "undismissed", "project_code": project_code}

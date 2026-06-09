@@ -478,3 +478,102 @@ class TestBundleAwarePacing:
         # Actual spend comes from the per-code query ($3000), NOT from the
         # group-split fallback.
         assert rows[0]["actual_spend_to_date"] == pytest.approx(3000.0)
+
+
+class TestRunAllActivePostFlightReconciliation:
+    """run_all_active must keep re-pacing recently-completed projects.
+
+    Regression for the 26018 CAPE spend mismatch: _auto_complete_projects flips a
+    project to 'completed' the morning after end_date, dropping it from the sweep
+    before the final 1-3 days of Funnel spend land. budget_tracking then freezes at
+    a partial-spend snapshot while Meta shows the full amount. The selection query
+    must include projects whose end_date is within POST_FLIGHT_RECONCILE_DAYS days.
+    """
+
+    def _run(self, project_rows):
+        from unittest.mock import patch
+        from backend.services.pacing import run_all_active
+
+        captured = {}
+
+        def mock_run_query(sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+            return project_rows
+
+        with patch("backend.services.pacing.bq") as mock_bq, \
+             patch("backend.services.pacing.run_pacing_for_project") as mock_run_proj:
+            mock_bq.table.side_effect = lambda name: name
+            mock_bq.date_param.side_effect = lambda name, value: ("date_param", name, value)
+            mock_bq.run_query.side_effect = mock_run_query
+            mock_run_proj.return_value = {"lines_processed": 1, "alerts": 0}
+            result = run_all_active(date(2026, 6, 8))
+        return captured, mock_run_proj, result
+
+    def test_selection_includes_recently_completed_projects(self):
+        captured, _, _ = self._run([{"project_code": "26018"}])
+        sql = captured["sql"]
+        # Still picks up live projects …
+        assert "p.status IN ('active', 'in_flight')" in sql
+        # … and now recently-completed ones within the reconciliation window.
+        assert "p.status = 'completed'" in sql
+        assert "DATE_SUB(@as_of_date, INTERVAL 7 DAY)" in sql
+        # as_of_date is parameterised, not interpolated.
+        assert captured["params"] == [("date_param", "as_of_date", date(2026, 6, 8))]
+
+    def test_completed_project_in_window_gets_repaced(self):
+        _, mock_run_proj, result = self._run([{"project_code": "26018"}])
+        mock_run_proj.assert_called_once()
+        assert mock_run_proj.call_args.args[0] == "26018"
+        # as_of_date forwarded so spend is read through "today".
+        assert mock_run_proj.call_args.args[1] == date(2026, 6, 8)
+        assert result["projects_processed"] == 1
+
+
+class TestBudgetExceededAlert:
+    """budget_exceeded must not fire when a line merely lands at its budget.
+
+    Regression: lines #7/#8 on 26018 finished at exactly 100% of budget (actual
+    == budget), but the budget-proportional split left a sub-cent float over and
+    the message rounded both numbers to whole dollars — "actual $239 exceeds
+    budget $239" — firing a spurious critical. A $BUDGET_EXCEEDED_TOLERANCE buffer
+    is now required, and the message reports the real overage.
+    """
+
+    def _alerts(self, actual, budget, pacing_pct=100.0):
+        from backend.services.pacing import _generate_alerts
+        return _generate_alerts(
+            "26018", "L", "#7",
+            pacing_pct, actual, budget,
+            remaining_days=0, remaining_budget=budget - actual,
+        )
+
+    @staticmethod
+    def _types(alerts):
+        return {a["alert_type"] for a in alerts}
+
+    def test_exactly_at_budget_is_silent(self):
+        """A clean 100% completion fires nothing — the #7/#8 case."""
+        alerts = self._alerts(238.87, 238.87)
+        assert alerts == []
+
+    def test_subcent_float_over_does_not_fire(self):
+        """The proportional-split artifact: actual a floating-point hair over."""
+        alerts = self._alerts(238.87 + 1e-9, 238.87)
+        assert "budget_exceeded" not in self._types(alerts)
+
+    def test_within_tolerance_does_not_fire(self):
+        alerts = self._alerts(239.50, 238.87)  # $0.63 over, under the $1 buffer
+        assert "budget_exceeded" not in self._types(alerts)
+
+    def test_real_overage_fires_with_overage_in_message(self):
+        import json
+        alerts = self._alerts(250.00, 238.87)  # $11.13 over
+        be = [a for a in alerts if a["alert_type"] == "budget_exceeded"]
+        assert len(be) == 1
+        assert be[0]["severity"] == "critical"
+        # Message reports the real overage, not "$239 exceeds $239".
+        assert "$11.13" in be[0]["message"]
+        assert "$250.00" in be[0]["message"]
+        assert "exceeds planned budget" not in be[0]["message"]
+        assert json.loads(be[0]["metadata"])["overage"] == pytest.approx(11.13)

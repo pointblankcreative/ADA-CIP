@@ -2,16 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  AlertCircle,
-  Calendar,
-  DollarSign,
-  Eye,
-  EyeOff,
-  Settings,
-  Undo2,
-  X,
-} from "lucide-react";
+import { AlertCircle, Eye, EyeOff, Settings } from "lucide-react";
 import { api, type OrphanProject } from "@/lib/api";
 import { Card } from "@/components/card";
 import { formatCurrency, formatNumber, platformLabel, cn } from "@/lib/utils";
@@ -20,20 +11,20 @@ import { formatCurrency, formatNumber, platformLabel, cn } from "@/lib/utils";
  * OrphanPanel — Overview-page widget listing project_codes with spend/activity
  * in fact_* tables that don't have a dim_projects row.
  *
- * For each orphan the user can:
- * - Configure → redirect to /admin/projects/new?code=XXXXX (form prefill)
- * - Dismiss   → POST /api/orphan-projects/{code}/dismiss (permanent-until-reversed)
+ * The only action here is Configure → redirect to
+ * /admin/projects/new?code=XXXXX (form prefill).
  *
- * The panel collapses itself when there are no visible orphans so it never
- * takes up real estate without payload. Toggle "Show dismissed" to expose
- * previously-dismissed codes for un-dismiss.
+ * Suppression is deliberately NOT a UI action. To set a code aside you add a
+ * row to the `dismissed_orphans` control table in BigQuery (level = 'dismissed'
+ * hides it from the active panel but keeps it under "Show dismissed";
+ * level = 'archived' hides it everywhere). That way nothing can be suppressed
+ * by accident. The panel collapses itself when there's nothing to show.
  */
 export function OrphanPanel() {
   const [orphans, setOrphans] = useState<OrphanProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showDismissed, setShowDismissed] = useState(false);
-  const [busyCode, setBusyCode] = useState<string | null>(null);
 
   const load = async (includeDismissed: boolean) => {
     setLoading(true);
@@ -51,40 +42,6 @@ export function OrphanPanel() {
   useEffect(() => {
     load(showDismissed);
   }, [showDismissed]);
-
-  const handleDismiss = async (code: string) => {
-    const reason =
-      typeof window !== "undefined"
-        ? window.prompt(
-            `Dismiss project ${code}?\n\nOptional: add a short reason (e.g. "old test account" or "client code mismatch"). Leave blank to dismiss without a note.`,
-            ""
-          )
-        : "";
-    // null = user hit cancel; empty string = proceed without reason
-    if (reason === null) return;
-
-    setBusyCode(code);
-    try {
-      await api.orphans.dismiss(code, reason || undefined);
-      await load(showDismissed);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : `Failed to dismiss ${code}`);
-    } finally {
-      setBusyCode(null);
-    }
-  };
-
-  const handleUndismiss = async (code: string) => {
-    setBusyCode(code);
-    try {
-      await api.orphans.undismiss(code);
-      await load(showDismissed);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : `Failed to un-dismiss ${code}`);
-    } finally {
-      setBusyCode(null);
-    }
-  };
 
   // Hide the entire panel when there's nothing to show.
   const hasOrphans = orphans.length > 0;
@@ -126,8 +83,10 @@ export function OrphanPanel() {
 
       <p className="mt-1 text-xs text-slate-500">
         Active spend in these project codes hasn&apos;t been configured in CIP
-        yet. Configure to start tracking, or dismiss if it doesn&apos;t belong
-        here (historical data, test account, wrong client code, etc).
+        yet. Configure to start tracking. To set a code aside, add it to the{" "}
+        <span className="font-mono text-slate-400">dismissed_orphans</span>{" "}
+        table in BigQuery (dismissed = hidden here, archived = hidden
+        everywhere).
       </p>
 
       {error && (
@@ -152,15 +111,7 @@ export function OrphanPanel() {
               : "No unconfigured spend detected."}
           </p>
         ) : (
-          orphans.map((o) => (
-            <OrphanCard
-              key={o.project_code}
-              orphan={o}
-              busy={busyCode === o.project_code}
-              onDismiss={handleDismiss}
-              onUndismiss={handleUndismiss}
-            />
-          ))
+          orphans.map((o) => <OrphanCard key={o.project_code} orphan={o} />)
         )}
       </div>
     </div>
@@ -169,12 +120,9 @@ export function OrphanPanel() {
 
 interface OrphanCardProps {
   orphan: OrphanProject;
-  busy: boolean;
-  onDismiss: (code: string) => void;
-  onUndismiss: (code: string) => void;
 }
 
-function OrphanCard({ orphan: o, busy, onDismiss, onUndismiss }: OrphanCardProps) {
+function OrphanCard({ orphan: o }: OrphanCardProps) {
   const topPlatforms = o.by_platform.slice(0, 4);
   const extraPlatforms = o.by_platform.length - topPlatforms.length;
 
@@ -244,38 +192,18 @@ function OrphanCard({ orphan: o, busy, onDismiss, onUndismiss }: OrphanCardProps
         </div>
       )}
 
-      {/* Actions */}
-      <div className="mt-4 flex items-center gap-2">
-        {o.dismissed ? (
-          <button
-            onClick={() => onUndismiss(o.project_code)}
-            disabled={busy}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 disabled:opacity-50"
+      {/* The only action is Configure. Suppression is managed in BigQuery. */}
+      {!o.dismissed && (
+        <div className="mt-4 flex items-center gap-2">
+          <Link
+            href={`/admin/projects/new?code=${o.project_code}`}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
           >
-            <Undo2 className="h-3.5 w-3.5" />
-            Un-dismiss
-          </button>
-        ) : (
-          <>
-            <Link
-              href={`/admin/projects/new?code=${o.project_code}`}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
-            >
-              <Settings className="h-3.5 w-3.5" />
-              Configure
-            </Link>
-            <button
-              onClick={() => onDismiss(o.project_code)}
-              disabled={busy}
-              className="flex items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200 disabled:opacity-50"
-              title="Dismiss — hide this code from the orphan list. Permanent until un-dismissed."
-            >
-              <X className="h-3.5 w-3.5" />
-              Dismiss
-            </button>
-          </>
-        )}
-      </div>
+            <Settings className="h-3.5 w-3.5" />
+            Configure
+          </Link>
+        </div>
+      )}
     </Card>
   );
 }

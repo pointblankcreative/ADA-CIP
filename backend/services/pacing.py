@@ -37,6 +37,22 @@ PACING_UNDER_CRITICAL = 70.0
 FLIGHT_ENDING_DAYS = 7
 FLIGHT_ENDING_UNSPENT_PCT = 15.0
 
+# A line only fires a critical budget_exceeded alert when actual spend is more
+# than this many dollars above the line budget. Lifetime-budget delivery and the
+# budget-proportional spend split both routinely land a line at exactly 100% of
+# budget (or a sub-cent floating-point hair over), which previously tripped a
+# spurious "Budget exceeded — actual $239 exceeds budget $239" critical. The
+# buffer suppresses that noise while still catching any genuine dollar overage.
+BUDGET_EXCEEDED_TOLERANCE = 1.0
+
+# Post-flight reconciliation window: how many days after a project's booked
+# end_date the daily sweep keeps re-pacing it. Ad-platform spend for the final
+# 1-3 days of a flight typically lands in fact_digital_daily 1-2 days after the
+# campaign ends (Funnel reporting lag). Without this window, _auto_complete_projects
+# flips the project to 'completed' the morning after end_date and it drops out of
+# run_all_active, freezing budget_tracking at a partial-spend snapshot.
+POST_FLIGHT_RECONCILE_DAYS = 7
+
 
 def _float(v, default=0.0) -> float:
     if v is None:
@@ -114,12 +130,15 @@ def _generate_alerts(
             "slack_sent": False,
         })
 
-    if actual > planned_budget and planned_budget > 0:
+    if planned_budget > 0 and actual > planned_budget + BUDGET_EXCEEDED_TOLERANCE:
+        overage = actual - planned_budget
         _alert(
             "budget_exceeded", "critical",
             f"Budget exceeded — {line_label}",
-            f"Actual spend ${actual:,.0f} exceeds planned budget ${planned_budget:,.0f}",
-            {"line_id": line_id, "actual": actual, "budget": planned_budget},
+            f"Actual spend ${actual:,.2f} is ${overage:,.2f} "
+            f"({overage / planned_budget * 100:.1f}%) over the ${planned_budget:,.2f} budget",
+            {"line_id": line_id, "actual": actual, "budget": planned_budget,
+             "overage": overage},
         )
     elif pacing_pct > PACING_OVER_CRITICAL:
         _alert(
@@ -755,6 +774,12 @@ def run_all_active(as_of_date: date, skip_writes: bool = False) -> dict:
     # Multi-plan support (2026-04-25): a project counts as having a media plan
     # if at least one of its registered, active sheets has a current row in
     # media_plans. Same JOIN shape as the per-project dedup guard.
+    #
+    # Post-flight reconciliation (2026-06-08): we also pick up projects that
+    # completed within the last POST_FLIGHT_RECONCILE_DAYS days. run_pacing_for_project
+    # already handles 'completed' line_status correctly, so re-running it after the
+    # flight ends simply overwrites the snapshot with the now-complete actual spend
+    # once trailing Funnel data has landed. See the 26018 CAPE spend-mismatch fix.
     projects_sql = f"""
         SELECT DISTINCT p.project_code
         FROM {bq.table('dim_projects')} p
@@ -765,8 +790,13 @@ def run_all_active(as_of_date: date, skip_writes: bool = False) -> dict:
          AND mp.sheet_id   = pmp.sheet_id
          AND pmp.is_active = TRUE
         WHERE p.status IN ('active', 'in_flight')
+           OR (
+                p.status = 'completed'
+                AND p.end_date IS NOT NULL
+                AND p.end_date >= DATE_SUB(@as_of_date, INTERVAL {POST_FLIGHT_RECONCILE_DAYS} DAY)
+              )
     """
-    projects = bq.run_query(projects_sql)
+    projects = bq.run_query(projects_sql, [bq.date_param("as_of_date", as_of_date)])
 
     results = []
     for row in projects:

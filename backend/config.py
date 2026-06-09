@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Alert charts — GCS bucket holding the spend PNGs embedded in pacing alerts
+    # as Slack image blocks. Empty disables charts entirely: alerts still send,
+    # just without images (graceful degradation).
+    alert_charts_bucket: str = "point-blank-ada_resources"
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
