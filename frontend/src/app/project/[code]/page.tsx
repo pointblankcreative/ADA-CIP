@@ -230,11 +230,11 @@ export default function ProjectDetailPage() {
         </div>
       </header>
 
-      {/* Tab content. Summary is tokens (light); the legacy tabs stay
-          pinned dark until their re-skin phases (5–7) land. */}
-      {activeTab === "summary" ? (
+      {/* Tab content. Summary + Pacing are tokens (light); the remaining
+          legacy tabs stay pinned dark until their re-skin phases land. */}
+      {activeTab === "summary" || activeTab === "pacing" ? (
         <div className="mx-auto w-full max-w-[1340px] flex-1 px-5 py-6 pb-20 sm:px-7">
-          {project && (
+          {activeTab === "summary" && project && (
             <SummaryTab
               project={project}
               code={code}
@@ -242,11 +242,11 @@ export default function ProjectDetailPage() {
               onTab={(t) => setActiveTab(t as TabId)}
             />
           )}
+          {activeTab === "pacing" && <PacingTab code={code} />}
         </div>
       ) : (
         <div data-theme="dark" className="flex-1">
           <div className="mx-auto w-full max-w-[1340px] px-5 py-6 pb-20 sm:px-7">
-            {activeTab === "pacing" && <PacingTab code={code} />}
             {activeTab === "performance" && <PerformanceTab code={code} />}
             {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
             {activeTab === "settings" && <SettingsTab code={code} />}

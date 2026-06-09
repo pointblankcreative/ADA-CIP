@@ -13,6 +13,7 @@ import { Card, KpiCard } from "@/components/card";
 import { OscilloscopeCard } from "@/components/oscilloscope-card";
 import { PlatformIcon } from "@/components/platform-icon";
 import { PacingBadge } from "@/components/pacing-badge";
+import { CodeChip, Label } from "@/components/ui";
 import {
   formatCurrency,
   formatPercent,
@@ -148,8 +149,8 @@ export function PacingTab({
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <Card key={i} className="animate-pulse">
-            <div className="h-3 w-20 rounded bg-slate-700" />
-            <div className="mt-3 h-7 w-28 rounded bg-slate-700" />
+            <div className="h-3 w-20 rounded bg-surface-sunken" />
+            <div className="mt-3 h-7 w-28 rounded bg-surface-sunken" />
           </Card>
         ))}
       </div>
@@ -159,7 +160,7 @@ export function PacingTab({
   if (!data) {
     return (
       <Card>
-        <p className="text-slate-400">
+        <p className="text-fg-secondary">
           No pacing data available. Run the pacing engine first.
         </p>
       </Card>
@@ -174,10 +175,10 @@ export function PacingTab({
     return (
       <div className="space-y-6">
         <Card>
-          <p className="text-slate-300">
+          <p className="text-fg">
             No pacing snapshot for this date{asOfDate ? ` — ${asOfDate}` : ""}.
           </p>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-fg-muted">
             {data.earliest_snapshot_date
               ? `Pacing snapshots for this project begin ${data.earliest_snapshot_date}.`
               : "This project has no pacing history yet."}
@@ -259,16 +260,14 @@ export function PacingTab({
         onBundleStateChange={handleBundleStateChange}
       />
 
-      {/* Blocking chart visualization */}
+      {/* As-of stamp */}
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-          As of {data.as_of_date}
-        </h3>
+        <Label>As of {data.as_of_date}</Label>
         {/* AI-070/072: rows computed on demand (no stored snapshot for this
             date) — mirrors diagnostics' cached/just-computed indicator. */}
         {data.replayed && (
           <span
-            className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-400"
+            className="rounded-xs bg-surface-sunken px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-fg-muted"
             title="No stored snapshot exists for this date; these figures were reconstructed on demand from warehouse data."
           >
             Reconstructed
@@ -280,7 +279,7 @@ export function PacingTab({
 }
 
 /**
- * AI-002 / AI-022: amber callout listing platforms with real spend in the
+ * AI-002 / AI-022: warn callout listing platforms with real spend in the
  * data warehouse but no line in the synced media plan. These are not paced
  * (no planned baseline) but ARE included in Spent / Remaining so the budget
  * math never hides real spend.
@@ -293,45 +292,47 @@ function UntrackedSpendCard({
   total: number;
 }) {
   return (
-    <Card className="border-amber-500/30 bg-amber-500/5">
-      <div className="flex items-start gap-3">
-        <div className="flex-1">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-semibold uppercase tracking-wider text-amber-400">
-              Untracked spend — no media plan line
-            </div>
-            <span className="font-mono text-sm text-amber-300">
-              {formatCurrency(total)}
+    <Card
+      className="border-tint-warn"
+      style={{
+        background: "color-mix(in srgb, var(--warn) 6%, var(--surface-card))",
+        borderLeft: "3px solid var(--warn)",
+      }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="eyebrow" style={{ color: "var(--warn)" }}>
+          Untracked Spend — no media plan line
+        </div>
+        <span className="font-mono text-sm font-semibold text-warn">
+          {formatCurrency(total)}
+        </span>
+      </div>
+      <p className="mb-3 mt-2.5 max-w-[640px] text-[12.5px] text-fg-muted">
+        These platforms have spend in the data warehouse but no line in the
+        synced media plan, so they are not paced. Check the media plan sheet
+        and re-sync, or confirm this spend is expected.
+      </p>
+      <div className="flex flex-col gap-2">
+        {platforms.map((u) => (
+          <div
+            key={u.platform_id}
+            className="flex items-center justify-between"
+          >
+            <span className="inline-flex items-center gap-2.5 text-[13px] font-semibold text-fg">
+              <PlatformIcon platformId={u.platform_id} size={26} />
+              {platformLabel(u.platform_id)}
+              {u.first_date && u.last_date && (
+                <span className="font-mono text-[10.5px] font-normal text-fg-faint">
+                  {formatShortDate(u.first_date)} —{" "}
+                  {formatShortDate(u.last_date)}
+                </span>
+              )}
+            </span>
+            <span className="font-mono text-[13px] text-warn">
+              {formatCurrency(u.spend)}
             </span>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            These platforms have spend in the data warehouse but no line in
-            the synced media plan, so they are not paced. Check the media
-            plan sheet and re-sync, or confirm this spend is expected.
-          </p>
-          <div className="mt-2 space-y-1">
-            {platforms.map((u) => (
-              <div
-                key={u.platform_id}
-                className="flex items-center justify-between text-sm"
-              >
-                <span className="flex items-center gap-2 font-medium text-slate-200">
-                  <PlatformIcon platformId={u.platform_id} />
-                  {platformLabel(u.platform_id)}
-                  {u.first_date && u.last_date && (
-                    <span className="text-xs text-slate-500">
-                      {formatShortDate(u.first_date)} —{" "}
-                      {formatShortDate(u.last_date)}
-                    </span>
-                  )}
-                </span>
-                <span className="font-mono text-amber-300">
-                  {formatCurrency(u.spend)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
+        ))}
       </div>
     </Card>
   );
@@ -368,9 +369,10 @@ function PacingLinesSection({
   if (!hasMultiplePhases) {
     return (
       <div>
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-          Line-by-Line Pacing
-        </h3>
+        <div className="flex items-center gap-3">
+          <Label className="text-fg-secondary">Line-by-Line Pacing</Label>
+          <div className="h-px flex-1 bg-line-soft" />
+        </div>
         <div className="mt-3 space-y-3">
           {data.lines.map((line) => (
             <LineRow
@@ -403,9 +405,12 @@ function PacingLinesSection({
 
   return (
     <div>
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-        Line-by-Line Pacing · {phases.length} phases
-      </h3>
+      <div className="flex items-center gap-3">
+        <Label className="text-fg-secondary">
+          Line-by-Line Pacing · {phases.length} phases
+        </Label>
+        <div className="h-px flex-1 bg-line-soft" />
+      </div>
       <div className="mt-3 space-y-6">
         {phases.map((phase, idx) => (
           <PhaseGroup
@@ -421,12 +426,12 @@ function PacingLinesSection({
         ))}
         {unassigned.length > 0 && (
           <div>
-            <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-4 py-2 mb-2">
-              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Unassigned
-              </div>
-              <div className="text-[11px] text-slate-500">
-                {unassigned.length} line{unassigned.length === 1 ? "" : "s"} from a sheet that's no longer registered against this project.
+            <div className="mb-2 rounded-md border-2 border-line-soft bg-surface-sunken px-4 py-2">
+              <div className="label text-[10px]">Unassigned</div>
+              <div className="text-[11px] text-fg-muted">
+                {unassigned.length} line{unassigned.length === 1 ? "" : "s"}{" "}
+                from a sheet that&apos;s no longer registered against this
+                project.
               </div>
             </div>
             <div className="space-y-3">
@@ -473,31 +478,35 @@ function PhaseGroup({
   const heading = phase.phase_label ?? `Phase ${phase.display_order ?? phaseNumber}`;
   return (
     <div>
-      <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-4 py-3 mb-3 flex items-center justify-between gap-4">
+      <div className="mb-3 flex items-center justify-between gap-4 rounded-md border-2 border-line-soft bg-surface-sunken px-4 py-3">
         <div>
           <div className="flex items-center gap-2">
-            <div className="text-sm font-semibold text-white">{heading}</div>
+            <div className="text-sm font-bold text-fg">{heading}</div>
             {!phase.is_active && (
-              <span className="rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+              <span className="rounded-xs bg-surface-card px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-fg-muted">
                 retired
               </span>
             )}
           </div>
-          <div className="text-[11px] text-slate-500">
-            {phase.line_count} line{phase.line_count === 1 ? "" : "s"} · {formatCurrency(phase.planned_budget)} planned
+          <div className="mt-0.5 font-mono text-[11px] text-fg-muted">
+            {phase.line_count} line{phase.line_count === 1 ? "" : "s"} ·{" "}
+            {formatCurrency(phase.planned_budget)} planned
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <div className="text-right">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">Spent</div>
-            <div className="text-sm tabular-nums text-white">
+            <div className="label text-[9.5px]">Spent</div>
+            <div className="tnum text-sm font-semibold text-fg">
               {formatCurrency(phase.actual_spend_to_date)}
-              <span className="text-slate-500"> / {formatCurrency(phase.planned_spend_to_date)}</span>
+              <span className="text-fg-faint">
+                {" "}
+                / {formatCurrency(phase.planned_spend_to_date)}
+              </span>
             </div>
           </div>
           <div className={cn("text-right", pacingColor(status))}>
-            <div className="text-[10px] uppercase tracking-wider opacity-80">Pacing</div>
-            <div className="text-sm font-semibold tabular-nums">
+            <div className="label text-[9.5px] opacity-80">Pacing</div>
+            <div className="tnum text-sm font-bold">
               {formatPercent(phase.pacing_percentage)}
             </div>
           </div>
@@ -505,7 +514,7 @@ function PhaseGroup({
       </div>
       <div className="space-y-3">
         {lines.length === 0 ? (
-          <div className="text-xs text-slate-500 px-4 py-3 italic">
+          <div className="px-4 py-3 text-xs italic text-fg-muted">
             No active lines in this phase yet.
           </div>
         ) : (
@@ -660,11 +669,11 @@ function LineRow({
   return (
     <Card className={cn("!p-3 sm:!p-4", isCompleted && "opacity-60")}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3 min-w-0">
-          <PlatformIcon platformId={line.platform_id} />
+        <div className="flex min-w-0 items-center gap-3">
+          <PlatformIcon platformId={line.platform_id} size={34} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-              <span className="text-sm font-medium text-white">
+              <span className="text-sm font-bold text-fg">
                 {platformLabel(line.platform_id)}
               </span>
               {editing ? (
@@ -676,17 +685,17 @@ function LineRow({
                     onBlur={handleSave}
                     onKeyDown={handleKeyDown}
                     disabled={saving}
-                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-blue-300 outline-none focus:border-blue-500 w-48 disabled:opacity-60"
+                    className="w-48 rounded-sm border-2 border-line bg-surface-sunken px-1.5 py-0.5 text-xs text-accent-ink outline-none focus:border-accent disabled:opacity-60"
                     placeholder="Line name..."
                   />
                   {error && (
-                    <span className="text-xs text-red-400">{error}</span>
+                    <span className="text-xs text-danger">{error}</span>
                   )}
                 </div>
               ) : (
                 <>
                   {displayName && (
-                    <span className="text-xs font-medium text-blue-400">
+                    <span className="font-mono text-xs font-medium text-accent-ink">
                       {displayName}
                     </span>
                   )}
@@ -695,7 +704,7 @@ function LineRow({
                       setEditValue(line.audience_name || displayName);
                       setEditing(true);
                     }}
-                    className="text-slate-600 hover:text-slate-400 transition-colors"
+                    className="text-fg-faint transition-colors hover:text-fg-muted"
                     aria-label="Edit line name"
                     title="Edit line name"
                   >
@@ -710,22 +719,18 @@ function LineRow({
                   </button>
                 </>
               )}
-              {line.line_code && (
-                <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
-                  {line.line_code}
-                </span>
-              )}
+              {line.line_code && <CodeChip>{line.line_code}</CodeChip>}
               {(bundleParent || bundleRejected) && bundleMemberCount > 0 && (
                 <>
                   <span
                     className={cn(
-                      "rounded border px-1.5 py-0.5 text-[10px] font-medium",
+                      "rounded-xs border px-1.5 py-0.5 font-mono text-[10px] font-medium",
                       line.bundle_role === "suggested_parent" &&
-                        "border-dashed border-amber-500/40 bg-amber-500/10 text-amber-300",
+                        "border-dashed border-tint-warn bg-tint-warn text-warn",
                       line.bundle_role === "confirmed_parent" &&
-                        "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+                        "border-tint-ok bg-tint-ok text-ok",
                       line.bundle_role === "rejected" &&
-                        "border-dashed border-slate-600 bg-slate-800/50 text-slate-400"
+                        "border-dashed border-line bg-surface-sunken text-fg-muted"
                     )}
                     title={
                       line.bundle_role === "suggested_parent"
@@ -748,7 +753,7 @@ function LineRow({
                         type="button"
                         onClick={handleBundleConfirm}
                         disabled={bundleSaving}
-                        className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                        className="rounded-xs border border-tint-ok bg-tint-ok px-1.5 py-0.5 font-mono text-[10px] font-semibold text-ok hover:opacity-80 disabled:opacity-50"
                         title="Lock this bundle in. Persists across re-syncs."
                       >
                         {bundleSaving ? "Confirming…" : "Confirm"}
@@ -757,7 +762,7 @@ function LineRow({
                         type="button"
                         onClick={handleBundleReject}
                         disabled={bundleSaving}
-                        className="rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                        className="rounded-xs border border-tint-danger bg-tint-danger px-1.5 py-0.5 font-mono text-[10px] font-semibold text-danger hover:opacity-80 disabled:opacity-50"
                         title="Treat the parent line as a standalone with the pool budget. Children are hidden from pacing because the parser zeroed their budgets when it detected the bundle. To restore children with their own budgets, un-merge the source sheet's Budget cells and re-sync."
                       >
                         {bundleSaving ? "Rejecting…" : "Reject"}
@@ -771,29 +776,26 @@ function LineRow({
                         type="button"
                         onClick={handleBundleClear}
                         disabled={bundleSaving}
-                        className="rounded border border-slate-600 bg-slate-800/50 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                        className="rounded-xs border border-line bg-surface-sunken px-1.5 py-0.5 font-mono text-[10px] font-semibold text-fg-secondary hover:bg-surface-up disabled:opacity-50"
                         title="Revert to the parser's suggestion. Next sync re-decides from the spreadsheet."
                       >
                         {bundleSaving ? "Clearing…" : "Clear"}
                       </button>
                     )}
                   {bundleError && (
-                    <span
-                      className="text-[10px] text-red-400"
-                      title={bundleError}
-                    >
+                    <span className="text-[10px] text-danger" title={bundleError}>
                       Bundle action failed
                     </span>
                   )}
                 </>
               )}
             </div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-fg-muted">
               <span>{formatCurrency(line.actual_spend_to_date)} spent</span>
               <span>of {formatCurrency(line.planned_budget)} budget</span>
               {dateRange && <span>{dateRange}</span>}
               {isCompleted ? (
-                <span className="text-slate-400">
+                <span className="text-fg-secondary">
                   Final: {formatPercent(budgetPct)} utilized
                 </span>
               ) : (
@@ -810,7 +812,7 @@ function LineRow({
                 </>
               )}
               <span
-                className="font-mono text-[10px] text-slate-600 cursor-help"
+                className="cursor-help font-mono text-[10px] text-fg-faint"
                 title={line.line_id}
               >
                 {line.line_id.split("-").pop()}
@@ -824,11 +826,11 @@ function LineRow({
       </div>
 
       {/* Progress bar */}
-      <div className="mt-3">
-        <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-800">
+      <div className="mt-3.5">
+        <div className="relative h-2.5 w-full overflow-hidden rounded-pill bg-surface-sunken">
           {/* Planned marker at planned % */}
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-slate-500 z-10"
+            className="absolute bottom-0 top-0 z-10 w-0.5 bg-fg-secondary"
             style={{
               left: `${Math.min(
                 (line.planned_spend_to_date / Math.max(line.planned_budget, 1)) * 100,
@@ -839,15 +841,15 @@ function LineRow({
           {/* Actual bar */}
           <div
             className={cn(
-              "h-full rounded-full transition-all duration-700",
-              isCompleted ? "bg-slate-600" : pacingBarColor(status)
+              "h-full rounded-pill transition-all duration-700 ease-snap",
+              isCompleted ? "bg-done" : pacingBarColor(status)
             )}
             style={{ width: `${Math.min(budgetPct, 100)}%` }}
           />
         </div>
-        <div className="mt-1 flex justify-between text-[10px] text-slate-600">
+        <div className="mt-[5px] flex justify-between font-mono text-[9.5px] text-fg-faint">
           <span>0%</span>
-          <span>Budget: {formatCurrency(line.planned_budget)}</span>
+          <span>Budget {formatCurrency(line.planned_budget)}</span>
         </div>
       </div>
 
@@ -856,10 +858,10 @@ function LineRow({
           bundles also render the expandable list so the user can see which
           audiences were hidden from pacing — Reject UX. */}
       {(bundleParent || bundleRejected) && bundleMemberCount > 0 && (
-        <div className="mt-3 border-t border-slate-800/60 pt-2">
+        <div className="mt-3 border-t border-line-soft pt-2">
           <button
             onClick={() => setBundleExpanded((v) => !v)}
-            className="flex w-full items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition-colors"
+            className="flex w-full items-center justify-between text-xs text-fg-secondary transition-colors hover:text-fg"
           >
             <span>
               {bundleExpanded ? "Hide" : "Show"} {bundleMemberCount} other{" "}
@@ -885,14 +887,10 @@ function LineRow({
               {line.bundle_members.map((m: BundleMember) => (
                 <li
                   key={m.line_id}
-                  className="flex items-center gap-2 pl-4 text-xs text-slate-400"
+                  className="flex items-center gap-2 pl-4 text-xs text-fg-secondary"
                 >
-                  <span className="h-px w-3 bg-slate-700" aria-hidden />
-                  {m.line_code && (
-                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
-                      {m.line_code}
-                    </span>
-                  )}
+                  <span className="h-px w-3 bg-line" aria-hidden />
+                  {m.line_code && <CodeChip>{m.line_code}</CodeChip>}
                   <span className="truncate">
                     {m.audience_name ||
                       lineDisplayName({

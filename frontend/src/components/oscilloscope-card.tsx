@@ -12,6 +12,7 @@ import {
   ReferenceLine,
   ReferenceArea,
 } from "recharts";
+import { ChevronDown } from "lucide-react";
 import type { PacingResponse, PacingLine, PacingHistoryResponse } from "@/lib/api";
 import { api } from "@/lib/api";
 import {
@@ -23,6 +24,7 @@ import {
 } from "@/lib/oscilloscope";
 import { formatPercent, platformLabel, cn } from "@/lib/utils";
 import { PacingBadge } from "@/components/pacing-badge";
+import { Label } from "@/components/ui";
 
 // ── Collapsed: Animated Oscilloscope SVG ────────────────────────────
 
@@ -90,7 +92,7 @@ function OscilloscopeSVG({
     <svg
       ref={svgRef}
       viewBox={`0 0 ${width} ${height}`}
-      className="w-full h-full"
+      className="h-full w-full"
       preserveAspectRatio="none"
     >
       <defs>
@@ -105,28 +107,10 @@ function OscilloscopeSVG({
 
       {/* Grid */}
       {hLines.map((y) => (
-        <line
-          key={`h-${y}`}
-          x1={0}
-          y1={y}
-          x2={width}
-          y2={y}
-          stroke="#334155"
-          strokeWidth={0.5}
-          opacity={0.25}
-        />
+        <line key={`h-${y}`} x1={0} y1={y} x2={width} y2={y} stroke="var(--chart-dim)" strokeWidth={0.5} opacity={0.2} />
       ))}
       {vLines.map((x) => (
-        <line
-          key={`v-${x}`}
-          x1={x}
-          y1={0}
-          x2={x}
-          y2={height}
-          stroke="#334155"
-          strokeWidth={0.5}
-          opacity={0.25}
-        />
+        <line key={`v-${x}`} x1={x} y1={0} x2={x} y2={height} stroke="var(--chart-dim)" strokeWidth={0.5} opacity={0.16} />
       ))}
 
       {/* Glow layer (blurred duplicates) */}
@@ -163,11 +147,11 @@ function OscilloscopeSVG({
 // ── Expanded: Historical Pacing Chart ───────────────────────────────
 
 const TOOLTIP_STYLE = {
-  background: "#1e293b",
-  border: "1px solid #334155",
-  borderRadius: "0.5rem",
+  background: "var(--surface-raised)",
+  border: "1.5px solid var(--border)",
+  borderRadius: "4px",
   fontSize: "0.75rem",
-  color: "#e2e8f0",
+  color: "var(--text-primary)",
 };
 
 function HistoryChart({
@@ -193,7 +177,7 @@ function HistoryChart({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-48 text-slate-600 text-sm">
+      <div className="flex h-48 items-center justify-center text-sm text-fg-faint">
         Loading history...
       </div>
     );
@@ -201,7 +185,7 @@ function HistoryChart({
 
   if (!history || history.history.length === 0) {
     return (
-      <div className="flex items-center justify-center h-48 text-slate-600 text-sm">
+      <div className="flex h-48 items-center justify-center text-sm text-fg-faint">
         No historical data yet. Pacing history builds daily.
       </div>
     );
@@ -239,58 +223,54 @@ function HistoryChart({
     <div className="h-64">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-soft)" />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 10, fill: "#64748b" }}
+            tick={{ fontSize: 10, fill: "var(--text-faint)", fontFamily: "var(--font-mono)" }}
             interval="preserveStartEnd"
           />
           <YAxis
             domain={[50, 150]}
-            tick={{ fontSize: 10, fill: "#64748b" }}
+            tick={{ fontSize: 10, fill: "var(--text-faint)", fontFamily: "var(--font-mono)" }}
             tickFormatter={(v: number) => `${v}%`}
           />
           <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => `${v}%`} />
 
           {/* Threshold bands */}
-          <ReferenceArea y1={85} y2={115} fill="#34d399" fillOpacity={0.04} />
-          <ReferenceArea y1={70} y2={85} fill="#fbbf24" fillOpacity={0.04} />
-          <ReferenceArea y1={115} y2={130} fill="#fbbf24" fillOpacity={0.04} />
+          <ReferenceArea y1={85} y2={115} fill="var(--ok)" fillOpacity={0.06} />
+          <ReferenceArea y1={70} y2={85} fill="var(--warn)" fillOpacity={0.05} />
+          <ReferenceArea y1={115} y2={130} fill="var(--warn)" fillOpacity={0.05} />
 
           {/* 100% reference line */}
           <ReferenceLine
             y={100}
-            stroke="#64748b"
+            stroke="var(--text-faint)"
             strokeDasharray="4 4"
             strokeWidth={1}
           />
 
-          <Line
-            type="monotone"
-            dataKey="high"
-            stroke="#f87171"
-            strokeWidth={1.5}
-            dot={false}
-            name="Highest line"
-          />
-          <Line
-            type="monotone"
-            dataKey="overall"
-            stroke="#34d399"
-            strokeWidth={2}
-            dot={false}
-            name="Overall"
-          />
-          <Line
-            type="monotone"
-            dataKey="low"
-            stroke="#60a5fa"
-            strokeWidth={1.5}
-            dot={false}
-            name="Lowest line"
-          />
+          <Line type="monotone" dataKey="high" stroke="var(--danger)" strokeWidth={1.5} dot={false} name="Highest line" />
+          <Line type="monotone" dataKey="overall" stroke="var(--ok)" strokeWidth={2} dot={false} name="Overall" />
+          <Line type="monotone" dataKey="low" stroke="var(--info)" strokeWidth={1.5} dot={false} name="Lowest line" />
         </LineChart>
       </ResponsiveContainer>
+      <div className="mt-2 flex gap-[18px]">
+        {(
+          [
+            ["Overall", "var(--ok)"],
+            ["Highest line", "var(--danger)"],
+            ["Lowest line", "var(--info)"],
+          ] as Array<[string, string]>
+        ).map(([k, c]) => (
+          <span
+            key={k}
+            className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-fg-muted"
+          >
+            <span className="h-[2.5px] w-3.5" style={{ background: c }} />
+            {k}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -322,130 +302,146 @@ export function OscilloscopeCard({
         ? "Watch"
         : "Critical";
   const healthColor = allPending
-    ? "text-blue-400"
+    ? "var(--info)"
     : health > 0.85
-      ? "text-emerald-400"
+      ? "var(--ok)"
       : health > 0.5
-        ? "text-amber-400"
-        : "text-red-400";
+        ? "var(--warn)"
+        : "var(--danger)";
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950 overflow-hidden">
-      {/* Collapsed card */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full text-left group"
-        aria-label="Toggle pacing history"
-        aria-expanded={expanded}
-      >
-        <div className="relative h-32 sm:h-36">
-          {/* Oscilloscope background */}
-          <div className="absolute inset-0 bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
-            <OscilloscopeSVG
-              lines={pacing.lines}
-              overallPct={pacing.overall_pacing_percentage}
-            />
-          </div>
-
-          {/* Overlay: subtle labels */}
-          <div className="absolute inset-0 flex items-end justify-between px-4 pb-2 pointer-events-none">
-            <div className="flex items-center gap-2">
-              <span className={cn("text-xs font-medium", healthColor)}>
-                {healthLabel}
-              </span>
-              <span className="text-[10px] text-slate-600">
-                {allPending
-                  ? "Lines pending activation"
-                  : `${formatPercent(pacing.overall_pacing_percentage)} paced`}
-              </span>
-            </div>
-            <div className="flex items-center gap-3 text-[10px] text-slate-600">
-              {channels.map((ch, i) => (
-                <span key={i} className="flex items-center gap-1">
-                  <span
-                    className="inline-block h-1.5 w-1.5 rounded-full"
-                    style={{ backgroundColor: pacingToColor(ch.pct) }}
-                  />
-                  {ch.label}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Expand hint */}
-          <div className="absolute top-2 right-3 text-slate-700 group-hover:text-slate-500 transition-colors">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 16 16"
-              fill="currentColor"
-              className={cn(
-                "h-4 w-4 transition-transform",
-                expanded && "rotate-180"
-              )}
+    <div className="overflow-hidden rounded-md border-2 border-line-soft">
+      {/* Collapsed card — the scope screen is a CRT: always dark, both themes */}
+      <div data-theme="dark">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="group block w-full text-left"
+          aria-label="Toggle pacing history"
+          aria-expanded={expanded}
+        >
+          <div className="relative h-36 sm:h-[150px]">
+            {/* Oscilloscope background */}
+            <div
+              className="absolute inset-0"
+              style={{
+                background:
+                  "radial-gradient(120% 100% at 50% 0%, var(--dark-700), var(--dark-900))",
+              }}
             >
-              <path
-                fillRule="evenodd"
-                d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"
+              <OscilloscopeSVG
+                lines={pacing.lines}
+                overallPct={pacing.overall_pacing_percentage}
               />
-            </svg>
-          </div>
-        </div>
-      </button>
+            </div>
 
-      {/* Expanded view */}
+            {/* Overlay: labels */}
+            <div className="pointer-events-none absolute inset-x-[18px] top-3.5 flex items-start justify-between">
+              <div>
+                <div className="eyebrow">Pacing Oscilloscope</div>
+                <div className="mt-2 flex items-center gap-2.5">
+                  <span
+                    className="font-display text-[22px] uppercase leading-none tracking-[0.01em]"
+                    style={{ color: healthColor }}
+                  >
+                    {healthLabel}
+                  </span>
+                  <span className="font-mono text-[11.5px] text-fg-muted">
+                    {allPending
+                      ? "lines pending activation"
+                      : `${formatPercent(pacing.overall_pacing_percentage)} paced`}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-[5px]">
+                {channels.map((ch, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center gap-1.5 font-mono text-[10px] text-fg-muted"
+                  >
+                    <span className="max-w-[160px] truncate">{ch.label}</span>
+                    <span
+                      className="inline-block h-[7px] w-[7px] rounded-full"
+                      style={{ backgroundColor: pacingToColor(ch.pct) }}
+                    />
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Expand hint */}
+            <div className="absolute bottom-3 right-[18px] inline-flex items-center gap-1.5 text-fg-faint transition-colors group-hover:text-fg-muted">
+              <span className="font-mono text-[10px] tracking-[0.1em]">
+                {expanded ? "HIDE" : "TREND + LINES"}
+              </span>
+              <ChevronDown
+                className={cn(
+                  "h-[15px] w-[15px] transition-transform duration-base",
+                  expanded && "rotate-180"
+                )}
+              />
+            </div>
+          </div>
+        </button>
+      </div>
+
+      {/* Expanded view — theme-aware (light on the live page) */}
       {expanded && (
-        <div className="border-t border-slate-800 p-4 sm:p-5 space-y-5">
+        <div className="space-y-6 border-t-2 border-line-soft bg-surface-card p-4 sm:p-5">
           {/* Historical trend chart */}
           <div>
-            <h4 className="text-xs font-medium uppercase tracking-wider text-slate-500 mb-3">
-              Pacing trend
-            </h4>
+            <Label className="mb-3.5">Pacing Trend · 60 days</Label>
             <HistoryChart code={code} asOfDate={asOfDate} />
           </div>
 
           {/* Per-line detail table */}
-          <div>
-            <h4 className="text-xs font-medium uppercase tracking-wider text-slate-500 mb-3">
-              Line breakdown
-            </h4>
+          <div className="pt-2">
+            <Label className="mb-3">Line Breakdown</Label>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full min-w-[520px] border-collapse text-left text-[12.5px]">
                 <thead>
-                  <tr className="text-slate-600 uppercase tracking-wider">
-                    <th className="pb-2 pr-4 font-medium">Line</th>
-                    <th className="pb-2 pr-4 font-medium">Platform</th>
-                    <th className="pb-2 pr-4 font-medium">Flight</th>
-                    <th className="pb-2 pr-4 font-medium text-right">Pacing</th>
-                    <th className="pb-2 font-medium text-right">Status</th>
+                  <tr>
+                    {["Line", "Platform", "Flight", "Pacing", "Status"].map(
+                      (h, i) => (
+                        <th
+                          key={h}
+                          className={cn(
+                            "whitespace-nowrap pb-2.5 pr-3 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-fg-faint",
+                            i > 2 && "text-right"
+                          )}
+                        >
+                          {h}
+                        </th>
+                      )
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {pacing.lines.map((line) => (
-                    <tr
-                      key={line.line_id}
-                      className="border-t border-slate-800/50"
-                    >
-                      <td className="py-2 pr-4 text-slate-300 truncate max-w-[180px]">
-                        {line.audience_name || line.channel_category || line.line_id.split("-").pop()}
+                    <tr key={line.line_id} className="border-t border-line-soft">
+                      <td className="max-w-[200px] truncate py-2.5 pr-3 text-fg-secondary">
+                        {line.audience_name ||
+                          line.channel_category ||
+                          line.line_id.split("-").pop()}
                       </td>
-                      <td className="py-2 pr-4 text-slate-500">
+                      <td className="py-2.5 pr-3 text-fg-muted">
                         {platformLabel(line.platform_id)}
                       </td>
-                      <td className="py-2 pr-4 text-slate-600 whitespace-nowrap">
+                      <td className="whitespace-nowrap py-2.5 pr-3 font-mono text-[11px] text-fg-faint">
                         {line.flight_start && line.flight_end
                           ? `${line.flight_start.slice(5)} — ${line.flight_end.slice(5)}`
                           : "—"}
                       </td>
-                      <td className="py-2 pr-4 text-right tabular-nums text-slate-400">
+                      <td className="tnum py-2.5 pr-3 text-right font-mono font-semibold text-fg-secondary">
                         {isLinePending(line)
                           ? "—"
                           : formatPercent(line.pacing_percentage)}
                       </td>
-                      <td className="py-2 text-right">
+                      <td className="py-2.5 text-right">
                         <PacingBadge
                           percentage={line.pacing_percentage}
                           lineStatus={line.line_status}
                           variant="label"
+                          size="sm"
                         />
                       </td>
                     </tr>

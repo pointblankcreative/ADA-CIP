@@ -76,18 +76,18 @@ export function extractChannels(
 // ── Color from Pacing Percentage ────────────────────────────────────
 
 export function pacingToColor(pct: number): string {
-  if (pct >= 85 && pct <= 115) return "#34d399"; // emerald-400
-  if (pct >= 70 && pct <= 130) return "#fbbf24"; // amber-400
-  return "#f87171"; // red-400
+  if (pct >= 85 && pct <= 115) return "var(--ok)";
+  if (pct >= 70 && pct <= 130) return "var(--warn)";
+  return "var(--danger)";
 }
 
-/** Like pacingToColor but returns blue for pending/not_started lines. */
+/** Like pacingToColor but returns the info tone for pending/not_started lines. */
 export function pacingToColorWithStatus(
   pct: number,
   lineStatus?: string
 ): string {
   if (lineStatus === "pending" || lineStatus === "not_started") {
-    return "#60a5fa"; // blue-400
+    return "var(--info)";
   }
   return pacingToColor(pct);
 }
