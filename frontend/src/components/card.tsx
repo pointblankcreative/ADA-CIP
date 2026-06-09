@@ -1,18 +1,21 @@
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import type { CSSProperties, MouseEventHandler, ReactNode } from "react";
 
 interface CardProps {
   children: ReactNode;
   className?: string;
   /** Native browser tooltip (AI-102: used for per-platform metric definitions). */
   title?: string;
+  /** Inline style — for dynamic status-tinted borders/washes (tokens via color-mix). */
+  style?: CSSProperties;
+  onClick?: MouseEventHandler<HTMLDivElement>;
 }
 
 /**
  * Card — flat fill, 2px border, tight radius. Point Blank cards are not
  * floaty drop-shadow cards; the border is the structuring device.
  */
-export function Card({ children, className, title }: CardProps) {
+export function Card({ children, className, title, style, onClick }: CardProps) {
   return (
     <div
       className={cn(
@@ -20,6 +23,8 @@ export function Card({ children, className, title }: CardProps) {
         className
       )}
       title={title}
+      style={style}
+      onClick={onClick}
     >
       {children}
     </div>

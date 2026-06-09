@@ -14,12 +14,11 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  /* data-theme="dark" pins the whole app dark while legacy slate-styled
-     screens are migrated to tokens. The light default (:root) becomes the
-     live theme when this attribute is removed — screens rebuilt on tokens
-     are theme-agnostic and need no further changes. */
+  /* Light is the live theme (:root tokens). Legacy slate-styled routes are
+     pinned dark via data-theme="dark" in their route layouts until each is
+     rebuilt on tokens; rebuilt screens are theme-agnostic. */
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en">
       <body className={`${fontVariables} min-h-screen font-sans`}>
         <AppShell>{children}</AppShell>
       </body>

@@ -1,36 +1,42 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import {
-  ArrowRight,
-  Calendar,
-  DollarSign,
-  TrendingUp,
-  AlertTriangle,
-  RefreshCw,
-  ChevronDown,
-  ChevronUp,
-} from "lucide-react";
+/**
+ * Flightdeck — triage-first campaign board, replacing the Overview grid.
+ * Visual weight = urgency: portfolio pulse, then exceptions, then every
+ * flight as a dense row. All figures derive client-side from the existing
+ * /api/projects/ payload via lib/flight.ts — no backend changes.
+ */
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { RefreshCw, Zap } from "lucide-react";
 import { api, type Project } from "@/lib/api";
-import { Card, KpiCard } from "@/components/card";
-import { PacingBadge } from "@/components/pacing-badge";
-import { BudgetGauge } from "@/components/budget-gauge";
-import { OrphanPanel } from "@/components/orphan-panel";
+import { computeFlight, verdict } from "@/lib/flight";
+import { Card } from "@/components/card";
+import { Eyebrow, Label, Btn } from "@/components/ui";
+import { PortfolioPulse } from "@/components/flightdeck/portfolio-pulse";
 import {
-  formatCurrency,
-  formatFlightDay,
-  formatNumber,
-  pacingStatus,
-  pacingBg,
-  cn,
-} from "@/lib/utils";
+  AttentionFeature,
+  AttentionTile,
+} from "@/components/flightdeck/attention";
+import {
+  FlightRow,
+  FlightRowHeader,
+} from "@/components/flightdeck/flight-row";
+import {
+  Segmented,
+  SortSelect,
+  type SortKey,
+} from "@/components/flightdeck/controls";
+import { OrphanPanel } from "@/components/orphan-panel";
+import { cn } from "@/lib/utils";
 
-export default function OverviewPage() {
+export default function FlightdeckPage() {
+  const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showCompleted, setShowCompleted] = useState(false);
+  const [tab, setTab] = useState<"active" | "ended">("active");
+  const [sort, setSort] = useState<SortKey>("attention");
 
   const load = async () => {
     setLoading(true);
@@ -39,7 +45,7 @@ export default function OverviewPage() {
       setProjects(data);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load projects");
+      setError(e instanceof Error ? e.message : "Failed to load campaigns");
     } finally {
       setLoading(false);
     }
@@ -49,240 +55,208 @@ export default function OverviewPage() {
     load();
   }, []);
 
-  const activeProjects = projects.filter(
-    (p) => p.status === "active" && !p.recently_ended
+  const onOpen = (code: string) => router.push(`/project/${code}`);
+
+  const active = useMemo(
+    () => projects.filter((p) => p.status === "active" && !p.recently_ended),
+    [projects]
   );
-  const recentlyEndedProjects = projects.filter(
-    (p) => p.recently_ended === true
+  const ended = useMemo(
+    () => projects.filter((p) => p.status !== "active" || p.recently_ended),
+    [projects]
   );
-  const completedProjects = projects.filter(
-    (p) => p.status !== "active" && !p.recently_ended
-  );
-  const totalBudget = activeProjects.reduce((s, p) => s + (p.net_budget ?? 0), 0);
-  const totalSpend = activeProjects.reduce((s, p) => s + (p.total_spend ?? 0), 0);
+
+  // Needs attention: live flights off plan, worst first.
+  const issues = useMemo(() => {
+    return active
+      .map((p) => ({ p, f: computeFlight(p) }))
+      .filter(
+        ({ f }) =>
+          !f.noData &&
+          (f.status.includes("critical") || f.status.includes("warning"))
+      )
+      .map((x) => ({
+        ...x,
+        v: verdict(x.p, x.f),
+        sev: x.f.status.includes("critical") ? 2 : 1,
+        dev: Math.abs((x.p.pacing_percentage ?? 100) - 100),
+      }))
+      .sort((a, b) => b.sev - a.sev || b.dev - a.dev);
+  }, [active]);
+
+  const list = tab === "active" ? active : ended;
+  const sorted = useMemo(() => {
+    const arr = list.map((p) => ({ p, f: computeFlight(p) }));
+    const cmp: Record<
+      SortKey,
+      (a: (typeof arr)[number], b: (typeof arr)[number]) => number
+    > = {
+      attention: (a, b) =>
+        Number(a.f.noData) - Number(b.f.noData) ||
+        Math.abs((b.p.pacing_percentage ?? 100) - 100) -
+          Math.abs((a.p.pacing_percentage ?? 100) - 100),
+      pace: (a, b) =>
+        (b.p.pacing_percentage ?? 0) - (a.p.pacing_percentage ?? 0),
+      budget: (a, b) => (b.p.net_budget ?? 0) - (a.p.net_budget ?? 0),
+      days: (a, b) => (a.p.days_remaining ?? 0) - (b.p.days_remaining ?? 0),
+      name: (a, b) => a.p.project_name.localeCompare(b.p.project_name),
+    };
+    return arr.sort(cmp[sort]).map((x) => x.p);
+  }, [list, sort]);
+
+  // "As of" stamp: freshest updated_at in the payload.
+  const asOf = useMemo(() => {
+    const stamps = projects
+      .map((p) => p.updated_at)
+      .filter(Boolean)
+      .sort();
+    const latest = stamps[stamps.length - 1];
+    return latest ? latest.slice(0, 16).replace("T", " ") : null;
+  }, [projects]);
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
+    <div className="mx-auto max-w-[1340px] px-5 pb-20 pt-7 sm:px-7">
+      {/* header */}
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-white sm:text-2xl">
-            Campaign Overview
+          <Eyebrow>
+            The board · {projects.length} campaign
+            {projects.length === 1 ? "" : "s"} tracked
+          </Eyebrow>
+          <h1 className="display mt-2.5 text-[38px] text-fg sm:text-[44px]">
+            Flightdeck
           </h1>
-          <p className="mt-1 text-sm text-slate-500">
-            All active campaigns with real-time pacing status
+          <p className="mt-3 max-w-[480px] text-sm text-fg-muted">
+            What needs you, first. Then every flight, paced in real time — no
+            vanity metrics, just whether the money&apos;s landing.
           </p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-2 rounded-md border border-slate-700 bg-surface-raised px-3.5 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-700 disabled:opacity-50"
-        >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-          Refresh
-        </button>
-      </div>
-
-      {/* KPI strip */}
-      <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard
-          label="Active Campaigns"
-          value={String(activeProjects.length)}
-          sub={`${projects.length} total`}
-        />
-        <KpiCard
-          label="Total Budget"
-          value={formatCurrency(totalBudget)}
-          sub="across all projects"
-        />
-        <KpiCard
-          label="Total Spend"
-          value={formatCurrency(totalSpend)}
-          accent={
-            totalBudget > 0 && totalSpend / totalBudget > 0.9
-              ? "text-amber-400"
-              : "text-white"
-          }
-        />
-        <KpiCard
-          label="Spend Rate"
-          value={
-            totalBudget > 0
-              ? `${((totalSpend / totalBudget) * 100).toFixed(1)}%`
-              : "—"
-          }
-          sub="of total budget used"
-        />
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="mt-6 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-          {error}
+        <div className="flex items-center gap-2.5">
+          {asOf && (
+            <span className="font-mono text-[10.5px] uppercase text-fg-faint">
+              {loading ? "Syncing…" : `As of ${asOf}`}
+            </span>
+          )}
+          <Btn
+            variant="outline"
+            size="sm"
+            onClick={load}
+            disabled={loading}
+            icon={
+              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            }
+          >
+            {loading ? "Syncing" : "Refresh"}
+          </Btn>
         </div>
+      </div>
+
+      {error && (
+        <Card className="mb-6 border-tint-danger bg-tint-danger text-sm text-danger">
+          {error}
+        </Card>
       )}
 
-      {/* Active project cards */}
-      <div className="mt-8">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-          Active Campaigns
-        </h2>
-        <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          {loading
-            ? Array.from({ length: 3 }).map((_, i) => (
-                <Card key={i} className="animate-pulse">
-                  <div className="h-4 w-32 rounded bg-slate-700" />
-                  <div className="mt-3 h-6 w-24 rounded bg-slate-700" />
-                  <div className="mt-4 h-2 w-full rounded bg-slate-700" />
-                </Card>
-              ))
-            : activeProjects.length === 0
-              ? <p className="text-sm text-slate-500 col-span-full">No active campaigns.</p>
-              : activeProjects.map((p) => (
-                  <ProjectCard key={p.project_code} project={p} />
+      {loading && projects.length === 0 ? (
+        <FlightdeckSkeleton />
+      ) : (
+        <>
+          <PortfolioPulse active={active} onOpen={onOpen} />
+
+          {/* Needs attention */}
+          {issues.length > 0 && (
+            <div className="mt-[30px]">
+              <div className="mb-4 flex items-center gap-3">
+                <Zap className="h-4 w-4 text-danger" />
+                <Label className="text-fg-secondary">Needs Attention</Label>
+                <span className="rounded-pill bg-tint-danger px-2 py-px font-mono text-[11px] text-danger">
+                  {issues.length}
+                </span>
+                <div className="h-px flex-1 bg-line-soft" />
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-3.5">
+                <AttentionFeature
+                  p={issues[0].p}
+                  f={issues[0].f}
+                  v={issues[0].v}
+                  onOpen={onOpen}
+                />
+                {issues.slice(1, 4).map(({ p, f, v }) => (
+                  <AttentionTile
+                    key={p.project_code}
+                    p={p}
+                    f={f}
+                    v={v}
+                    onOpen={onOpen}
+                  />
                 ))}
-        </div>
-      </div>
+              </div>
+            </div>
+          )}
+
+          {/* Flights */}
+          <div className="mt-[34px]">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3.5">
+              <Segmented
+                value={tab}
+                onChange={(id) => setTab(id as "active" | "ended")}
+                options={[
+                  { id: "active", label: "Active", count: active.length },
+                  { id: "ended", label: "Ended", count: ended.length },
+                ]}
+              />
+              {tab === "active" && (
+                <SortSelect value={sort} onChange={setSort} />
+              )}
+            </div>
+
+            <FlightRowHeader ended={tab === "ended"} />
+
+            <div className="flex flex-col gap-2">
+              {sorted.length === 0 ? (
+                <Card className="px-6 py-11 text-center text-sm text-fg-faint">
+                  {tab === "active"
+                    ? "No active campaigns."
+                    : "No ended campaigns yet."}
+                </Card>
+              ) : (
+                sorted.map((p, i) => (
+                  <FlightRow
+                    key={p.project_code}
+                    p={p}
+                    onOpen={onOpen}
+                    delay={i}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Unconfigured spend (orphan project codes in fact_* not in dim_projects) */}
       <OrphanPanel />
-
-      {/* Recently ended campaigns */}
-      {!loading && recentlyEndedProjects.length > 0 && (
-        <div className="mt-8">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-            Recently Ended
-          </h2>
-          <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-            {recentlyEndedProjects.map((p) => (
-              <RecentlyEndedCard key={p.project_code} project={p} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Completed campaigns */}
-      {!loading && completedProjects.length > 0 && (
-        <div className="mt-8">
-          <button
-            onClick={() => setShowCompleted(!showCompleted)}
-            className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-300 transition-colors"
-          >
-            Completed Campaigns ({completedProjects.length})
-            {showCompleted
-              ? <ChevronUp className="h-4 w-4" />
-              : <ChevronDown className="h-4 w-4" />}
-          </button>
-          {showCompleted && (
-            <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-              {completedProjects.map((p) => (
-                <ProjectCard key={p.project_code} project={p} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
 
-function RecentlyEndedCard({ project: p }: { project: Project }) {
+function FlightdeckSkeleton() {
   return (
-    <Link href={`/project/${p.project_code}`}>
-      <Card className="group cursor-pointer opacity-60 transition-all hover:opacity-80 hover:border-slate-600">
-        <div className="flex items-start justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-slate-400">
-                {p.project_code}
-              </span>
-              <span className="rounded-full border border-slate-700 bg-slate-800/50 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                Ended
-              </span>
-            </div>
-            <h3 className="mt-2 truncate text-base font-semibold text-slate-300">
-              {p.project_name}
-            </h3>
-            {p.client_name && (
-              <p className="mt-0.5 text-xs text-slate-600">{p.client_name}</p>
-            )}
-          </div>
-          <ArrowRight className="mt-1 h-4 w-4 flex-shrink-0 text-slate-700 transition-colors group-hover:text-slate-500" />
-        </div>
-        <div className="mt-3 flex items-center gap-4 text-xs text-slate-600">
-          <span className="flex items-center gap-1">
-            <Calendar className="h-3 w-3" />
-            Ended {p.end_date}
-          </span>
-          <span className="flex items-center gap-1">
-            <DollarSign className="h-3 w-3" />
-            {formatCurrency(p.total_spend)} final spend
-          </span>
+    <div className="space-y-3.5">
+      <Card className="animate-pulse">
+        <div className="h-4 w-40 rounded bg-surface-sunken" />
+        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-12 rounded bg-surface-sunken" />
+          ))}
         </div>
       </Card>
-    </Link>
-  );
-}
-
-function ProjectCard({ project: p }: { project: Project }) {
-  const status = pacingStatus(p.pacing_percentage);
-  const spendPct =
-    p.net_budget > 0 ? (p.total_spend / p.net_budget) * 100 : 0;
-
-  return (
-    <Link href={`/project/${p.project_code}`}>
-      <Card className="group cursor-pointer transition-colors hover:border-slate-600">
-        <div className="flex items-start justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-slate-400">
-                {p.project_code}
-              </span>
-              <PacingBadge
-                percentage={p.pacing_percentage}
-                totalSpend={p.total_spend}
-                size="sm"
-              />
-            </div>
-            <h3 className="mt-2 truncate text-base font-semibold text-white">
-              {p.project_name}
-            </h3>
-            {p.client_name && (
-              <p className="mt-0.5 text-xs text-slate-500">{p.client_name}</p>
-            )}
-          </div>
-          <ArrowRight className="mt-1 h-4 w-4 flex-shrink-0 text-slate-600 transition-colors group-hover:text-slate-400" />
-        </div>
-
-        {/* Budget bar */}
-        <div className="mt-4">
-          <div className="flex items-baseline justify-between text-xs">
-            <span className="text-slate-400">
-              {formatCurrency(p.total_spend)} spent
-            </span>
-            <span className="text-slate-500">
-              {formatCurrency(p.net_budget)}
-            </span>
-          </div>
-          <BudgetGauge
-            spent={p.total_spend}
-            budget={p.net_budget}
-            className="mt-1.5"
-          />
-        </div>
-
-        {/* Footer */}
-        <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
-          <span className="flex items-center gap-1">
-            <Calendar className="h-3 w-3" />
-            {formatFlightDay({ daysRemaining: p.days_remaining }, "short")}
-          </span>
-          <span className="flex items-center gap-1">
-            <DollarSign className="h-3 w-3" />
-            {spendPct.toFixed(0)}% used
-          </span>
-        </div>
-      </Card>
-    </Link>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Card key={i} className="animate-pulse py-[15px]">
+          <div className="h-4 w-2/3 rounded bg-surface-sunken" />
+          <div className="mt-2.5 h-2.5 w-full rounded bg-surface-sunken" />
+        </Card>
+      ))}
+    </div>
   );
 }

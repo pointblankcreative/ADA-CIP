@@ -5,10 +5,11 @@ import Link from "next/link";
 import { AlertCircle, Eye, EyeOff, Settings } from "lucide-react";
 import { api, type OrphanProject } from "@/lib/api";
 import { Card } from "@/components/card";
+import { Label, CodeChip, StatusPill } from "@/components/ui";
 import { formatCurrency, formatNumber, platformLabel, cn } from "@/lib/utils";
 
 /**
- * OrphanPanel — Overview-page widget listing project_codes with spend/activity
+ * OrphanPanel — Flightdeck widget listing project_codes with spend/activity
  * in fact_* tables that don't have a dim_projects row.
  *
  * The only action here is Configure → redirect to
@@ -50,22 +51,19 @@ export function OrphanPanel() {
   }
 
   return (
-    <div className="mt-8">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 text-amber-400" />
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            Unconfigured Spend
-          </h2>
-          {hasOrphans && (
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-              {orphans.length}
-            </span>
-          )}
-        </div>
+    <div className="mt-9">
+      <div className="flex items-center gap-3">
+        <AlertCircle className="h-4 w-4 text-warn" />
+        <Label className="text-fg-secondary">Unconfigured Spend</Label>
+        {hasOrphans && (
+          <span className="rounded-pill bg-tint-warn px-2 py-0.5 font-mono text-[11px] text-warn">
+            {orphans.length}
+          </span>
+        )}
+        <div className="h-px flex-1 bg-line-soft" />
         <button
           onClick={() => setShowDismissed((v) => !v)}
-          className="flex items-center gap-1.5 text-xs text-slate-500 transition-colors hover:text-slate-300"
+          className="flex items-center gap-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
         >
           {showDismissed ? (
             <>
@@ -81,16 +79,16 @@ export function OrphanPanel() {
         </button>
       </div>
 
-      <p className="mt-1 text-xs text-slate-500">
+      <p className="mt-2 text-xs text-fg-muted">
         Active spend in these project codes hasn&apos;t been configured in ADA
         yet. Configure to start tracking. To set a code aside, add it to the{" "}
-        <span className="font-mono text-slate-400">dismissed_orphans</span>{" "}
+        <span className="font-mono text-fg-secondary">dismissed_orphans</span>{" "}
         table in BigQuery (dismissed = hidden here, archived = hidden
         everywhere).
       </p>
 
       {error && (
-        <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+        <div className="mt-3 rounded-md border-2 border-tint-danger bg-tint-danger p-3 text-sm text-danger">
           {error}
         </div>
       )}
@@ -99,13 +97,13 @@ export function OrphanPanel() {
         {loading ? (
           Array.from({ length: 3 }).map((_, i) => (
             <Card key={i} className="animate-pulse">
-              <div className="h-4 w-32 rounded bg-slate-700" />
-              <div className="mt-3 h-6 w-24 rounded bg-slate-700" />
-              <div className="mt-4 h-2 w-full rounded bg-slate-700" />
+              <div className="h-4 w-32 rounded bg-surface-sunken" />
+              <div className="mt-3 h-6 w-24 rounded bg-surface-sunken" />
+              <div className="mt-4 h-2 w-full rounded bg-surface-sunken" />
             </Card>
           ))
         ) : !hasOrphans ? (
-          <p className="col-span-full text-sm text-slate-500">
+          <p className="col-span-full text-sm text-fg-muted">
             {showDismissed
               ? "No dismissed orphans."
               : "No unconfigured spend detected."}
@@ -128,31 +126,22 @@ function OrphanCard({ orphan: o }: OrphanCardProps) {
 
   return (
     <Card
-      className={cn(
-        "transition-colors",
-        o.dismissed && "opacity-60 border-slate-800/60"
-      )}
+      className={cn("transition-colors", o.dismissed && "opacity-60")}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-slate-300">
-              {o.project_code}
-            </span>
+            <CodeChip>{o.project_code}</CodeChip>
             {o.dismissed ? (
-              <span className="rounded-full border border-slate-700 bg-slate-800/50 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                Dismissed
-              </span>
+              <StatusPill label="Dismissed" color="var(--done)" size="sm" dot={false} />
             ) : (
-              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-                Unconfigured
-              </span>
+              <StatusPill label="Unconfigured" color="var(--warn)" size="sm" />
             )}
           </div>
-          <p className="mt-2 text-lg font-semibold tabular-nums text-white">
+          <p className="tnum mt-2 text-lg font-bold text-fg">
             {formatCurrency(o.total_spend)}
           </p>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-fg-muted">
             {formatNumber(o.total_rows)} rows
             {o.first_date && o.last_date && (
               <>
@@ -172,22 +161,24 @@ function OrphanCard({ orphan: o }: OrphanCardProps) {
             key={p.platform_id}
             className="flex items-center justify-between text-xs"
           >
-            <span className="text-slate-400">{platformLabel(p.platform_id)}</span>
-            <span className="tabular-nums text-slate-500">
+            <span className="text-fg-secondary">
+              {platformLabel(p.platform_id)}
+            </span>
+            <span className="tnum font-mono text-fg-muted">
               {formatCurrency(p.spend)}
             </span>
           </div>
         ))}
         {extraPlatforms > 0 && (
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-fg-faint">
             + {extraPlatforms} more platform{extraPlatforms > 1 ? "s" : ""}
           </p>
         )}
       </div>
 
       {o.dismissed && o.dismissed_reason && (
-        <div className="mt-3 rounded border border-slate-800 bg-slate-900/50 p-2 text-xs text-slate-500">
-          <span className="font-semibold text-slate-400">Reason:</span>{" "}
+        <div className="mt-3 rounded-sm border border-line-soft bg-surface-sunken p-2 text-xs text-fg-muted">
+          <span className="font-semibold text-fg-secondary">Reason:</span>{" "}
           {o.dismissed_reason}
         </div>
       )}
@@ -197,7 +188,7 @@ function OrphanCard({ orphan: o }: OrphanCardProps) {
         <div className="mt-4 flex items-center gap-2">
           <Link
             href={`/admin/projects/new?code=${o.project_code}`}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-sm border-2 border-tint-ok bg-tint-ok px-3 py-2 text-xs font-bold text-ok transition-colors hover:opacity-80"
           >
             <Settings className="h-3.5 w-3.5" />
             Configure
