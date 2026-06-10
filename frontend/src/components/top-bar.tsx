@@ -35,7 +35,9 @@ export function TopBar({ onOpenPalette }: { onOpenPalette: () => void }) {
   useEffect(() => {
     api.alerts
       .list({ severity: "critical", limit: 100 })
-      .then((alerts) => setCriticalCount(alerts.length))
+      .then((alerts) =>
+        setCriticalCount(alerts.filter((a) => !a.acknowledged_at).length)
+      )
       .catch(() => setCriticalCount(0));
   }, []);
 

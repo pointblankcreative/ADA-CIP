@@ -134,13 +134,18 @@
    Semantic font stacks — composed from next/font variables
    (see src/lib/fonts.ts) plus brand fallbacks.
    ============================================================ */
+/* The var() fallbacks below are defensive: if a next/font variable is
+   ever missing at :root again, the stack degrades to the brand fallback
+   faces instead of going guaranteed-invalid (which renders UA serif). */
 :root {
-  --font-display: var(--font-folsom), "Arial Narrow", system-ui, sans-serif;
-  --font-body: var(--font-inter), system-ui, -apple-system, "Helvetica Neue",
-    Arial, sans-serif;
-  --font-mono: var(--font-chivo), ui-monospace, "SF Mono", Menlo, Consolas,
-    monospace;
-  --font-script: var(--font-desmontilles), "Brush Script MT", cursive;
+  --font-display: var(--font-folsom, "Arial Narrow"), "Arial Narrow",
+    system-ui, sans-serif;
+  --font-body: var(--font-inter, system-ui), system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-chivo, ui-monospace), ui-monospace, "SF Mono",
+    Menlo, Consolas, monospace;
+  --font-script: var(--font-desmontilles, cursive), "Brush Script MT",
+    cursive;
 }
 
 /* ============================================================

@@ -38,12 +38,15 @@ export function SummaryTab({
   project,
   code,
   alerts,
+  onAcknowledge,
   onTab,
 }: {
   project: Project;
   code: string;
   /** Project alerts, fetched once by the shell (also feeds the tab badge). */
   alerts: Alert[];
+  /** Acknowledge handler owned by the shell (optimistic state update). */
+  onAcknowledge: (alertId: string, note?: string) => Promise<void>;
   onTab: (tab: string) => void;
 }) {
   const [pacing, setPacing] = useState<PacingResponse | null>(null);
@@ -121,7 +124,9 @@ export function SummaryTab({
         </>
       )}
 
-      {alerts.length > 0 && <SummaryAlerts alerts={alerts} />}
+      {alerts.length > 0 && (
+        <SummaryAlerts alerts={alerts} onAcknowledge={onAcknowledge} />
+      )}
     </div>
   );
 }
@@ -375,13 +380,37 @@ function formatTimeAgo(dateStr: string): string {
   return `${Math.floor(diffH / 24)}d ago`;
 }
 
-function SummaryAlerts({ alerts }: { alerts: Alert[] }) {
+function SummaryAlerts({
+  alerts,
+  onAcknowledge,
+}: {
+  alerts: Alert[];
+  onAcknowledge: (alertId: string, note?: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  // Which alert has its note form open, and the draft note text.
+  const [noteFor, setNoteFor] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
+
+  const ack = async (id: string) => {
+    setBusy(id);
+    try {
+      await onAcknowledge(id, noteText || undefined);
+      setNoteFor(null);
+      setNoteText("");
+    } catch {
+      /* leave the alert as-is; the form stays open */
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <Card className="overflow-hidden p-0">
       <div className="flex items-center gap-2.5 px-[18px] pt-4">
         <Bell className="h-[15px] w-[15px] text-fg-muted" />
         <Label className="text-fg-secondary">
-          Open alerts · {alerts.length}
+          Open alerts · {alerts.filter((a) => !a.acknowledged_at).length}
         </Label>
       </div>
       <div className="mt-3">
@@ -389,26 +418,83 @@ function SummaryAlerts({ alerts }: { alerts: Alert[] }) {
           <div
             key={a.alert_id}
             className={cn(
-              "flex items-start gap-3 px-[18px] py-3",
-              i > 0 && "border-t border-line-soft"
+              "px-[18px] py-3",
+              i > 0 && "border-t border-line-soft",
+              a.acknowledged_at && "opacity-60"
             )}
           >
-            <span
-              className="mt-1.5 h-[7px] w-[7px] flex-shrink-0 rounded-full"
-              style={{ backgroundColor: severityVar(a.severity) }}
-            />
-            <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-semibold leading-snug text-fg">
-                {a.title}
+            <div className="flex items-start gap-3">
+              <span
+                className="mt-1.5 h-[7px] w-[7px] flex-shrink-0 rounded-full"
+                style={{ backgroundColor: severityVar(a.severity) }}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold leading-snug text-fg">
+                  {a.title}
+                </div>
+                <div className="mt-0.5 text-[13px] leading-relaxed text-fg-secondary">
+                  {a.message}
+                </div>
+                <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.06em] text-fg-faint">
+                  {formatAlertSource(a.alert_type)} ·{" "}
+                  {formatTimeAgo(a.created_at)}
+                  {a.acknowledged_at && (
+                    <span className="text-ok">
+                      {" "}
+                      · acknowledged
+                      {a.acknowledged_by ? ` by ${a.acknowledged_by}` : ""}
+                    </span>
+                  )}
+                </div>
+                {a.ack_note && (
+                  <div className="mt-1 text-xs italic text-fg-muted">
+                    “{a.ack_note}”
+                  </div>
+                )}
               </div>
-              <div className="mt-0.5 text-[13px] leading-relaxed text-fg-secondary">
-                {a.message}
-              </div>
-              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.06em] text-fg-faint">
-                {formatAlertSource(a.alert_type)} · {formatTimeAgo(a.created_at)}
-                {a.acknowledged_at && " · acknowledged"}
-              </div>
+              {!a.acknowledged_at && noteFor !== a.alert_id && (
+                <button
+                  onClick={() => {
+                    setNoteFor(a.alert_id);
+                    setNoteText("");
+                  }}
+                  className="flex-shrink-0 rounded-sm border-2 border-line px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted transition-colors hover:border-line-strong hover:text-fg"
+                  title="Acknowledge this alert"
+                >
+                  Ack
+                </button>
+              )}
             </div>
+            {/* Acknowledge form: optional action note */}
+            {!a.acknowledged_at && noteFor === a.alert_id && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-2 pl-[19px]">
+                <input
+                  autoFocus
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") ack(a.alert_id);
+                    if (e.key === "Escape") setNoteFor(null);
+                  }}
+                  maxLength={1000}
+                  placeholder="Optional — what did you do? e.g. lowered Meta daily caps"
+                  className="min-w-[220px] flex-1 rounded-sm border-2 border-line bg-surface-sunken px-2.5 py-1.5 text-xs text-fg placeholder:text-fg-faint outline-none focus:border-accent"
+                />
+                <button
+                  onClick={() => ack(a.alert_id)}
+                  disabled={busy === a.alert_id}
+                  className="rounded-sm border-2 border-accent bg-accent px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-on-accent hover:bg-accent-hover disabled:opacity-50"
+                >
+                  {busy === a.alert_id ? "…" : "Acknowledge"}
+                </button>
+                <button
+                  onClick={() => setNoteFor(null)}
+                  className="rounded-sm border-2 border-line px-2.5 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted hover:text-fg"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>

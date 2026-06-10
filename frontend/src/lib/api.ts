@@ -339,8 +339,17 @@ export interface Alert {
   created_at: string;
   acknowledged_at: string | null;
   acknowledged_by: string | null;
+  /** Free-text action note recorded at acknowledgement. */
+  ack_note: string | null;
   resolved_at: string | null;
   slack_sent: boolean;
+}
+
+export interface AcknowledgeResponse {
+  alert_id: string;
+  acknowledged: boolean;
+  acknowledged_by: string;
+  ack_note: string | null;
 }
 
 /**
@@ -733,8 +742,11 @@ export const api = {
       if (params?.limit) qs.set("limit", String(params.limit));
       return apiFetch<Alert[]>(`/api/alerts/?${qs}`);
     },
-    acknowledge: (id: string) =>
-      apiFetch(`/api/alerts/${id}/acknowledge`, { method: "POST" }),
+    acknowledge: (id: string, note?: string) =>
+      apiFetch<AcknowledgeResponse>(`/api/alerts/${id}/acknowledge`, {
+        method: "POST",
+        body: JSON.stringify({ note: note?.trim() || null }),
+      }),
     dispatch: () => apiFetch<Record<string, unknown>>("/api/alerts/dispatch", { method: "POST" }),
   },
   benchmarks: {

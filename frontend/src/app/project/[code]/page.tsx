@@ -23,7 +23,8 @@ import {
 } from "lucide-react";
 import { api, type Alert, type Project } from "@/lib/api";
 import { computeFlight, verdict } from "@/lib/flight";
-import { CodeChip, IconBtn } from "@/components/ui";
+import { CodeChip } from "@/components/ui";
+import { SyncStatus } from "@/components/sync-status";
 import { cn, formatCurrency, formatFlightDay } from "@/lib/utils";
 import { SummaryTab } from "./summary-tab";
 import { PacingTab } from "./pacing-tab";
@@ -101,6 +102,25 @@ export default function ProjectDetailPage() {
       .catch(() => setAlerts([]));
   }, [code]);
 
+  /** Acknowledge an alert with an optional action note — the backend
+   *  records the IAP user; we mirror its response into local state so the
+   *  Summary card and tab badge update without a refetch. */
+  const handleAcknowledge = async (alertId: string, note?: string) => {
+    const res = await api.alerts.acknowledge(alertId, note);
+    setAlerts((prev) =>
+      prev.map((a) =>
+        a.alert_id === alertId
+          ? {
+              ...a,
+              acknowledged_at: new Date().toISOString(),
+              acknowledged_by: res.acknowledged_by,
+              ack_note: res.ack_note,
+            }
+          : a
+      )
+    );
+  };
+
   const f = useMemo(
     () => (project ? computeFlight(project) : null),
     [project]
@@ -164,18 +184,27 @@ export default function ProjectDetailPage() {
                     Spent {formatCurrency(project.total_spend)}
                   </span>
                   <span>{formatFlightDay(buildFlightDayInput(project), "combined")}</span>
+                  <SyncStatus variant="compact" />
                 </div>
               )}
             </div>
             <div className="flex gap-2">
-              <IconBtn
-                icon={<Settings2 className="h-4 w-4" />}
-                label="Settings"
-                active={activeTab === "settings"}
+              <button
                 onClick={() =>
                   setActiveTab(activeTab === "settings" ? "summary" : "settings")
                 }
-              />
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-sm border-2 px-3 py-2 text-[13px] font-bold transition-all duration-fast",
+                  activeTab === "settings"
+                    ? "border-accent bg-tint-accent text-accent-ink"
+                    : "border-line text-fg hover:border-line-strong"
+                )}
+                aria-label="Settings"
+                title="Project settings — GA4 URLs and Form Friction Scores"
+              >
+                <Settings2 className="h-4 w-4" />
+                <span className="hidden sm:inline">Settings</span>
+              </button>
             </div>
           </div>
 
@@ -218,11 +247,12 @@ export default function ProjectDetailPage() {
                 >
                   <Icon className="h-3.5 w-3.5" />
                   {label}
-                  {id === "summary" && alerts.length > 0 && (
-                    <span className="font-mono text-[9.5px] font-bold text-danger">
-                      {alerts.length}
-                    </span>
-                  )}
+                  {id === "summary" &&
+                    alerts.filter((a) => !a.acknowledged_at).length > 0 && (
+                      <span className="font-mono text-[9.5px] font-bold text-danger">
+                        {alerts.filter((a) => !a.acknowledged_at).length}
+                      </span>
+                    )}
                 </button>
               );
             })}
@@ -237,6 +267,7 @@ export default function ProjectDetailPage() {
             project={project}
             code={code}
             alerts={alerts}
+            onAcknowledge={handleAcknowledge}
             onTab={(t) => setActiveTab(t as TabId)}
           />
         )}

@@ -12,7 +12,7 @@ import { RefreshCw, Zap } from "lucide-react";
 import { api, type Project } from "@/lib/api";
 import { computeFlight, verdict } from "@/lib/flight";
 import { Card } from "@/components/card";
-import { Eyebrow, Label, Btn } from "@/components/ui";
+import { Label, Btn } from "@/components/ui";
 import { PortfolioPulse } from "@/components/flightdeck/portfolio-pulse";
 import {
   AttentionFeature,
@@ -28,6 +28,7 @@ import {
   type SortKey,
 } from "@/components/flightdeck/controls";
 import { OrphanPanel } from "@/components/orphan-panel";
+import { SyncStatus } from "@/components/sync-status";
 import { cn } from "@/lib/utils";
 
 export default function FlightdeckPage() {
@@ -104,14 +105,13 @@ export default function FlightdeckPage() {
     return arr.sort(cmp[sort]).map((x) => x.p);
   }, [list, sort]);
 
-  // "As of" stamp: freshest updated_at in the payload.
-  const asOf = useMemo(() => {
+  // Freshest updated_at in the payload — feeds the sync-status stamp.
+  const lastSync = useMemo(() => {
     const stamps = projects
       .map((p) => p.updated_at)
       .filter(Boolean)
       .sort();
-    const latest = stamps[stamps.length - 1];
-    return latest ? latest.slice(0, 16).replace("T", " ") : null;
+    return stamps[stamps.length - 1] ?? null;
   }, [projects]);
 
   return (
@@ -119,11 +119,7 @@ export default function FlightdeckPage() {
       {/* header */}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
         <div>
-          <Eyebrow>
-            The board · {projects.length} campaign
-            {projects.length === 1 ? "" : "s"} tracked
-          </Eyebrow>
-          <h1 className="display mt-2.5 text-[38px] text-fg sm:text-[44px]">
+          <h1 className="display text-[38px] text-fg sm:text-[44px]">
             Flightdeck
           </h1>
           <p className="mt-3 max-w-[480px] text-sm text-fg-muted">
@@ -132,10 +128,12 @@ export default function FlightdeckPage() {
           </p>
         </div>
         <div className="flex items-center gap-2.5">
-          {asOf && (
+          {loading ? (
             <span className="font-mono text-[10.5px] uppercase text-fg-faint">
-              {loading ? "Syncing…" : `As of ${asOf}`}
+              Syncing…
             </span>
+          ) : (
+            <SyncStatus lastUpdated={lastSync} />
           )}
           <Btn
             variant="outline"

@@ -8,9 +8,6 @@ import type { Config } from "tailwindcss";
  * and components never hardcode hex. Status tints (13% bg / 35% border)
  * live as .bg-tint-* / .border-tint-* utilities in globals.css because
  * Tailwind alpha modifiers don't compose with var() colours.
- *
- * The `brand` (blue) scale is legacy-only: it keeps un-migrated slate
- * screens rendering during the re-skin and is deleted in the final sweep.
  */
 const config: Config = {
   content: [
@@ -66,20 +63,6 @@ const config: Config = {
           chartreuse: "var(--pb-chartreuse)",
           light: "var(--pb-light)",
           white: "var(--pb-white)",
-        },
-        /* ---- LEGACY — delete in final sweep ---- */
-        brand: {
-          50: "#eff6ff",
-          100: "#dbeafe",
-          200: "#bfdbfe",
-          300: "#93c5fd",
-          400: "#60a5fa",
-          500: "#3b82f6",
-          600: "#2563eb",
-          700: "#1d4ed8",
-          800: "#1e40af",
-          900: "#1e3a8a",
-          950: "#172554",
         },
       },
       fontFamily: {

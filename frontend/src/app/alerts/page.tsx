@@ -55,6 +55,24 @@ export default function AlertsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [severity]);
 
+  /** Acknowledge with optional action note; the backend records the IAP
+   *  user and we mirror its response into local state. */
+  const handleAcknowledge = async (alertId: string, note?: string) => {
+    const res = await api.alerts.acknowledge(alertId, note);
+    setAlerts((prev) =>
+      prev.map((a) =>
+        a.alert_id === alertId
+          ? {
+              ...a,
+              acknowledged_at: new Date().toISOString(),
+              acknowledged_by: res.acknowledged_by,
+              ack_note: res.ack_note,
+            }
+          : a
+      )
+    );
+  };
+
   const criticalCount = alerts.filter((a) => a.severity === "critical").length;
   const warningCount = alerts.filter((a) => a.severity === "warning").length;
 
@@ -129,7 +147,11 @@ export default function AlertsPage() {
           </Card>
         ) : (
           alerts.map((alert) => (
-            <AlertRow key={alert.alert_id} alert={alert} />
+            <AlertRow
+              key={alert.alert_id}
+              alert={alert}
+              onAcknowledge={handleAcknowledge}
+            />
           ))
         )}
       </div>
@@ -137,7 +159,16 @@ export default function AlertsPage() {
   );
 }
 
-function AlertRow({ alert }: { alert: Alert }) {
+function AlertRow({
+  alert,
+  onAcknowledge,
+}: {
+  alert: Alert;
+  onAcknowledge: (alertId: string, note?: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [noteText, setNoteText] = useState("");
   const c = severityVar(alert.severity);
   const SeverityIcon =
     alert.severity === "critical"
@@ -148,49 +179,114 @@ function AlertRow({ alert }: { alert: Alert }) {
 
   const timeAgo = formatTimeAgo(alert.created_at);
 
+  const ack = async () => {
+    setBusy(true);
+    try {
+      await onAcknowledge(alert.alert_id, noteText || undefined);
+      setFormOpen(false);
+      setNoteText("");
+    } catch {
+      /* leave the form open */
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
-      className="flex items-start gap-3.5 rounded-md border-2 border-line-soft bg-surface-card px-4 py-[15px]"
+      className={cn(
+        "rounded-md border-2 border-line-soft bg-surface-card px-4 py-[15px]",
+        alert.acknowledged_at && "opacity-60"
+      )}
       style={{ borderLeft: `3px solid ${c}` }}
     >
-      <SeverityIcon
-        className="mt-0.5 h-[17px] w-[17px] flex-shrink-0"
-        style={{ color: c }}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.08em]"
-            style={{ color: c }}
-          >
-            {alert.title}
-          </span>
-          <span className="h-[3px] w-[3px] rounded-full bg-line" />
-          <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-fg-faint">
-            {formatAlertSource(alert.alert_type)}
-          </span>
-          <span className="h-[3px] w-[3px] rounded-full bg-line" />
-          <Link
-            href={`/project/${alert.project_code}`}
-            className="transition-opacity hover:opacity-70"
-          >
-            <CodeChip>{alert.project_code}</CodeChip>
-          </Link>
+      <div className="flex items-start gap-3.5">
+        <SeverityIcon
+          className="mt-0.5 h-[17px] w-[17px] flex-shrink-0"
+          style={{ color: c }}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.08em]"
+              style={{ color: c }}
+            >
+              {alert.title}
+            </span>
+            <span className="h-[3px] w-[3px] rounded-full bg-line" />
+            <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-fg-faint">
+              {formatAlertSource(alert.alert_type)}
+            </span>
+            <span className="h-[3px] w-[3px] rounded-full bg-line" />
+            <Link
+              href={`/project/${alert.project_code}`}
+              className="transition-opacity hover:opacity-70"
+            >
+              <CodeChip>{alert.project_code}</CodeChip>
+            </Link>
+          </div>
+          <p className="mt-[7px] text-[13.5px] leading-normal text-fg-secondary">
+            {alert.message}
+          </p>
+          {alert.acknowledged_at && (
+            <span className="mt-1.5 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ok">
+              <CheckCircle2 className="h-3 w-3" />
+              Acknowledged
+              {alert.acknowledged_by ? ` by ${alert.acknowledged_by}` : ""}
+            </span>
+          )}
+          {alert.ack_note && (
+            <p className="mt-1 text-xs italic text-fg-muted">
+              “{alert.ack_note}”
+            </p>
+          )}
         </div>
-        <p className="mt-[7px] text-[13.5px] leading-normal text-fg-secondary">
-          {alert.message}
-        </p>
-        {alert.acknowledged_at && (
-          <span className="mt-1.5 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.06em] text-ok">
-            <CheckCircle2 className="h-3 w-3" />
-            Acknowledged
+        <div className="flex flex-shrink-0 flex-col items-end gap-2">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-[10.5px] text-fg-faint">
+            <Clock className="h-3 w-3" />
+            {timeAgo}
           </span>
-        )}
+          {!alert.acknowledged_at && !formOpen && (
+            <button
+              onClick={() => setFormOpen(true)}
+              className="rounded-sm border-2 border-line px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted transition-colors hover:border-line-strong hover:text-fg"
+              title="Acknowledge this alert"
+            >
+              Acknowledge
+            </button>
+          )}
+        </div>
       </div>
-      <span className="inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[10.5px] text-fg-faint">
-        <Clock className="h-3 w-3" />
-        {timeAgo}
-      </span>
+      {/* Acknowledge form: optional action note for the audit trail */}
+      {!alert.acknowledged_at && formOpen && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 pl-[31px]">
+          <input
+            autoFocus
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") ack();
+              if (e.key === "Escape") setFormOpen(false);
+            }}
+            maxLength={1000}
+            placeholder="Optional — what did you do? e.g. lowered Meta daily caps, paused campaign"
+            className="min-w-[260px] flex-1 rounded-sm border-2 border-line bg-surface-sunken px-2.5 py-1.5 text-xs text-fg placeholder:text-fg-faint outline-none focus:border-accent"
+          />
+          <button
+            onClick={ack}
+            disabled={busy}
+            className="rounded-sm border-2 border-accent bg-accent px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          >
+            {busy ? "…" : "Acknowledge"}
+          </button>
+          <button
+            onClick={() => setFormOpen(false)}
+            className="rounded-sm border-2 border-line px-2.5 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted hover:text-fg"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }

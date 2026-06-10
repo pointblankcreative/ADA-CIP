@@ -513,6 +513,7 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.alerts` (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
   acknowledged_at TIMESTAMP,
   acknowledged_by STRING,
+  ack_note STRING,  -- free-text action note recorded at acknowledgement
   resolved_at TIMESTAMP,
   slack_sent BOOL DEFAULT FALSE,
   slack_channel_id STRING,

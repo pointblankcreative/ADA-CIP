@@ -197,7 +197,9 @@ export function IconBtn({
 
 export function PBMark({
   size = 22,
-  color = "var(--accent)",
+  /* accent-ink: chartreuse on dark, darkened chartreuse on light — the raw
+     accent disappears against light surfaces. */
+  color = "var(--accent-ink)",
   className,
 }: {
   size?: number;

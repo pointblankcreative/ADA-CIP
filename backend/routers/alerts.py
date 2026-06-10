@@ -1,6 +1,7 @@
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, field_validator
 
 from backend.models.alerts import AlertResponse
 from backend.services import bigquery_client as bq
@@ -42,6 +43,7 @@ async def list_alerts(
             a.created_at,
             a.acknowledged_at,
             a.acknowledged_by,
+            a.ack_note,
             a.resolved_at,
             a.slack_sent
         FROM {bq.table('alerts')} a
@@ -64,6 +66,7 @@ async def list_alerts(
             created_at=r["created_at"],
             acknowledged_at=r.get("acknowledged_at"),
             acknowledged_by=r.get("acknowledged_by"),
+            ack_note=r.get("ack_note"),
             resolved_at=r.get("resolved_at"),
             slack_sent=bool(r.get("slack_sent")),
         )
@@ -87,15 +90,62 @@ async def daily_digest():
     return result
 
 
+class AcknowledgePayload(BaseModel):
+    """Optional body for acknowledge — a free-text note recording what the
+    user did in response ("lowered Meta daily caps", "paused campaign")."""
+
+    note: str | None = None
+
+    @field_validator("note")
+    @classmethod
+    def _trim_note(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if len(v) > 1000:
+            raise ValueError("note must be 1000 characters or fewer")
+        return v or None
+
+
+def _resolve_user_email(request: Request) -> str | None:
+    """Pull the IAP-attached user email if available; None for the dev stub.
+    Mirrors backend/routers/admin.py — a future RBAC pass should centralise
+    this."""
+    user = getattr(request.state, "user", None) or {}
+    return user.get("email") if isinstance(user, dict) else None
+
+
 @router.post("/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: str):
-    """Mark an alert as acknowledged."""
+async def acknowledge_alert(
+    alert_id: str,
+    request: Request,
+    payload: AcknowledgePayload | None = None,
+):
+    """Mark an alert as acknowledged, recording who did it (IAP identity)
+    and an optional note about the action taken. Idempotent: a second call
+    on an already-acknowledged alert changes nothing."""
+    acknowledged_by = _resolve_user_email(request) or "api"
+    note = payload.note if payload else None
+
     sql = f"""
         UPDATE {bq.table('alerts')}
         SET acknowledged_at = CURRENT_TIMESTAMP(),
-            acknowledged_by = 'api'
+            acknowledged_by = @acknowledged_by,
+            ack_note = @note
         WHERE alert_id = @alert_id
             AND acknowledged_at IS NULL
     """
-    bq.run_query(sql, [bq.string_param("alert_id", alert_id)])
-    return {"alert_id": alert_id, "acknowledged": True}
+    bq.run_query(
+        sql,
+        [
+            bq.string_param("alert_id", alert_id),
+            bq.string_param("acknowledged_by", acknowledged_by),
+            bq.string_param("note", note),
+        ],
+    )
+    return {
+        "alert_id": alert_id,
+        "acknowledged": True,
+        "acknowledged_by": acknowledged_by,
+        "ack_note": note,
+    }
