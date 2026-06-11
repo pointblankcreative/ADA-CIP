@@ -38,36 +38,38 @@ export function signalPillar(id: string): string | null {
 }
 
 /* ── Curated action copy — shown on ACT NOW cards ───────────────────────
-   Keyed by signal ID. Deliberately generic-but-useful imperatives; tune
-   freely (this file is the single source). A future engine version can
-   supply per-evaluation actions and this map becomes the fallback. */
+   Keyed by signal ID, matched to the PRODUCTION signal definitions (the
+   `name=` arguments at the SignalResult construction sites — same source
+   of truth as lib/alert-labels.ts SIGNAL_NAMES). Deliberately
+   generic-but-useful imperatives; tune freely, this file is the single
+   source. A future engine version can supply per-evaluation actions and
+   this map becomes the fallback. Unknown IDs simply render no chip. */
 
 export const SIGNAL_ACTIONS: Record<string, string> = {
   // Persuasion · Distribution
-  D1: "Rebalance budget toward efficient-reach lines",
-  D2: "Cap frequency on the hottest line",
-  D3: "Tighten geo targeting to the target ridings",
-  D4: "Rebalance spend across channels",
+  D1: "Rebalance budget toward efficient-reach lines", // Reach Attainment
+  D2: "Consolidate audiences to build frequency", // Frequency Adequacy
+  D3: "Rebalance platform budgets to even out delivery", // Frequency Distribution
+  D4: "Trim overlapping audiences and push new reach", // Incremental Reach
+  D5: "Confirm platform delivery and smooth daily pacing", // Delivery Cadence
   // Persuasion · Attention
-  A1: "Test shorter cuts or stronger openings",
-  A2: "Test a stronger first frame",
-  A3: "Refresh the static creative",
-  A4: "Refresh the creative rotation",
-  A5: "Connect earned-media tracking",
+  A1: "Test shorter cuts or stronger openings", // Video Completion Quality
+  A3: "Shift spend to higher-viewability placements", // Viewability
+  A4: "Refresh the creative rotation", // Focused View
+  A5: "Rotate in fresh creative this week", // Creative Fatigue
   // Persuasion · Resonance
-  R1: "Review the landing page and the ask",
-  R2: "Brief rebuttals and review comment moderation",
-  R3: "Commission a brand-lift study",
+  R1: "Review creative tone against engagement quality", // Engagement Quality Ratio
+  R3: "Tighten the landing page path", // Landing Page Depth
   // Conversion · Acquisition
-  C1: "Shift budget to the cheapest converting lines",
-  C2: "Review audience-to-offer fit",
-  C3: "Raise caps on converting lines",
+  C1: "Shift budget to the cheapest converting lines", // CPA vs Target
+  C2: "Raise caps on converting lines", // Volume Trajectory
+  C3: "Refresh audiences before CPA creep compounds", // CPA Trend
   // Conversion · Funnel
-  F1: "Check link tags and landing-page load times",
-  F2: "Move the form above the fold",
-  F3: "Cut form fields to reduce friction",
-  F4: "Add a retargeting line for abandoners",
-  F5: "Retarget engaged non-converters",
+  F1: "Test new hooks and calls to action", // Click-Through Rate
+  F2: "Fix link tags and landing page load", // Landing Page Load Rate
+  F3: "Move the form above the fold", // Scroll & Form Discovery
+  F4: "Cut form fields to reduce friction", // Form Completion Rate
+  F5: "Strengthen the post-conversion journey", // Post-Conversion Activation
 };
 
 /* ── Triage model ───────────────────────────────────────────────────── */
