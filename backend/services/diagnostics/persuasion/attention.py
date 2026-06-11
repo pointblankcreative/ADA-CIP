@@ -66,30 +66,34 @@ from backend.services.diagnostics.shared.normalization import (
 
 # ── Diagnostic message templates ────────────────────────────────────
 
+# Voice rules (AI-115 plain-language pass): say what viewers are doing
+# in human terms, then what to fix. No quartile jargon in user-facing
+# copy. The precise rates live in `inputs` for the evidence panel.
 A1_DIAGNOSES = {
     "HEALTHY": (
-        "Retention curve is within normal parameters across video platforms "
-        "(assumed {length} format)."
+        "People are watching the video about as long as expected for a "
+        "{length} creative."
     ),
     "HOOK_MISS": (
-        "{platform} ({length}): only {q25_pct} of video starts reach Q1 — "
-        "the opening isn't stopping the scroll. Assess the first 2–3 seconds "
-        "of the creative."
+        "Only {q25_pct} of people who start the video on {platform} make "
+        "it through the first quarter. The opening isn't stopping the "
+        "scroll. Look hard at the first 2-3 seconds."
     ),
     "HOOK_FAILURE": (
-        "{platform} ({length}): {drop:.0%} drop-off between Q1 and Q2 — "
-        "audience got past the hook but disengaged during the message body. "
-        "Strengthen the bridge between hook and core argument."
+        "{drop:.0%} of viewers on {platform} drop off right after the "
+        "opening. The hook gets attention but the handoff into the "
+        "message loses them. Tighten what comes immediately after the "
+        "open."
     ),
     "MESSAGE_FATIGUE": (
-        "{platform} ({length}): {drop:.0%} drop-off between Q2 and Q3 — "
-        "mid-section is losing audience. Consider tightening the message or "
-        "adding visual variety."
+        "{drop:.0%} of viewers on {platform} drop off in the middle of "
+        "the video. The message section is losing them. Tighten it or "
+        "add visual variety."
     ),
     "CTA_WEAKNESS": (
-        "{platform} ({length}): {drop:.0%} drop-off between Q3 and Q4 — "
-        "audience absorbed the message but disengaged at the close. "
-        "Strengthen the CTA or end card."
+        "Viewers on {platform} stay for the message but {drop:.0%} leave "
+        "right before the close. Strengthen the call to action or the "
+        "end card."
     ),
 }
 
@@ -170,55 +174,59 @@ def _a1_classify_shape(
 
 A3_MESSAGES = {
     StatusBand.STRONG: (
-        "Viewability at {rate} across measured impressions. Placements are "
-        "in-view and attention-capable."
+        "{rate} of measured ads were actually on screen where people "
+        "could see them. Placements are doing their job."
     ),
     StatusBand.WATCH: (
-        "Viewability at {rate} — below the {benchmark}% target. {worst_suffix}"
-        "Review placement quality; some inventory may be below-the-fold."
+        "Only {rate} of measured ads were actually on screen long enough "
+        "to be seen (target is {benchmark}%). {worst_suffix}Some "
+        "placements are likely loading below the fold."
     ),
     StatusBand.ACTION: (
-        "Viewability at {rate} — well below the {benchmark}% target. "
-        "{worst_suffix}Placements likely in low-attention inventory. Review "
-        "the site list with the trading team."
+        "Only {rate} of measured ads were actually on screen long enough "
+        "to be seen, well under the {benchmark}% target. {worst_suffix}"
+        "The ads are running in low-attention inventory. Review the site "
+        "list with the trading team."
     ),
 }
 
 A4_MESSAGES = {
     StatusBand.STRONG: (
-        "Focused-view rate averaging {rate} across video platforms — "
-        "audience is holding attention past platform-specific thresholds."
+        "{rate} of impressions hold attention past the first few "
+        "seconds. People are stopping to watch."
     ),
     StatusBand.WATCH: (
-        "Focused-view rate at {rate} — on the edge of platform benchmarks. "
-        "{worst_platform} at {worst_rate} ({worst_metric}, benchmark "
-        "{worst_benchmark})."
+        "{rate} of impressions hold attention past the first few "
+        "seconds, right at the edge of what's normal. {worst_platform} "
+        "is the weak spot at {worst_rate}."
     ),
     StatusBand.ACTION: (
-        "Focused-view rate at {rate} — well below platform benchmarks. "
-        "{worst_platform} at {worst_rate} {worst_metric} vs "
-        "{worst_benchmark} benchmark. Scroll-past problem, not a targeting "
-        "problem — assess the creative."
+        "Almost nobody is stopping to watch: {rate} of impressions hold "
+        "attention, where {worst_benchmark} is normal on "
+        "{worst_platform}. People are scrolling straight past. That "
+        "points at the creative, not the targeting."
     ),
 }
 
 A5_MESSAGES = {
     "NONE": (
-        "Attention metric stable across platforms over {days} days — no "
-        "fatigue signal detected.{worst_suffix}"
+        "Attention has held steady over the last {days} days. The "
+        "creative isn't wearing out yet.{worst_suffix}"
     ),
     "EARLY": (
-        "Attention metric declining {slope:.1f}%/day over {days} days{worst_suffix} — "
-        "early fatigue. Have a creative refresh ready within the week."
+        "Attention is starting to fade ({slope:.1f}%/day over the last "
+        "{days} days){worst_suffix}. Early sign the creative is wearing "
+        "out. Have a refresh ready within the week."
     ),
     "MODERATE": (
-        "Attention metric declining {slope:.1f}%/day over {days} days{worst_suffix} — "
-        "moderate fatigue. Plan a creative refresh; continued spend on a "
-        "fatigued creative is inefficient."
+        "Attention is fading ({slope:.1f}%/day over the last {days} "
+        "days){worst_suffix}. The audience is tiring of this creative. "
+        "Line up a refresh: money spent on a tired ad buys less and "
+        "less."
     ),
     "SEVERE": (
-        "Attention metric down {slope:.1f}%/day over {days} days{worst_suffix} — "
-        "severe fatigue. Immediate creative assessment required."
+        "Attention is falling fast ({slope:.1f}%/day over {days} days)"
+        "{worst_suffix}. The creative is burnt out. Swap it now."
     ),
 }
 
@@ -501,18 +509,16 @@ def compute_a1_video_completion(data: CampaignData) -> SignalResult:
         healthy_count = sum(1 for r in platform_rows if r["diagnosis"] == "HEALTHY")
         if healthy_count > 0:
             diagnostic += (
-                f" ({healthy_count} of {len(platform_rows)} video platforms "
-                "are tracking their length benchmarks.)"
+                f" ({healthy_count} of {len(platform_rows)} video "
+                "platforms are holding viewers as expected.)"
             )
 
     # Note when any platform relied on the Q25-as-starts proxy.
     proxy_plats = [r["platform_id"] for r in platform_rows if not r["has_true_starts"]]
     if proxy_plats:
         diagnostic += (
-            f" Note: {', '.join(proxy_plats)} had no native video-start "
-            "column — Q1 retention is excluded from scoring on those "
-            "platforms until the transformation layer carries a true "
-            "starts signal."
+            f" Note: {', '.join(proxy_plats)} doesn't report video "
+            "starts, so early drop-off isn't scored there."
         )
 
     # Report the dominant platform's benchmark in raw_value/benchmark so
@@ -667,9 +673,9 @@ def compute_a3_viewability(data: CampaignData) -> SignalResult:
     coverage_note_applied = False
     if measurement_coverage < A3_COVERAGE_NOTE_THRESHOLD and total_impressions_all > 0:
         diagnostic += (
-            f" Note: viewability was measured on only "
-            f"{format_pct(measurement_coverage)} of total impressions — "
-            "the score reflects a limited inventory sample."
+            f" Note: viewability could only be measured on "
+            f"{format_pct(measurement_coverage)} of impressions, so this "
+            "reflects a small slice of the delivery."
         )
         coverage_note_applied = True
 
@@ -809,16 +815,16 @@ def compute_a4_focused_view(data: CampaignData) -> SignalResult:
     default_plats = [r["platform_id"] for r in platform_rows if r["used_default_benchmark"]]
     if default_plats:
         diagnostic += (
-            f" Note: {', '.join(default_plats)} scored against default "
-            "benchmark — no platform-specific calibration yet."
+            f" Note: {', '.join(default_plats)} is scored against a "
+            "generic benchmark; no platform-specific calibration yet."
         )
 
     # Surface display (or other no-metric) exclusions so planners aren't
     # confused about why a running line doesn't contribute to A4.
     if excluded_no_metric:
         diagnostic += (
-            f" Excluded from A4: {', '.join(excluded_no_metric)} "
-            "(no meaningful focused-view metric for this inventory)."
+            f" Not counted here: {', '.join(excluded_no_metric)} "
+            "(that inventory has no watch-time measure)."
         )
 
     return SignalResult(
@@ -1005,8 +1011,8 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
         worst_suffix = ""
     else:
         worst_suffix = (
-            f"; {worst_pid} worst at {worst['daily_change_pct']:.1f}%/day "
-            f"({worst['fatigue_band']})"
+            f"; {worst_pid} is fading fastest at "
+            f"{worst['daily_change_pct']:.1f}%/day"
         )
 
     template = A5_MESSAGES[overall_band]
@@ -1021,13 +1027,14 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
     if skipped:
         note_bits = []
         for s in skipped:
-            note_bits.append(f"{s['platform_id']} ({s['reason']})")
-        notes.append("Platforms excluded from trend: " + ", ".join(note_bits) + ".")
+            note_bits.append(f"{s['platform_id']} ({s['reason'].replace('_', ' ')})")
+        notes.append("Not enough data to trend: " + ", ".join(note_bits) + ".")
     switched = [pid for pid, r in platform_results.items() if r["metric_switched"]]
     if switched:
         notes.append(
-            "Metric switched mid-window on: " + ", ".join(switched) +
-            " — trend may reflect reporting changes, not audience behaviour."
+            "Reporting changed mid-window on " + ", ".join(switched) +
+            ", so this trend may reflect the reporting change rather "
+            "than audience behaviour."
         )
     if notes:
         diagnostic = diagnostic + " " + " ".join(notes)

@@ -642,7 +642,11 @@ class TestF3ScrollDiscovery:
         assert result.raw_value == pytest.approx(0.50, abs=0.01)
         # Discovery alone at target → STRONG
         assert result.status == StatusBand.STRONG
-        assert "scroll tracking not detected" in result.diagnostic.lower()
+        # Plain-language pass (AI-115): flag now reads "GA4 isn't
+        # recording scroll events here, so this reads on form discovery
+        # alone."
+        assert "scroll events" in result.diagnostic.lower()
+        assert "form discovery alone" in result.diagnostic.lower()
 
     def test_scroll_absent_with_weak_discovery_scores_action(self):
         """Scroll absent + weak discovery → ACTION on discovery alone,
@@ -762,7 +766,10 @@ class TestF4FormCompletion:
         # 2% click→lead, below 3% floor → ACTION
         assert result.raw_value == pytest.approx(0.02, abs=0.01)
         assert result.status == StatusBand.ACTION
-        assert "click→lead" in result.diagnostic.lower() or "click\u2192lead" in result.diagnostic
+        # Plain-language pass (AI-115): Arch B copy now describes the
+        # click→lead rate as people tapping the ad and completing the
+        # in-platform form.
+        assert "in-platform form" in result.diagnostic.lower()
 
     def test_arch_a_flags_missing_ffs_in_diagnostic(self):
         """When FFS is missing on Arch A lines, the diagnostic should

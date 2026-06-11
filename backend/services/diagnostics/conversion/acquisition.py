@@ -102,18 +102,25 @@ C2_ROLLING_WINDOW_DAYS = 7
 
 # ── Diagnostic message templates ──────────────────────────────────
 
+# Voice rules (AI-115 plain-language pass): lead with what a conversion
+# costs in plain dollars, then what to do. "Friction-adjusted target"
+# becomes "what we'd expect for this form and audience" — same number,
+# human words. Precise figures live in `inputs`.
+
 C1_MESSAGES = {
     StatusBand.STRONG: (
-        "CPA at ${cpa:.2f} vs ${target:.2f} friction-adjusted target — "
-        "beating target by {beat_pct}."
+        "Each conversion is costing ${cpa:.2f} against the ${target:.2f} "
+        "we'd expect for this form and audience. Beating expectations "
+        "by {beat_pct}."
     ),
     StatusBand.WATCH: (
-        "CPA at ${cpa:.2f} — {above_pct} above the ${target:.2f} "
-        "friction-adjusted target. {context}"
+        "Each conversion is costing ${cpa:.2f}, about {above_pct} more "
+        "than the ${target:.2f} we'd expect for this form and audience. "
+        "{context}"
     ),
     StatusBand.ACTION: (
-        "CPA at ${cpa:.2f} — well above the ${target:.2f} target "
-        "even after friction adjustment. {context}"
+        "Each conversion is costing ${cpa:.2f}, far above the "
+        "${target:.2f} we'd expect for this form and audience. {context}"
     ),
 }
 
@@ -121,42 +128,45 @@ C1_MESSAGES = {
 # standard CPA-ratio template doesn't apply because actual_cpa is
 # undefined, so we describe the shortfall in dollars against target.
 C1_ZERO_CONV_MESSAGE = (
-    "${spend:.0f} spent with 0 conversions — target CPA is "
-    "${target:.2f}. {context}"
+    "${spend:.0f} spent and 0 conversions so far. For this form and "
+    "audience a conversion should cost about ${target:.2f}. {context}"
 )
 
 C2_MESSAGES = {
     StatusBand.STRONG: (
-        "Averaging {daily_avg:.1f} leads/day against a friction-adjusted "
-        "expectation of {expected:.1f}. {trend_msg}"
+        "Leads are flowing at {daily_avg:.1f} a day, right around the "
+        "{expected:.1f} a day this budget should produce. {trend_msg}"
     ),
     StatusBand.WATCH: (
-        "Volume at {daily_avg:.1f} leads/day vs {expected:.1f} expected "
-        "from budget allocation. {trend_msg}"
+        "Leads are coming in at {daily_avg:.1f} a day; this budget "
+        "should be producing about {expected:.1f}. {trend_msg}"
     ),
     StatusBand.ACTION: (
-        "Volume at {daily_avg:.1f} leads/day — significantly below the "
-        "{expected:.1f}/day expectation. {trend_msg}"
+        "Leads are coming in at just {daily_avg:.1f} a day when this "
+        "budget should be producing about {expected:.1f}. {trend_msg}"
     ),
 }
 
 C3_MESSAGES = {
     "STABLE_OR_IMPROVING": (
-        "CPA trend is stable or improving ({change:+.1f}%/day over the "
-        "last 7 days). No signs of audience saturation."
+        "Cost per conversion is holding steady or improving "
+        "({change:+.1f}%/day over the last week). No sign the audience "
+        "is tapping out."
     ),
     "EARLY_DETERIORATION": (
-        "CPA is increasing slightly ({change:+.1f}%/day). Early sign of "
-        "audience fatigue — monitor over the next 3-5 days."
+        "Cost per conversion is creeping up ({change:+.1f}%/day). "
+        "Usually the first sign the audience is getting tapped out. "
+        "Watch it over the next few days."
     ),
     "MODERATE_DETERIORATION": (
-        "CPA is deteriorating ({change:+.1f}%/day). Likely audience "
-        "saturation — consider expanding targeting or refreshing creative."
+        "Cost per conversion is climbing ({change:+.1f}%/day). The "
+        "audience is probably saturating. Widen the targeting or "
+        "refresh the creative before it compounds."
     ),
     "RAPID_DETERIORATION": (
-        "CPA is spiking ({change:+.1f}%/day). Audience is saturated. "
-        "Immediate action needed — expand targeting, introduce new "
-        "creative, or reallocate budget."
+        "Cost per conversion is spiking ({change:+.1f}%/day). This "
+        "audience is tapped out. Act now: widen targeting, bring in new "
+        "creative, or move the budget."
     ),
 }
 
@@ -291,14 +301,17 @@ def compute_c1_cpa_vs_target(data: CampaignData) -> SignalResult:
         zero_conv_score = clamp(25 - (spend_ratio - 1) * 8, 0, 25)
         if spend_ratio >= 3:
             context = (
-                "Review LP messaging, targeting breadth, and creative "
-                "relevance — this is significantly over the expected "
-                "cost-per-lead."
+                "We've now spent several times what one conversion "
+                "should cost. Check the landing page, the targeting, "
+                "and the creative before more budget goes out."
             )
         elif spend_ratio >= 1:
-            context = "Monitor closely — the campaign has spent a full target-CPA without converting."
+            context = (
+                "The campaign has now spent what one conversion should "
+                "cost without getting one. Watch it closely."
+            )
         else:
-            context = "Early in the campaign; check again after a full day of delivery."
+            context = "Early days; check again after a full day of delivery."
         diagnostic = C1_ZERO_CONV_MESSAGE.format(
             spend=data.total_spend, target=target_cpa, context=context,
         )
@@ -352,16 +365,20 @@ def compute_c1_cpa_vs_target(data: CampaignData) -> SignalResult:
         ffs_scores = [l.ffs_score for l in data.media_plan if l.ffs_score is not None]
         avg_ffs = statistics.mean(ffs_scores) if ffs_scores else 0
         context = (
-            f"Form friction (FFS {avg_ffs:.0f}) accounts for some of the gap."
+            f"Some of that gap is the form's own friction "
+            f"(FFS {avg_ffs:.0f}); the rest is worth investigating."
             if avg_ffs > 30
-            else "Review landing page and ad-to-LP alignment."
+            else "Check the landing page and whether it matches what the ad promised."
         )
         diagnostic = C1_MESSAGES[StatusBand.WATCH].format(
             cpa=actual_cpa, target=target_cpa, above_pct=above_pct,
             context=context,
         )
     else:
-        context = "Review LP messaging, targeting breadth, and creative relevance."
+        context = (
+            "Look at the landing page message, how broad the targeting "
+            "is, and whether the creative speaks to this audience."
+        )
         diagnostic = C1_MESSAGES[StatusBand.ACTION].format(
             cpa=actual_cpa, target=target_cpa, context=context,
         )
@@ -483,11 +500,14 @@ def compute_c2_volume_trajectory(data: CampaignData) -> SignalResult:
     status = status_band(score)
 
     if daily_volume_change > 2:
-        trend_msg = f"Volume trending upward (+{daily_volume_change:.1f}%/day)."
+        trend_msg = f"And the trend is up (+{daily_volume_change:.1f}%/day)."
     elif daily_volume_change < -5:
-        trend_msg = f"Volume declining ({daily_volume_change:+.1f}%/day) — investigate."
+        trend_msg = (
+            f"And the trend is down ({daily_volume_change:+.1f}%/day), "
+            "which is worth investigating."
+        )
     else:
-        trend_msg = "Volume trend is stable."
+        trend_msg = "The day-to-day trend is steady."
 
     msg_template = C2_MESSAGES.get(status, C2_MESSAGES[StatusBand.WATCH])
     diagnostic = msg_template.format(

@@ -27,7 +27,10 @@ import {
 } from "@/lib/api";
 import {
   buildTriageModel,
+  formatEvidence,
   PILLAR_LABELS,
+  SIGNAL_EVIDENCE,
+  SIGNAL_MEANINGS,
   type TriageEngineChip,
   type TriageSignal,
 } from "@/lib/diagnostics";
@@ -148,7 +151,11 @@ function DgTag({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ── evidence (expand) ───────────────────────────────────────────── */
+/* ── evidence (expand) ─────────────────────────────────────────────
+   Three layers, plainest first:
+     1. What this signal asks, in the user's words (SIGNAL_MEANINGS)
+     2. The few numbers worth reading, human-labeled (SIGNAL_EVIDENCE)
+     3. "All the numbers" — the full raw payload, collapsed by default */
 
 function DgKV({ k, v }: { k: string; v: string }) {
   return (
@@ -168,16 +175,53 @@ function formatInput(v: unknown): string {
 }
 
 function DgEvidence({ s }: { s: TriageSignal }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const meaning = SIGNAL_MEANINGS[s.id];
+  const inputs = s.inputs ?? {};
+  const facts = (SIGNAL_EVIDENCE[s.id] ?? []).filter(
+    (f) => inputs[f.key] != null
+  );
   return (
-    <div className="flex flex-wrap gap-x-[18px] gap-y-1">
-      {s.raw_value != null && <DgKV k="Value" v={s.raw_value.toFixed(3)} />}
-      {s.benchmark != null && <DgKV k="Benchmark" v={s.benchmark.toFixed(3)} />}
-      {s.floor != null && <DgKV k="Floor" v={s.floor.toFixed(3)} />}
-      {Object.entries(s.inputs ?? {}).map(([k, v]) => (
-        <DgKV key={k} k={k} v={formatInput(v)} />
-      ))}
+    <div className="space-y-2.5">
+      {meaning && (
+        <p className="max-w-[520px] text-[11.5px] leading-relaxed text-fg-muted">
+          {meaning}
+        </p>
+      )}
+      {facts.length > 0 && (
+        <div className="flex flex-wrap gap-x-[18px] gap-y-1">
+          {facts.map((f) => (
+            <DgKV
+              key={f.key}
+              k={f.label}
+              v={formatEvidence(inputs[f.key], f.fmt)}
+            />
+          ))}
+        </div>
+      )}
       {!s.guard_passed && s.guard_reason && (
-        <DgKV k="Guard failed" v={s.guard_reason} />
+        <DgKV k="Not scored" v={s.guard_reason.replace(/_/g, " ")} />
+      )}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowRaw(!showRaw);
+        }}
+        className="block font-mono text-[10px] uppercase tracking-[0.1em] text-fg-faint transition-colors duration-fast hover:text-fg-muted"
+      >
+        {showRaw ? "− Hide the numbers" : "+ All the numbers"}
+      </button>
+      {showRaw && (
+        <div className="flex flex-wrap gap-x-[18px] gap-y-1 border-l-2 border-line-soft pl-3">
+          {s.raw_value != null && <DgKV k="value" v={s.raw_value.toFixed(3)} />}
+          {s.benchmark != null && (
+            <DgKV k="benchmark" v={s.benchmark.toFixed(3)} />
+          )}
+          {s.floor != null && <DgKV k="floor" v={s.floor.toFixed(3)} />}
+          {Object.entries(inputs).map(([k, v]) => (
+            <DgKV key={k} k={k} v={formatInput(v)} />
+          ))}
+        </div>
       )}
     </div>
   );

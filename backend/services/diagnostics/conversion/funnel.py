@@ -243,19 +243,25 @@ def _dominant_form_position(lines: list[MediaPlanLine]) -> str:
 
 # ── Diagnostic message templates ───────────────────────────────────
 
+# Voice rules (AI-115 plain-language pass): describe what people are
+# doing at each funnel step, then what to do. Precise rates live in
+# `inputs` for the evidence panel.
+
 F1_MESSAGES = {
     StatusBand.STRONG: (
-        "Click-through rate at {ctr} is beating benchmark "
-        "({benchmark}). Creative is earning the click."
+        "{ctr} of people who see the ads click them, ahead of the "
+        "{benchmark} norm. The creative is earning the click."
     ),
     StatusBand.WATCH: (
-        "CTR at {ctr} is below the {benchmark} benchmark.{worst_suffix} "
-        "Review creative hook strength and headline clarity."
+        "{ctr} of people who see the ads click them, under the "
+        "{benchmark} norm.{worst_suffix} The first thing people see "
+        "isn't pulling them in. Look at the hook and the headline."
     ),
     StatusBand.ACTION: (
-        "CTR at {ctr} is well below the {benchmark} benchmark.{worst_suffix} "
-        "Creative isn't earning attention — refresh hook, headline, "
-        "and targeting relevance."
+        "Only {ctr} of people who see the ads click them, well under "
+        "the {benchmark} norm.{worst_suffix} The creative isn't earning "
+        "attention. Refresh the hook and headline, and check the "
+        "targeting is reaching the right people."
     ),
 }
 
@@ -272,19 +278,20 @@ F1_PER_PLATFORM_MIN_IMPRESSIONS = 1_000
 
 F2_MESSAGES = {
     StatusBand.STRONG: (
-        "Landing page load rate at {rate} — nearly every click reaches "
-        "the page. No tracking or bounce issues.{overcounting_suffix}"
+        "Nearly every click is making it onto the landing page "
+        "({rate}). No load or tracking problems.{overcounting_suffix}"
     ),
     StatusBand.WATCH: (
-        "Landing page load rate at {rate} — {drop_pct} of clicks aren't "
-        "registering a page view. Check page load speed and verify the "
-        "pixel fires before the user can bounce.{overcounting_suffix}"
+        "{drop_pct} of clicks never register on the landing page (load "
+        "rate {rate}). Check how fast the page loads and that the "
+        "tracking pixel fires before people can bounce."
+        "{overcounting_suffix}"
     ),
     StatusBand.ACTION: (
-        "Landing page load rate at {rate} — {drop_pct} of clicks are "
-        "dropping before the page loads. Likely page performance issue, "
-        "tracking misconfiguration, or in-app browser incompatibility."
-        "{overcounting_suffix}"
+        "{drop_pct} of paid clicks never make it onto the landing page "
+        "(load rate {rate}). People are clicking and the page isn't "
+        "catching them: usually slow loading, broken tracking, or "
+        "in-app browser problems.{overcounting_suffix}"
     ),
 }
 
@@ -294,44 +301,44 @@ F2_OVERCOUNT_FLAG_THRESHOLD = 1.10
 
 F3_MESSAGES = {
     StatusBand.STRONG: (
-        "Form discovery at {discovery} — visitors are reaching the "
-        "form. Page flow is carrying the user to action.{scroll_suffix}"
+        "{discovery} of visitors make it to the form. The page is "
+        "walking people to the action.{scroll_suffix}"
     ),
     StatusBand.WATCH: (
-        "Form discovery at {discovery}. Some visitors aren't reaching "
-        "the form. Consider moving the form higher on the page or "
-        "reducing content above it.{scroll_suffix}"
+        "Only {discovery} of visitors ever reach the form. Consider "
+        "moving it higher on the page or cutting content above it."
+        "{scroll_suffix}"
     ),
     StatusBand.ACTION: (
-        "Form discovery at {discovery}. Most visitors don't reach the "
-        "form. Move the form above the fold or restructure the page "
-        "hierarchy.{scroll_suffix}"
+        "Hardly any visitors reach the form ({discovery}). Move the "
+        "form up the page, ideally above the fold, or restructure the "
+        "page around it.{scroll_suffix}"
     ),
 }
 
 # If GA4 reports healthy session volume but zero scroll events, assume
 # scroll tracking isn't wired up rather than penalising the campaign.
 F3_SCROLL_ABSENT_FLAG = (
-    " Scroll tracking not detected — scoring on form discovery alone."
+    " Note: GA4 isn't recording scroll events here, so this reads on "
+    "form discovery alone."
 )
 
 F4_MESSAGES = {
     StatusBand.STRONG: (
-        "Form completion rate at {rate} (friction-adjusted target "
-        "{target}). Form friction is well-tuned for the audience."
+        "{rate} of people who start the form finish it, at or above the "
+        "{target} we'd expect for a form with this much friction."
         "{ffs_suffix}"
     ),
     StatusBand.WATCH: (
-        "Form completion rate at {rate} vs {target} friction-adjusted "
-        "target. Some form-starters are abandoning — review required "
-        "fields and field order.{ffs_suffix}"
+        "{rate} of people who start the form finish it; for this form "
+        "we'd expect about {target}. Look at where people abandon, and "
+        "whether every required field earns its place.{ffs_suffix}"
     ),
     StatusBand.ACTION: (
-        "Form completion rate at {rate} — well below the {target} "
-        "friction-adjusted target. Form friction is blocking "
-        "conversions. Reduce field count, remove non-essential "
-        "required fields, or consider an in-platform lead form."
-        "{ffs_suffix}"
+        "Only {rate} of people who start the form finish it (we'd "
+        "expect about {target}). The form itself is blocking "
+        "conversions. Cut fields, drop non-essential required ones, or "
+        "consider an in-platform lead form.{ffs_suffix}"
     ),
 }
 
@@ -339,41 +346,42 @@ F4_MESSAGES = {
 # — the target is the generic base benchmark rather than a form-specific
 # friction-adjusted number.
 F4_NO_FFS_FLAG = (
-    " Note: no Form Friction Score on file — target is a generic "
-    "baseline. Add FFS inputs for a benchmark tuned to this form."
+    " Note: this form has no Form Friction Score on file, so the target "
+    "is a generic baseline. Fill in the FFS wizard for a target tuned "
+    "to this form."
 )
 
 F4_ARCH_B_MESSAGES = {
     StatusBand.STRONG: (
-        "Click→lead rate at {rate} (platform-form target {target}). "
-        "In-platform form is converting well."
+        "{rate} of people who tap the ad complete the in-platform form, "
+        "at or above the {target} norm. The form is converting well."
     ),
     StatusBand.WATCH: (
-        "Click→lead rate at {rate} vs {target} target. Some people who "
-        "tap the CTA aren't completing the form — review form length, "
-        "required fields, and lead-capture value prop."
+        "{rate} of people who tap the ad complete the in-platform form, "
+        "under the {target} norm. Check the form's length and whether "
+        "the offer makes handing over contact details feel worth it."
     ),
     StatusBand.ACTION: (
-        "Click→lead rate at {rate} — well below the {target} target. "
-        "Most people who tap the CTA aren't completing the form. "
-        "Reduce required fields or revisit creative-to-form alignment."
+        "Only {rate} of people who tap the ad complete the in-platform "
+        "form ({target} is normal). Cut the form down, or rework how "
+        "the ad sets up the ask."
     ),
 }
 
 F5_MESSAGES = {
     StatusBand.STRONG: (
-        "Post-conversion activation at {rate} — leads are taking a "
-        "meaningful second action. Good lead quality signal."
+        "{rate} of leads take another meaningful step after converting. "
+        "These are real, engaged people."
     ),
     StatusBand.WATCH: (
-        "Activation at {rate} of conversions — some leads are engaging "
-        "past form submit. Review post-submit experience and welcome "
-        "email/SMS for second-touch opportunities."
+        "{rate} of leads do anything further after converting. Look at "
+        "the post-submit experience and the welcome email or text for a "
+        "second-touch opportunity."
     ),
     StatusBand.ACTION: (
-        "Activation at {rate} — few leads take a second action after "
-        "submitting. Lead quality may be thin; review creative-to-LP "
-        "alignment and audience targeting."
+        "Almost no leads do anything after converting ({rate}). The "
+        "leads may be thin. Check the ads and landing page are "
+        "attracting the right people, not just any people."
     ),
 }
 
@@ -714,9 +722,10 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
     overcounting_suffix = ""
     if overcounting:
         overcounting_suffix = (
-            f" Note: landing-page events exceed click count by "
-            f"{(raw_rate - 1) * 100:.0f}% — likely organic traffic on "
-            "the same URL or double-counting from a misconfigured pixel."
+            f" Note: the landing page is recording "
+            f"{(raw_rate - 1) * 100:.0f}% more visits than ad clicks. "
+            "Probably organic traffic on the same URL, or a pixel "
+            "firing twice."
         )
 
     drop_pct = format_pct(max(0.0, 1.0 - load_rate))

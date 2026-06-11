@@ -68,83 +68,89 @@ from backend.services.diagnostics.shared.normalization import (
 
 
 # ── Diagnostic message templates ────────────────────────────────────
+#
+# Voice rules (AI-115 plain-language pass): lead with what's happening
+# in human terms, then what to do. No engine jargon in user-facing copy
+# (no "band-normalized", "CV", "impression-weighted"). The precise
+# numbers live in `inputs` and surface through the evidence panel.
 
 D1_MESSAGES = {
     StatusBand.STRONG: (
-        "Reach at {attainment_pct} of target with {remaining} days remaining "
-        "— on track."
+        "We've reached {attainment_pct} of the people the plan called for "
+        "by this point, with {remaining} days still to go. On track."
     ),
     StatusBand.WATCH: (
-        "Reach at {attainment_pct} of target with {remaining} days remaining "
-        "— may need budget reallocation to close the gap."
+        "We've reached {attainment_pct} of the people the plan called for "
+        "by this point. It may take a budget shift toward the stronger "
+        "lines to close the gap."
     ),
     StatusBand.ACTION: (
-        "Reach at {attainment_pct} of target at day {elapsed} of {total} "
-        "— delivery issue. Check audience sizing, bid strategy, and "
-        "platform-level pacing."
+        "By day {elapsed} of {total} we've only reached {attainment_pct} "
+        "of the audience the plan called for. Something is holding "
+        "delivery back. Check audience sizes, bids, and whether every "
+        "platform is actually spending."
     ),
 }
 
 D2_MESSAGES = {
     "under": (
-        "{platform} frequency at {freq:.1f} after {days} days — below the "
-        "effective floor of {min_freq} for {format}. Not enough exposures "
-        "for message absorption."
+        "People on {platform} have only seen the ad {freq:.1f} times in "
+        "{days} days. Below about {min_freq} exposures the message "
+        "doesn't stick."
     ),
     "optimal": (
-        "Weighted frequency at {freq:.1f} after {days} days — platforms "
-        "are within their effective bands. Message repetition is effective "
-        "without fatigue risk."
+        "People have seen the ad {freq:.1f} times on average after {days} "
+        "days. That's the sweet spot: enough repetition to land the "
+        "message without wearing it out."
     ),
     "high": (
-        "Frequency on {platform} has reached {freq:.1f} at {days} days — "
-        "approaching saturation for {format}. Consider audience expansion "
-        "or creative refresh within 3-5 days."
+        "People on {platform} have already seen the ad {freq:.1f} times "
+        "in {days} days and are close to tuning it out. Plan to widen "
+        "the audience or rotate in fresh creative within a few days."
     ),
     "over": (
-        "{platform} frequency at {freq:.1f} — well past the effective "
-        "ceiling of {max_freq} for {format}. Budget is being wasted on "
-        "over-exposed users. Recommend immediate audience expansion or "
-        "budget reallocation."
+        "People on {platform} have seen the ad {freq:.1f} times. Past "
+        "about {max_freq} the extra impressions mostly hit people who've "
+        "already seen it. Widen the audience or move that budget now."
     ),
 }
 
 D3_MESSAGES = {
     StatusBand.STRONG: (
-        "Frequency distribution is healthy — platforms are delivering at "
-        "similar positions within their effective bands (band-normalized "
-        "CV {cv:.2f})."
+        "Every platform is delivering close to its ideal frequency. "
+        "No platform is hogging impressions while another starves."
     ),
     StatusBand.WATCH: (
-        "Platforms are diverging in how well they track their effective "
-        "bands — {high_plat} at {high_pos:.1f}x of its band-optimal while "
-        "{low_plat} at {low_pos:.1f}x. Review audience sizing and pacing "
-        "on the outlier."
+        "Platforms are drifting apart: {high_plat} is showing the ad "
+        "about {high_pos:.1f}x as often as ideal while {low_plat} is at "
+        "{low_pos:.1f}x. Check pacing and audience size on the outlier."
     ),
     StatusBand.ACTION: (
-        "Extreme variance in band-normalized delivery (CV {cv:.2f}). "
-        "{high_plat} is at {high_pos:.1f}x of its band-optimal while "
-        "{low_plat} is at {low_pos:.1f}x. Rebalance platform budgets or "
-        "pause the over-saturated platform."
+        "Delivery is badly lopsided. {high_plat} is showing the ad about "
+        "{high_pos:.1f}x its ideal frequency while {low_plat} sits at "
+        "{low_pos:.1f}x. Move budget off the over-saturated platform, or "
+        "pause it and let the others catch up."
     ),
 }
 
 D4_MESSAGES = {
     StatusBand.STRONG: (
-        "Platforms are contributing unique reach in line with their "
-        "spend share. {best_platform} most efficient "
-        "(reach {best_reach_share_pct} vs spend {best_spend_share_pct})."
+        "Each platform is pulling its weight: unique people reached "
+        "lines up with where the money goes. {best_platform} is the most "
+        "efficient ({best_reach_share_pct} of reach for "
+        "{best_spend_share_pct} of spend)."
     ),
     StatusBand.WATCH: (
-        "{worst_platform} spending {worst_spend_share_pct} of budget but "
-        "contributing only {worst_reach_share_pct} of reach — audience "
-        "overlap with other platforms is likely."
+        "{worst_platform} is taking {worst_spend_share_pct} of the "
+        "budget but only adding {worst_reach_share_pct} of the reach. "
+        "It's likely paying to reach people the other platforms already "
+        "reach."
     ),
     StatusBand.ACTION: (
-        "{worst_platform} spending {worst_spend_share_pct} of budget but "
-        "contributing only {worst_reach_share_pct} of reach. Significantly "
-        "underperforming — consider consolidating budget to more efficient "
-        "platforms."
+        "{worst_platform} is taking {worst_spend_share_pct} of the "
+        "budget but only adding {worst_reach_share_pct} of the reach. "
+        "That money would reach more new people on the stronger "
+        "platforms. Consider consolidating."
     ),
 }
 
@@ -155,21 +161,18 @@ D4_LOW_REACH_FORMATS = {"video_medium", "dooh", "audio_long", "video_long"}
 
 D5_MESSAGES = {
     StatusBand.STRONG: (
-        "Delivery is pacing smoothly — {platforms_scored} platform(s) "
-        "within healthy cadence (worst platform {worst_plat} at "
-        "CV={worst_cv:.2f}, {worst_gap_pct} gap days)."
+        "Spend is flowing in a steady daily rhythm on all "
+        "{platforms_scored} platform(s). No dark days, no bursts."
     ),
     StatusBand.WATCH: (
-        "{worst_plat} is showing uneven delivery "
-        "(CV={worst_cv:.2f}, {worst_gap_pct} gap days within its active "
-        "window). Check for mid-flight pauses, sudden budget shifts, or "
+        "{worst_plat} isn't delivering evenly day to day. Check for "
+        "mid-flight pauses, sudden budget changes, or accelerated "
         "pacing settings."
     ),
     StatusBand.ACTION: (
-        "{worst_plat} is delivering in bursts or has significant dark "
-        "days (CV={worst_cv:.2f}, {worst_gap_pct} gap days). "
-        "Confirm the platform is live and pacing is set to Standard — "
-        "this level of variance will distort frequency and attention."
+        "{worst_plat} is delivering in bursts, or going completely dark "
+        "on some days. Confirm the platform is live and set to standard "
+        "pacing. Delivery this erratic stops the message from building."
     ),
 }
 
@@ -277,21 +280,21 @@ def compute_d1_reach_attainment(data: CampaignData) -> SignalResult:
     notes: list[str] = []
     if early_flight_floor_applied:
         notes.append(
-            f"Score held at WATCH floor — first {D1_EARLY_FLIGHT_DAYS} days "
-            "of a flight are too noisy to score ACTION."
+            f"Score held at WATCH: the first {D1_EARLY_FLIGHT_DAYS} days "
+            "of a flight are too noisy to call ACTION."
         )
     if plan_meta["lines_flagged_potential_reach"] > 0:
         n = plan_meta["lines_flagged_potential_reach"]
         notes.append(
-            f"{n} line{'s' if n != 1 else ''} had planned_reach inconsistent "
-            "with planned_impressions (likely platform potential reach) — "
-            "using derived effective reach instead."
+            f"{n} line{'s' if n != 1 else ''} had a planned-reach figure "
+            "that looks like platform potential reach, so expected reach "
+            "was derived from planned impressions instead."
         )
     if plan_meta["lines_derived_with_default_freq"] > 0:
         n = plan_meta["lines_derived_with_default_freq"]
         notes.append(
-            f"{n} line{'s' if n != 1 else ''} missing frequency target — "
-            f"assumed effective frequency of {EFFECTIVE_FREQ_FLOOR:.0f}."
+            f"{n} line{'s' if n != 1 else ''} had no frequency target, so "
+            f"we assumed {EFFECTIVE_FREQ_FLOOR:.0f} exposures per person."
         )
 
     if notes:
@@ -432,7 +435,7 @@ def compute_d2_frequency_adequacy(data: CampaignData) -> SignalResult:
         if in_band > 0 and in_band < len(platform_breakdown):
             diagnostic += (
                 f" ({in_band} of {len(platform_breakdown)} platforms are "
-                "within their effective band.)"
+                "in a healthy frequency range.)"
             )
 
     if conflict_notes:
@@ -706,17 +709,17 @@ def compute_d4_incremental_reach(data: CampaignData) -> SignalResult:
         if worst["creative_format"] in D4_LOW_REACH_FORMATS:
             diagnostic += (
                 f" Note: {worst['platform_id']} runs "
-                f"{worst['creative_format'].replace('_', ' ')} — this "
-                "format typically delivers lower reach-per-dollar than "
-                "social/display, so some under-delivery may be expected."
+                f"{worst['creative_format'].replace('_', ' ')}, a format "
+                "that reaches fewer people per dollar by nature, so some "
+                "of this gap may be expected."
             )
 
     # High-overlap caveat for 4+ platform campaigns
     if len(platforms_with_data) >= 4:
         diagnostic += (
-            f" Note: with {len(platforms_with_data)} platforms, estimated "
-            f"{format_pct(overlap)} cross-platform audience overlap — "
-            "reach shares may overstate individual-platform uniqueness."
+            f" Note: with {len(platforms_with_data)} platforms there's "
+            f"roughly {format_pct(overlap)} audience overlap between "
+            "them, so per-platform reach overstates unique people."
         )
 
     return SignalResult(
@@ -904,7 +907,8 @@ def compute_d5_delivery_cadence(data: CampaignData) -> SignalResult:
         # Surface skipped platforms so operators can see coverage gaps
         skipped_ids = ", ".join(s["platform_id"] for s in skipped)
         diagnostic += (
-            f" Note: {len(skipped)} platform(s) not yet scored ({skipped_ids})."
+            f" Note: {len(skipped)} platform(s) don't have enough days "
+            f"of data to score yet ({skipped_ids})."
         )
 
     return SignalResult(

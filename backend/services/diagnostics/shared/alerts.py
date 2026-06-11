@@ -112,9 +112,12 @@ def _is_action_level(signal: SignalResult) -> bool:
 def _build_signal_alert(
     signal: SignalResult, output: DiagnosticOutput
 ) -> DiagnosticAlert:
+    # Plain-language pass (AI-115): lead with the signal's name and a
+    # decoded score; the chip/context row already carries the signal ID
+    # and severity in both the dashboard banner and Slack.
     body_lines = [
-        f"{signal.name} ({signal.id}) scored "
-        f"{_fmt_score(signal.score)} (ACTION).",
+        f"{signal.name} needs action: scored "
+        f"{_fmt_score(signal.score)} out of 100.",
     ]
     if signal.diagnostic:
         body_lines.append("")

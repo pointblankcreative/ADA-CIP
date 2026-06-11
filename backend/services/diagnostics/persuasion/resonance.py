@@ -67,43 +67,46 @@ R3_WEIGHTS_WITHOUT_SCROLL = {"engaged_rate": 1.00, "scroll_rate": 0.00}
 
 # ── Diagnostic message templates ────────────────────────────────────
 
+# Voice rules (AI-115 plain-language pass): say what people are doing,
+# then what to do about it. Precise rates live in `inputs`.
+
 R1_MESSAGES = {
     StatusBand.STRONG: (
-        "Engagement quality ratio at {ratio} — the majority of interactions "
-        "are deliberate actions (reactions, outbound clicks) rather than "
-        "passive engagement.{worst_suffix}"
+        "When people interact with the ads they mean it: {ratio} of "
+        "engagement is deliberate action (reactions, clicks through to "
+        "the site) rather than passive.{worst_suffix}"
     ),
     StatusBand.WATCH: (
-        "Engagement quality ratio at {ratio} — a moderate share of engagement "
-        "is high-value. Review creative messaging; the audience is interacting "
-        "but not always with intent.{worst_suffix}"
+        "Only {ratio} of engagement is deliberate action like reactions "
+        "or clicks through to the site. People are interacting, but "
+        "mostly passively. Check whether the creative actually asks for "
+        "the action you want.{worst_suffix}"
     ),
     StatusBand.ACTION: (
-        "Engagement quality ratio at {ratio} — most engagement is low-value "
-        "(passive views, auto-expansions). The message may not be compelling "
-        "enough to drive deliberate interaction.{worst_suffix} Assess the "
-        "creative CTA and messaging clarity."
+        "Most engagement is passive: just {ratio} is deliberate action "
+        "like reactions or clicks through to the site. The message isn't "
+        "moving people to do anything.{worst_suffix} Look at the call to "
+        "action and what the creative asks of people."
     ),
 }
 
 R3_MESSAGES = {
     StatusBand.STRONG: (
-        "Landing page engagement depth at {combined} (engaged session rate "
-        "{engaged_rate}{scroll_suffix}). Visitors are absorbing the page "
-        "content — the message is carrying through from ad to site."
+        "Visitors who click through are sticking around: {engaged_rate} "
+        "of landing page sessions properly engage{scroll_suffix}. The "
+        "ad's promise is carrying through to the site."
     ),
     StatusBand.WATCH: (
-        "Landing page engagement depth at {combined} (engaged session rate "
-        "{engaged_rate}{scroll_suffix}). Some visitors are bouncing before "
-        "engaging with the content. Review page load speed and above-the-fold "
-        "messaging alignment with the ad creative."
+        "Some visitors bounce before engaging: {engaged_rate} of landing "
+        "page sessions properly engage{scroll_suffix}. Check how fast "
+        "the page loads and whether the top of the page matches what "
+        "the ad promised."
     ),
     StatusBand.ACTION: (
-        "Landing page engagement depth at {combined} (engaged session rate "
-        "{engaged_rate}{scroll_suffix}). Most visitors are leaving without "
-        "engaging — likely a disconnect between the ad promise and the "
-        "landing page experience. Audit message continuity and page "
-        "performance."
+        "Most visitors leave the landing page without engaging (only "
+        "{engaged_rate} of sessions do{scroll_suffix}). The page isn't "
+        "delivering on what the ad promised. Audit it top to bottom: "
+        "load speed, headline match, clutter."
     ),
 }
 
@@ -224,7 +227,8 @@ def compute_r1_engagement_quality(data: CampaignData) -> SignalResult:
         )
         if score - worst["score"] >= R1_WORST_PLATFORM_MIN_GAP:
             worst_suffix = (
-                f" {worst_pid} lowest at {format_pct(worst['quality_ratio'])}"
+                f" {worst_pid} is the weak spot at "
+                f"{format_pct(worst['quality_ratio'])}."
             )
 
     template = R1_MESSAGES.get(status, R1_MESSAGES[StatusBand.WATCH])
@@ -238,9 +242,9 @@ def compute_r1_engagement_quality(data: CampaignData) -> SignalResult:
         # whole percentages which displays 0.02% as "0%" and loses the
         # meaning of the floor.
         diagnostic = diagnostic + (
-            f" Note: engagement volume is thin "
-            f"({engagement_rate * 100:.2f}% of impressions) — "
-            f"high quality ratio reflects a small base of engagers."
+            f" Note: very few people engaged at all "
+            f"({engagement_rate * 100:.2f}% of impressions), so that "
+            "healthy share comes from a small base."
         )
 
     return SignalResult(
@@ -351,7 +355,7 @@ def compute_r3_landing_page_depth(data: CampaignData) -> SignalResult:
 
     # Scroll suffix for diagnostic — only include when tracking present
     if scroll_tracking_present:
-        scroll_suffix = f", scroll rate {format_pct(scroll_rate)}"
+        scroll_suffix = f" and {format_pct(scroll_rate)} scroll the page"
     else:
         scroll_suffix = ""
 
@@ -364,9 +368,9 @@ def compute_r3_landing_page_depth(data: CampaignData) -> SignalResult:
 
     if not scroll_tracking_present:
         diagnostic = diagnostic + (
-            " Note: no scroll events detected in GA4 — scoring on "
-            "engaged session rate alone. Configure scroll tracking in "
-            "GA4 for a fuller depth signal."
+            " Note: GA4 isn't recording scroll events for this page, so "
+            "this reads on engaged sessions alone. Configure scroll "
+            "tracking for a fuller picture."
         )
 
     return SignalResult(

@@ -12,6 +12,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type MutableRefObject,
@@ -189,7 +190,10 @@ export function SignalSoundButton({
   );
 }
 
-/* Cursor-following readout card for a hovered body. */
+/* Cursor-following readout card for a hovered body. Measured after render
+   and CLAMPED inside the stage rather than naively flipped — on short
+   stages (Pacing Signal is 210px) a flip-above pushed the card past the
+   panel's overflow-hidden top edge and clipped it. */
 export function SignalTooltip({
   item,
   pos,
@@ -199,18 +203,32 @@ export function SignalTooltip({
   pos: { x: number; y: number } | null;
   bounds: { w: number; h: number };
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 200, h: 110 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    setSize((s) => (s.w === w && s.h === h ? s : { w, h }));
+  });
   if (!item || !pos) return null;
   const c = COLORS[item.sev];
-  const flipX = pos.x > bounds.w - 250;
-  const flipY = pos.y > bounds.h - 130;
+  const PAD = 6;
+  const GAP = 15;
+  // prefer below-right of the cursor; flip a side only if it overflows,
+  // then clamp so the card always stays fully inside the stage
+  let left = pos.x + GAP;
+  if (left + size.w > bounds.w - PAD) left = pos.x - GAP - size.w;
+  left = Math.min(Math.max(left, PAD), Math.max(PAD, bounds.w - size.w - PAD));
+  let top = pos.y + GAP;
+  if (top + size.h > bounds.h - PAD) top = pos.y - GAP - size.h;
+  top = Math.min(Math.max(top, PAD), Math.max(PAD, bounds.h - size.h - PAD));
   return (
     <div
+      ref={ref}
       className="pointer-events-none absolute z-[5] min-w-[185px] max-w-[240px] rounded-sm border-2 border-line bg-surface-up px-[11px] py-[9px] shadow-soft"
-      style={{
-        left: pos.x + (flipX ? -14 : 16),
-        top: pos.y + (flipY ? -12 : 14),
-        transform: `translate(${flipX ? "-100%" : "0"},${flipY ? "-100%" : "0"})`,
-      }}
+      style={{ left, top }}
     >
       <div className="flex items-center gap-2">
         <span className="font-mono text-[10px] font-bold" style={{ color: c }}>

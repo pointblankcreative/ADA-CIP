@@ -325,7 +325,7 @@ export function OscilloscopeCard({
             >
               {hov
                 ? `${hov.code} · ${hov.label} · ${hov.pct != null ? hov.pct.toFixed(0) + "%" : "no data"}`
-                : `${items.length} lines in orbit · hover to read`}
+                : `${items.length} lines in flight · hover to read`}
             </span>
             <span onClick={(e) => e.stopPropagation()} className="inline-flex">
               <SignalSoundButton soundOn={soundOn} toggle={toggle} secsLeft={secsLeft} />
