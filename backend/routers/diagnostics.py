@@ -150,11 +150,40 @@ async def get_diagnostics(
     return [_row_to_diagnostic(r) for r in rows]
 
 
+def _slim_signals(signals: Any) -> list[dict]:
+    """Reduce a stored signals JSON array to sparkline-sized entries.
+
+    The Triage Board (diagnostics redesign) needs per-signal score history
+    for trends and ▲/▼ deltas. Full signal objects carry diagnostic prose
+    and raw inputs — at 30 days × 12 signals that's needless payload, so
+    history rows return just id / score / status per signal.
+    """
+    coerced = _coerce_json(signals)
+    if not isinstance(coerced, list):
+        return []
+    return [
+        {
+            "id": s.get("id"),
+            "score": s.get("score"),
+            "status": s.get("status"),
+        }
+        for s in coerced
+        if isinstance(s, dict) and s.get("id")
+    ]
+
+
 @router.get("/{project_code}/history")
 async def get_diagnostic_history(
     project_code: str,
     days: int = Query(30, ge=1, le=365),
     campaign_type: str | None = Query(None),
+    include_signals: bool = Query(
+        False,
+        description=(
+            "Also return per-signal {id, score, status} for each evaluation "
+            "— feeds the Triage Board's signal sparklines and deltas."
+        ),
+    ),
     as_of_date: date | None = Query(
         None,
         description=(
@@ -171,13 +200,14 @@ async def get_diagnostic_history(
     defaults to today; in retrospective mode it's the replay date.
     """
     anchor = as_of_date or date.today()
+    signals_col = ",\n            signals" if include_signals else ""
     sql = f"""
         SELECT
             evaluation_date,
             campaign_type,
             health_score,
             health_status,
-            pillars
+            pillars{signals_col}
         FROM {bq.table('fact_diagnostic_signals')}
         WHERE project_code = @project_code
           AND evaluation_date >= DATE_SUB(@anchor, INTERVAL @days DAY)
@@ -206,6 +236,11 @@ async def get_diagnostic_history(
             "health_score": r.get("health_score"),
             "health_status": r.get("health_status"),
             "pillars": _coerce_json(r.get("pillars")) or {},
+            **(
+                {"signals": _slim_signals(r.get("signals"))}
+                if include_signals
+                else {}
+            ),
         }
         for r in rows
     ]

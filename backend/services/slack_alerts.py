@@ -21,17 +21,49 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CHANNEL = settings.slack_default_channel or "#cip-alerts"
 
+# Brand status colours (ADA light-theme tokens — Slack renders on white).
 SEVERITY_COLORS = {
-    "critical": "#dc2626",
-    "warning": "#f59e0b",
-    "info": "#3b82f6",
+    "critical": "#C4392E",
+    "warning": "#B97D08",
+    "info": "#3F6FB0",
 }
+ALL_CLEAR_COLOR = "#6F8C00"
 
 SEVERITY_EMOJI = {
     "critical": ":rotating_light:",
     "warning": ":warning:",
     "info": ":information_source:",
 }
+
+# Verdict words — the same plain-language grammar the ADA UI speaks
+# (Flightdeck verdicts + Triage Board zones). Keyed by (alert_type,
+# severity) with alert_type-only and severity-only fallbacks.
+VERDICT_WORDS: dict[tuple[str, str], str] = {
+    ("pacing_over", "warning"): "RUNNING HOT",
+    ("pacing_over", "critical"): "BURNING DOWN",
+    ("pacing_under", "warning"): "LAGGING",
+    ("pacing_under", "critical"): "STALLED",
+    ("budget_exceeded", "critical"): "OVER BUDGET",
+    ("flight_ending", "info"): "FINAL STRETCH",
+    ("data_stale", "warning"): "GONE DARK",
+    ("diagnostic_health_regression", "critical"): "HEALTH DOWN",
+}
+SEVERITY_VERDICTS = {
+    "critical": "ACT NOW",
+    "warning": "KEEP AN EYE ON",
+    "info": "HEADS UP",
+}
+
+
+def _verdict_word(alert_type: str, severity: str) -> str:
+    """Plain-language verdict for the alert headline, matching the UI."""
+    if alert_type.startswith("diagnostic_signal_"):
+        return "SIGNAL DOWN"
+    return (
+        VERDICT_WORDS.get((alert_type, severity))
+        or VERDICT_WORDS.get((alert_type, "critical"))
+        or SEVERITY_VERDICTS.get(severity, "ALERT")
+    )
 
 
 def _get_slack_client() -> WebClient | None:
@@ -60,6 +92,7 @@ ALERT_TYPE_LABELS = {
     "pacing_under": "Underspending",
     "flight_ending": "Flight ending soon",
     "data_stale": "Stale data",
+    "diagnostic_health_regression": "Health regression",
 }
 
 
@@ -113,8 +146,14 @@ def _format_alert_blocks(
 
     All content lives inside these blocks so the caller can render them inside a
     single coloured attachment (nothing spills outside the severity border). No
-    leading severity emoji — the colour border and the labelled severity already
-    carry that signal.
+    leading severity emoji — the colour border and the verdict word carry that
+    signal, the same way the ADA UI does.
+
+    Layout:
+        *RUNNING HOT* · 26018 - CUPE National - Hands Off Health Care
+        *Overspending - Meta - Persuadable Parents 35-64 (M-01)*
+        {message}  Pacing: 121.7%
+        pacing_over · warning · Review & acknowledge in ADA →
     """
     severity = alert["severity"]
     pcode = alert.get("project_code", "")
@@ -130,28 +169,30 @@ def _format_alert_blocks(
 
     line = (line_info or {}).get(meta.get("line_id")) if meta.get("line_id") else None
     headline = _alert_headline(alert, line)
+    verdict = _verdict_word(alert_type, severity)
 
     pacing_pct = meta.get("pacing_pct")
     body = message + (f"\nPacing: *{pacing_pct:.0f}%*" if pacing_pct else "")
 
     is_project_alert = bool(pcode) and pcode != "__system__"
+    # Project links land on the Summary tab — verdict, projection, and the
+    # acknowledge-and-note flow are all right there.
     view_url = (
         f"{settings.frontend_url}/project/{pcode}" if is_project_alert
         else f"{settings.frontend_url}/alerts"
     )
 
-    context_elements = []
     project_line = _project_label(pcode, (proj_info or {}).get(pcode)) if is_project_alert else ""
-    if project_line:
-        context_elements.append({"type": "mrkdwn", "text": project_line})
-    context_elements.append({
+    lead = f"*{verdict}*" + (f" · {project_line}" if project_line else "")
+
+    context_elements = [{
         "type": "mrkdwn",
-        "text": f"Type: `{alert_type}` | Severity: `{severity}` | <{view_url}|View in CIP>",
-    })
+        "text": f"`{alert_type}` · `{severity}` · <{view_url}|Review & acknowledge in ADA →>",
+    }]
 
     return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": lead}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*\n{body}"}},
         {"type": "context", "elements": context_elements},
     ]
 
@@ -249,11 +290,12 @@ def dispatch_unsent_alerts() -> dict:
         # Spend charts for over/under-spend alerts (best-effort; [] if disabled
         # or anything fails) — appended so they render inside the same border.
         blocks = blocks + alert_charts.build_alert_chart_blocks(alert)
-        color = SEVERITY_COLORS.get(alert["severity"], "#6b7280")
+        color = SEVERITY_COLORS.get(alert["severity"], "#8A8888")
         # `fallback` is the notification-preview text only. We deliberately do NOT
         # pass a top-level `text=` so nothing renders above (outside) the coloured
         # attachment border — the whole alert sits inside the severity colour.
-        fallback_text = f"[{alert['severity'].upper()}] {alert.get('title', 'Alert')}"
+        verdict = _verdict_word(alert.get("alert_type", ""), alert["severity"])
+        fallback_text = f"{verdict} — {alert.get('title', 'Alert')}"
         attachments = [{"color": color, "fallback": fallback_text, "blocks": blocks}]
 
         try:
@@ -319,42 +361,91 @@ def post_daily_digest() -> dict:
         ORDER BY a.project_code, a.severity
     """)
 
+    today = date.today().strftime("%B %d, %Y")
+
     if not rows:
-        # No active alerts — post an all-clear
+        # No active alerts — post an all-clear inside an on-pace green border
         try:
             client.chat_postMessage(
                 channel=DEFAULT_CHANNEL,
-                text=":white_check_mark: *CIP Daily Digest* — No active alerts. All campaigns on track.",
+                attachments=[{
+                    "color": ALL_CLEAR_COLOR,
+                    "fallback": "ADA Daily Digest — all quiet",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*ADA Daily Digest — {today}*\n*ON PACE* — no active alerts. The money's landing.",
+                            },
+                        },
+                        {
+                            "type": "context",
+                            "elements": [{
+                                "type": "mrkdwn",
+                                "text": f"<{settings.frontend_url}/|Open the Flightdeck →>",
+                            }],
+                        },
+                    ],
+                }],
             )
             return {"posted": True, "alerts": 0}
         except SlackApiError as e:
             logger.error("Daily digest failed: %s", e.response["error"])
             return {"posted": False, "reason": str(e)}
 
-    # Build digest
-    today = date.today().strftime("%B %d, %Y")
-    lines = [f":bar_chart: *CIP Daily Digest — {today}*\n"]
-
+    # Build digest — one line per project, severity counts, deep links
+    lines = []
     current_project = None
+    worst = "info"
     for r in rows:
         pcode = r["project_code"] or "System"
         pname = r.get("project_name") or pcode
         sev = r["severity"]
         cnt = r["alert_count"]
         emoji = SEVERITY_EMOJI.get(sev, ":bell:")
+        if sev == "critical" or (sev == "warning" and worst == "info"):
+            worst = sev
 
         if pcode != current_project:
             current_project = pcode
-            lines.append(f"\n*`{pcode}` — {pname}*")
+            link = (
+                f"<{settings.frontend_url}/project/{pcode}|{pcode}>"
+                if pcode != "System"
+                else pcode
+            )
+            lines.append(f"\n*{link} — {pname}*")
         lines.append(f"  {emoji} {cnt} {sev} alert{'s' if cnt > 1 else ''}")
 
     total = sum(r["alert_count"] for r in rows)
-    lines.append(f"\n_Total: {total} active alert{'s' if total != 1 else ''} | <{settings.frontend_url}/alerts|View all in CIP>_")
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*ADA Daily Digest — {today}*\n" + "\n".join(lines),
+            },
+        },
+        {
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": (
+                    f"{total} active alert{'s' if total != 1 else ''} in the last 24h · "
+                    f"<{settings.frontend_url}/alerts|Review & acknowledge in ADA →>"
+                ),
+            }],
+        },
+    ]
 
     try:
         client.chat_postMessage(
             channel=DEFAULT_CHANNEL,
-            text="\n".join(lines),
+            attachments=[{
+                "color": SEVERITY_COLORS.get(worst, "#8A8888"),
+                "fallback": f"ADA Daily Digest — {total} active alerts",
+                "blocks": blocks,
+            }],
         )
         return {"posted": True, "alerts": total}
     except SlackApiError as e:
