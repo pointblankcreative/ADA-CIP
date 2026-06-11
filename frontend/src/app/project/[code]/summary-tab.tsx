@@ -18,6 +18,7 @@ import {
   type Project,
 } from "@/lib/api";
 import { computeFlight, verdict } from "@/lib/flight";
+import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
 import { Label } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -308,7 +309,7 @@ function HealthMini({
           Full diagnostics <ArrowRight className="h-[13px] w-[13px]" />
         </button>
       </div>
-      <div className="mb-[18px] flex items-center gap-[18px]">
+      <div className="mb-3 flex items-center gap-[18px]">
         <span
           className="tnum font-display text-[40px] leading-[0.9]"
           style={{ color }}
@@ -333,6 +334,13 @@ function HealthMini({
           </div>
         </div>
       </div>
+      {/* Gauge, not thermometer: the goal is the strong zone, not 100 —
+          see BandScale's rationale comment. */}
+      <BandScale
+        score={output.health_score}
+        color={color}
+        className="mb-[18px]"
+      />
       <div className="flex flex-col gap-[13px]">
         {order.map((k) => {
           const pl = output.pillars[k];
@@ -352,15 +360,7 @@ function HealthMini({
                   {pl.status ?? "NO DATA"}
                 </span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-pill bg-surface-sunken">
-                <div
-                  className="h-full rounded-pill transition-[width] duration-700 ease-snap"
-                  style={{
-                    width: `${Math.min(pl.score ?? 0, 100)}%`,
-                    background: c,
-                  }}
-                />
-              </div>
+              <BandScale score={pl.score} color={c} />
             </div>
           );
         })}

@@ -167,3 +167,39 @@ def safe_div(numerator: float, denominator: float, default: float = 0.0) -> floa
     if denominator == 0:
         return default
     return numerator / denominator
+
+
+# ── Platform display labels (AI-115 plain-language pass) ────────────
+#
+# Diagnostic messages used to interpolate raw platform_id values
+# ("google_ads", "stackadapt") straight into user-facing sentences.
+# This map mirrors the frontend's `platformLabel` in lib/utils.ts —
+# keep the two in sync when a new platform lands. Unknown ids fall
+# back to underscore-stripped Title Case so new platforms degrade
+# gracefully instead of leaking snake_case.
+#
+# Use at MESSAGE-FORMAT TIME ONLY — `inputs` payloads keep raw ids so
+# the evidence layer and any programmatic consumers stay stable.
+
+PLATFORM_LABELS: dict[str, str] = {
+    "meta": "Meta",
+    "facebook": "Meta",
+    "google_ads": "Google Ads",
+    "stackadapt": "StackAdapt",
+    "linkedin": "LinkedIn",
+    "tiktok": "TikTok",
+    "snapchat": "Snapchat",
+    "perion": "Perion/DOOH",
+    "reddit": "Reddit",
+    "pinterest": "Pinterest",
+}
+
+
+def platform_label(platform_id: str | None) -> str:
+    """Human display label for a platform id, for diagnostic copy."""
+    if not platform_id:
+        return "unknown platform"
+    return PLATFORM_LABELS.get(
+        platform_id.lower(),
+        platform_id.replace("_", " ").title(),
+    )

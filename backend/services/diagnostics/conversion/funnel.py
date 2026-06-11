@@ -93,6 +93,7 @@ from backend.services.diagnostics.shared.normalization import (
     clamp,
     format_pct,
     normalize_linear,
+    platform_label,
     safe_div,
 )
 
@@ -529,8 +530,9 @@ def compute_f1_ctr(data: CampaignData) -> SignalResult:
         )
         if (score - worst_score) >= F1_WORST_PLATFORM_MIN_GAP:
             worst_suffix = (
-                f" {worst_platform}'s CTR ({format_pct(worst_ctr, decimals=2)} "
-                f"vs {format_pct(worst_bench, decimals=2)} benchmark) is "
+                f" {platform_label(worst_platform)}'s CTR "
+                f"({format_pct(worst_ctr, decimals=2)} vs "
+                f"{format_pct(worst_bench, decimals=2)} benchmark) is "
                 "dragging the campaign down."
             )
             worst_platform_info = {
@@ -700,7 +702,10 @@ def compute_f2_lp_load_rate(data: CampaignData, arch_mix: ArchMix) -> SignalResu
                 "F2", "Landing Page Load Rate", "no_arch_a_lp_reporting",
                 "No landing-page line is reporting landing_page_views — "
                 "in-platform-form platforms ("
-                + ", ".join(sorted(excluded_arch_b_platforms))
+                + ", ".join(
+                    platform_label(p)
+                    for p in sorted(excluded_arch_b_platforms)
+                )
                 + ") are excluded from this signal. If the landing page "
                 "can't be tagged, F2 stays inactive.",
             )

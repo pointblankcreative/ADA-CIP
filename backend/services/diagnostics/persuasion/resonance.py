@@ -42,6 +42,7 @@ from backend.services.diagnostics.shared.guards import (
 from backend.services.diagnostics.shared.normalization import (
     format_pct,
     normalize_linear,
+    platform_label,
     safe_div,
 )
 
@@ -227,7 +228,7 @@ def compute_r1_engagement_quality(data: CampaignData) -> SignalResult:
         )
         if score - worst["score"] >= R1_WORST_PLATFORM_MIN_GAP:
             worst_suffix = (
-                f" {worst_pid} is the weak spot at "
+                f" {platform_label(worst_pid)} is the weak spot at "
                 f"{format_pct(worst['quality_ratio'])}."
             )
 

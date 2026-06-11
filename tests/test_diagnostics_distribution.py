@@ -272,7 +272,8 @@ class TestD5DeliveryCadence:
         result = compute_d5_delivery_cadence(data)
         assert result.guard_passed
         assert result.status == StatusBand.STRONG
-        assert "linkedin" in result.diagnostic
+        # Platform-label pass (AI-115): copy now uses display labels.
+        assert "LinkedIn" in result.diagnostic
         skipped_ids = {
             s["platform_id"] for s in result.inputs["skipped_platforms"]
         }

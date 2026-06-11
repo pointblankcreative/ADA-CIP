@@ -12,6 +12,7 @@ import type {
   DiagnosticOutput,
   DiagnosticSignal,
 } from "@/lib/api";
+import { platformLabel } from "@/lib/utils";
 
 /* ── Pillar derivation — signal IDs encode their pillar ─────────────── */
 
@@ -115,6 +116,7 @@ export type EvidenceFmt =
   | "f1" // 1 decimal place
   | "f2" // 2 decimal places
   | "pctday" // signed percent per day
+  | "platform" // platform_id → display label (google_ads → Google Ads)
   | "str";
 
 export interface EvidenceField {
@@ -131,24 +133,24 @@ export const SIGNAL_EVIDENCE: Record<string, EvidenceField[]> = {
   ],
   D2: [
     { key: "avg_frequency", label: "Avg exposures per person", fmt: "f1" },
-    { key: "worst_platform", label: "Platform to watch", fmt: "str" },
+    { key: "worst_platform", label: "Platform to watch", fmt: "platform" },
   ],
   D3: [
     { key: "cv", label: "Unevenness (0 = perfectly even)", fmt: "f2" },
   ],
   D4: [
-    { key: "worst_platform", label: "Least efficient", fmt: "str" },
-    { key: "best_platform", label: "Most efficient", fmt: "str" },
+    { key: "worst_platform", label: "Least efficient", fmt: "platform" },
+    { key: "best_platform", label: "Most efficient", fmt: "platform" },
     { key: "effective_unique_reach", label: "Est. unique people", fmt: "num" },
   ],
   D5: [
-    { key: "worst_platform", label: "Platform to watch", fmt: "str" },
+    { key: "worst_platform", label: "Platform to watch", fmt: "platform" },
     { key: "worst_gap_days", label: "Days with zero delivery", fmt: "num" },
   ],
   A1: [
     { key: "weighted_q100_rate", label: "Watch to the end", fmt: "pct" },
     { key: "total_starts", label: "Video starts", fmt: "num" },
-    { key: "worst_platform", label: "Platform to watch", fmt: "str" },
+    { key: "worst_platform", label: "Platform to watch", fmt: "platform" },
   ],
   A3: [
     { key: "viewability_rate", label: "Ads actually seen", fmt: "pct" },
@@ -156,11 +158,11 @@ export const SIGNAL_EVIDENCE: Record<string, EvidenceField[]> = {
   ],
   A4: [
     { key: "weighted_rate", label: "Hold attention", fmt: "pct" },
-    { key: "worst_platform", label: "Platform to watch", fmt: "str" },
+    { key: "worst_platform", label: "Platform to watch", fmt: "platform" },
   ],
   A5: [
     { key: "daily_change_pct", label: "Attention change per day", fmt: "pctday" },
-    { key: "worst_platform", label: "Fading fastest", fmt: "str" },
+    { key: "worst_platform", label: "Fading fastest", fmt: "platform" },
   ],
   R1: [
     { key: "quality_ratio", label: "Deliberate share", fmt: "pct" },
@@ -213,6 +215,15 @@ export const SIGNAL_EVIDENCE: Record<string, EvidenceField[]> = {
 
 export function formatEvidence(v: unknown, fmt: EvidenceFmt): string {
   if (v == null) return "—";
+  if (fmt === "platform") {
+    const s = String(v);
+    const label = platformLabel(s);
+    // Unknown ids fall through platformLabel unchanged — degrade to
+    // Title Case instead of leaking snake_case (mirrors the backend).
+    return label === s
+      ? s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+      : label;
+  }
   if (fmt === "str") return String(v).replace(/_/g, " ");
   const n = typeof v === "number" ? v : Number(v);
   if (Number.isNaN(n)) return String(v);

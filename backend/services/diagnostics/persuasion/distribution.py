@@ -63,6 +63,7 @@ from backend.services.diagnostics.shared.normalization import (
     normalize_inverse,
     normalize_linear,
     normalize_ratio,
+    platform_label,
     safe_div,
 )
 
@@ -422,7 +423,7 @@ def compute_d2_frequency_adequacy(data: CampaignData) -> SignalResult:
             min_freq=worst_band["min"],
             max_freq=worst_band["max"],
             format=worst_format.replace("_", " "),
-            platform=worst_platform,
+            platform=platform_label(worst_platform),
         )
 
     # Multi-platform context suffix — useful when one platform drags the
@@ -557,17 +558,17 @@ def compute_d3_frequency_distribution(data: CampaignData) -> SignalResult:
         diagnostic = D3_MESSAGES[StatusBand.STRONG].format(cv=cv)
     elif status == StatusBand.WATCH:
         diagnostic = D3_MESSAGES[StatusBand.WATCH].format(
-            high_plat=high["platform_id"],
+            high_plat=platform_label(high["platform_id"]),
             high_pos=high["band_position"],
-            low_plat=low["platform_id"],
+            low_plat=platform_label(low["platform_id"]),
             low_pos=low["band_position"],
         )
     else:
         diagnostic = D3_MESSAGES[StatusBand.ACTION].format(
             cv=cv,
-            high_plat=high["platform_id"],
+            high_plat=platform_label(high["platform_id"]),
             high_pos=high["band_position"],
-            low_plat=low["platform_id"],
+            low_plat=platform_label(low["platform_id"]),
             low_pos=low["band_position"],
         )
 
@@ -693,14 +694,14 @@ def compute_d4_incremental_reach(data: CampaignData) -> SignalResult:
 
     if status == StatusBand.STRONG:
         diagnostic = D4_MESSAGES[StatusBand.STRONG].format(
-            best_platform=best["platform_id"],
+            best_platform=platform_label(best["platform_id"]),
             best_reach_share_pct=format_pct(best["reach_share"]),
             best_spend_share_pct=format_pct(best["spend_share"]),
         )
     else:
         msg_template = D4_MESSAGES.get(status, D4_MESSAGES[StatusBand.WATCH])
         diagnostic = msg_template.format(
-            worst_platform=worst["platform_id"],
+            worst_platform=platform_label(worst["platform_id"]),
             worst_reach_share_pct=format_pct(worst["reach_share"]),
             worst_spend_share_pct=format_pct(worst["spend_share"]),
         )
@@ -708,7 +709,7 @@ def compute_d4_incremental_reach(data: CampaignData) -> SignalResult:
         # Format-specific caveat on low-reach formats
         if worst["creative_format"] in D4_LOW_REACH_FORMATS:
             diagnostic += (
-                f" Note: {worst['platform_id']} runs "
+                f" Note: {platform_label(worst['platform_id'])} runs "
                 f"{worst['creative_format'].replace('_', ' ')}, a format "
                 "that reaches fewer people per dollar by nature, so some "
                 "of this gap may be expected."
@@ -898,14 +899,14 @@ def compute_d5_delivery_cadence(data: CampaignData) -> SignalResult:
     msg_template = D5_MESSAGES.get(status, D5_MESSAGES[StatusBand.WATCH])
     diagnostic = msg_template.format(
         platforms_scored=len(platform_results),
-        worst_plat=worst["platform_id"],
+        worst_plat=platform_label(worst["platform_id"]),
         worst_cv=worst["cv"],
         worst_gap_pct=format_pct(worst["gap_rate"]),
     )
 
     if skipped:
         # Surface skipped platforms so operators can see coverage gaps
-        skipped_ids = ", ".join(s["platform_id"] for s in skipped)
+        skipped_ids = ", ".join(platform_label(s["platform_id"]) for s in skipped)
         diagnostic += (
             f" Note: {len(skipped)} platform(s) don't have enough days "
             f"of data to score yet ({skipped_ids})."

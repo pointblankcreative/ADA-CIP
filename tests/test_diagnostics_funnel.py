@@ -462,7 +462,8 @@ class TestF2LandingPageLoadRate:
         result = compute_f2_lp_load_rate(data, mix)
         assert not result.guard_passed
         assert result.guard_reason == "no_arch_a_lp_reporting"
-        assert "facebook" in result.diagnostic
+        # Platform-label pass (AI-115): "facebook" renders as Meta.
+        assert "Meta" in result.diagnostic
 
     def test_arch_b_platform_excluded_but_arch_a_platform_scores(self):
         """When an Arch A platform reports LP views, the Arch B platform's

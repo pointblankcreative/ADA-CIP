@@ -60,6 +60,7 @@ from backend.services.diagnostics.shared.normalization import (
     clamp,
     format_pct,
     normalize_linear,
+    platform_label,
     safe_div,
 )
 
@@ -497,7 +498,7 @@ def compute_a1_video_completion(data: CampaignData) -> SignalResult:
 
     template = A1_DIAGNOSES.get(worst["diagnosis"], A1_DIAGNOSES["HEALTHY"])
     diagnostic = template.format(
-        platform=worst["platform_id"],
+        platform=platform_label(worst["platform_id"]),
         length=worst["length"],
         q25_pct=format_pct(worst["q25_rate"]),
         drop=worst["drop_value"],
@@ -517,8 +518,9 @@ def compute_a1_video_completion(data: CampaignData) -> SignalResult:
     proxy_plats = [r["platform_id"] for r in platform_rows if not r["has_true_starts"]]
     if proxy_plats:
         diagnostic += (
-            f" Note: {', '.join(proxy_plats)} doesn't report video "
-            "starts, so early drop-off isn't scored there."
+            f" Note: {', '.join(platform_label(p) for p in proxy_plats)} "
+            "doesn't report video starts, so early drop-off isn't "
+            "scored there."
         )
 
     # Report the dominant platform's benchmark in raw_value/benchmark so
@@ -656,7 +658,7 @@ def compute_a3_viewability(data: CampaignData) -> SignalResult:
         best_row = max(per_platform_rows, key=lambda r: r["rate"])
         if worst_row["rate"] < best_row["rate"]:
             worst_suffix = (
-                f"{worst_row['platform_id']} at "
+                f"{platform_label(worst_row['platform_id'])} at "
                 f"{format_pct(worst_row['rate'])} is the drag. "
             )
 
@@ -686,7 +688,8 @@ def compute_a3_viewability(data: CampaignData) -> SignalResult:
     ]
     if unreported:
         diagnostic += (
-            f" Viewability not reported by: {', '.join(unreported)}."
+            " Viewability not reported by: "
+            f"{', '.join(platform_label(p) for p in unreported)}."
         )
 
     return SignalResult(
@@ -803,7 +806,7 @@ def compute_a4_focused_view(data: CampaignData) -> SignalResult:
     else:
         diagnostic = template.format(
             rate=format_pct(weighted_rate),
-            worst_platform=worst["platform_id"],
+            worst_platform=platform_label(worst["platform_id"]),
             worst_rate=format_pct(worst["rate"]),
             worst_metric=worst["metric_label"],
             worst_benchmark=format_pct(worst["benchmark"]),
@@ -815,15 +818,17 @@ def compute_a4_focused_view(data: CampaignData) -> SignalResult:
     default_plats = [r["platform_id"] for r in platform_rows if r["used_default_benchmark"]]
     if default_plats:
         diagnostic += (
-            f" Note: {', '.join(default_plats)} is scored against a "
-            "generic benchmark; no platform-specific calibration yet."
+            f" Note: {', '.join(platform_label(p) for p in default_plats)} "
+            "is scored against a generic benchmark; no platform-specific "
+            "calibration yet."
         )
 
     # Surface display (or other no-metric) exclusions so planners aren't
     # confused about why a running line doesn't contribute to A4.
     if excluded_no_metric:
         diagnostic += (
-            f" Not counted here: {', '.join(excluded_no_metric)} "
+            " Not counted here: "
+            f"{', '.join(platform_label(p) for p in excluded_no_metric)} "
             "(that inventory has no watch-time measure)."
         )
 
@@ -1011,7 +1016,7 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
         worst_suffix = ""
     else:
         worst_suffix = (
-            f"; {worst_pid} is fading fastest at "
+            f"; {platform_label(worst_pid)} is fading fastest at "
             f"{worst['daily_change_pct']:.1f}%/day"
         )
 
@@ -1027,13 +1032,17 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
     if skipped:
         note_bits = []
         for s in skipped:
-            note_bits.append(f"{s['platform_id']} ({s['reason'].replace('_', ' ')})")
+            note_bits.append(
+                f"{platform_label(s['platform_id'])} "
+                f"({s['reason'].replace('_', ' ')})"
+            )
         notes.append("Not enough data to trend: " + ", ".join(note_bits) + ".")
     switched = [pid for pid, r in platform_results.items() if r["metric_switched"]]
     if switched:
         notes.append(
-            "Reporting changed mid-window on " + ", ".join(switched) +
-            ", so this trend may reflect the reporting change rather "
+            "Reporting changed mid-window on "
+            + ", ".join(platform_label(p) for p in switched)
+            + ", so this trend may reflect the reporting change rather "
             "than audience behaviour."
         )
     if notes:
