@@ -1,64 +1,45 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  Activity,
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  CircleCheck,
-  CircleMinus,
-  Play,
-  TriangleAlert,
-} from "lucide-react";
+/**
+ * Diagnostics tab v2 — the "Triage Board".
+ *
+ * Organized by what needs doing, not by pillar:
+ *   Act now → Keep an eye on → Healthy (compact) → Not reporting.
+ * Mixed campaigns pool both engines' signals; engine + pillar become tags.
+ * Evaluation history renders as ▲/▼ deltas, sparklines, and dot strips
+ * (via the history endpoint's include_signals option).
+ *
+ * Preserved from v1: loading/empty/error states, the re-run button
+ * (suppressed in retro mode), Retrospective Mode (asOfDate anchoring +
+ * metadata callback), and the multi-phase breakdown panel — selecting a
+ * phase dims signals whose engine has no lines in it.
+ */
+import { useEffect, useMemo, useState } from "react";
+import { Activity, CheckCircle2, ChevronRight, Play } from "lucide-react";
 import {
   api,
+  type DiagnosticAlert,
+  type DiagnosticHistoryPoint,
   type DiagnosticOutput,
-  type DiagnosticPillar,
-  type DiagnosticSignal,
-  type DiagnosticStatus,
   type PacingResponse,
-  type PhaseSummary,
   type PacingLine,
+  type PhaseSummary,
 } from "@/lib/api";
+import {
+  buildTriageModel,
+  PILLAR_LABELS,
+  type TriageEngineChip,
+  type TriageSignal,
+} from "@/lib/diagnostics";
 import { Card } from "@/components/card";
-import { Btn, Eyebrow, Label, StatusPill } from "@/components/ui";
-import { cn, formatCurrency, formatFlightDay, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
+import { Btn, Eyebrow, Label } from "@/components/ui";
+import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
 
-const PILLAR_LABELS: Record<string, string> = {
-  distribution: "Distribution",
-  attention: "Attention",
-  resonance: "Resonance",
-  acquisition: "Acquisition",
-  funnel: "Funnel",
-};
-
-const PILLAR_ORDER_PERSUASION = ["distribution", "attention", "resonance"];
-// Quality (Q1-Q3) is deferred pending per-client CRM integration —
-// see docs/diagnostics/quality-pillar-deferred.md. Conversion campaigns
-// now render only Acquisition + Funnel.
-const PILLAR_ORDER_CONVERSION = ["acquisition", "funnel"];
-
-function statusColor(status: DiagnosticStatus): string {
-  if (status === "STRONG") return "text-ok";
-  if (status === "WATCH") return "text-warn";
-  if (status === "ACTION") return "text-danger";
-  return "text-fg-muted";
-}
-
-/** Raw CSS token for inline styles (Folsom scores, tinted pillar cards). */
-function statusVar(status: DiagnosticStatus): string {
+function statusVar(status: string | null | undefined): string {
   if (status === "STRONG") return "var(--ok)";
   if (status === "WATCH") return "var(--warn)";
   if (status === "ACTION") return "var(--danger)";
   return "var(--text-faint)";
-}
-
-function statusBarFill(status: DiagnosticStatus): string {
-  if (status === "STRONG") return "bg-ok";
-  if (status === "WATCH") return "bg-warn";
-  if (status === "ACTION") return "bg-danger";
-  return "bg-done";
 }
 
 export interface RetrospectiveMetadata {
@@ -66,42 +47,467 @@ export interface RetrospectiveMetadata {
   engineVersion: string;
 }
 
+/* ── micro-viz ───────────────────────────────────────────────────── */
+
+function DgDelta({ delta, size = 11 }: { delta: number | null; size?: number }) {
+  if (delta == null) return null;
+  const up = delta > 0;
+  const flat = delta === 0;
+  const c = flat ? "var(--text-faint)" : up ? "var(--ok)" : "var(--danger)";
+  return (
+    <span
+      className="whitespace-nowrap font-mono font-semibold"
+      style={{ fontSize: size, color: c }}
+    >
+      {flat ? "· 0" : (up ? "▲ " : "▼ ") + Math.abs(delta)}
+    </span>
+  );
+}
+
+function DgSpark({
+  data,
+  w = 56,
+  h = 15,
+  color = "var(--text-muted)",
+}: {
+  data: number[] | null;
+  w?: number;
+  h?: number;
+  color?: string;
+}) {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const rng = max - min || 1;
+  const pts = data.map((v, i) => [
+    (i / (data.length - 1)) * (w - 4) + 2,
+    h - 2.5 - ((v - min) / rng) * (h - 5),
+  ]);
+  const d = pts
+    .map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1))
+    .join(" ");
+  const last = pts[pts.length - 1];
+  return (
+    <svg width={w} height={h} className="block flex-shrink-0 overflow-visible" aria-hidden="true">
+      <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={last[0]} cy={last[1]} r="2" fill={color} />
+    </svg>
+  );
+}
+
+function DgDots({ dots, w = 64 }: { dots: number[]; w?: number }) {
+  if (!dots || dots.length < 2) return null;
+  return (
+    <div
+      className="flex items-end gap-[2.5px]"
+      style={{ height: 22, width: w }}
+      aria-hidden="true"
+    >
+      {dots.map((v, i) => {
+        const last = i === dots.length - 1;
+        const c = v >= 80 ? "var(--ok)" : v >= 60 ? "var(--warn)" : "var(--danger)";
+        return (
+          <div
+            key={i}
+            className="flex-1 rounded-[1px]"
+            style={{
+              height: Math.max(3, ((v - 40) / 60) * 22),
+              background: c,
+              opacity: last ? 1 : 0.38,
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function DgEngine({ engine }: { engine: string }) {
+  const isP = engine === "persuasion";
+  return (
+    <span
+      className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-xs font-mono text-[9px] font-bold"
+      title={engine + " engine"}
+      style={{
+        background: isP
+          ? "color-mix(in srgb, var(--info) 18%, transparent)"
+          : "color-mix(in srgb, var(--accent-ink) 18%, transparent)",
+        color: isP ? "var(--info)" : "var(--accent-ink)",
+      }}
+    >
+      {isP ? "P" : "C"}
+    </span>
+  );
+}
+
+function DgTag({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="whitespace-nowrap rounded-xs border border-line px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
+      {children}
+    </span>
+  );
+}
+
+/* ── evidence (expand) ───────────────────────────────────────────── */
+
+function DgKV({ k, v }: { k: string; v: string }) {
+  return (
+    <span className="text-[11.5px]">
+      <span className="text-fg-faint">{k}: </span>
+      <span className="font-mono text-fg-secondary">{v}</span>
+    </span>
+  );
+}
+
+function formatInput(v: unknown): string {
+  if (v == null) return "—";
+  if (typeof v === "number")
+    return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(3);
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function DgEvidence({ s }: { s: TriageSignal }) {
+  return (
+    <div className="flex flex-wrap gap-x-[18px] gap-y-1">
+      {s.raw_value != null && <DgKV k="Value" v={s.raw_value.toFixed(3)} />}
+      {s.benchmark != null && <DgKV k="Benchmark" v={s.benchmark.toFixed(3)} />}
+      {s.floor != null && <DgKV k="Floor" v={s.floor.toFixed(3)} />}
+      {Object.entries(s.inputs ?? {}).map(([k, v]) => (
+        <DgKV key={k} k={k} v={formatInput(v)} />
+      ))}
+      {!s.guard_passed && s.guard_reason && (
+        <DgKV k="Guard failed" v={s.guard_reason} />
+      )}
+    </div>
+  );
+}
+
+function DgChevron({ open }: { open: boolean }) {
+  return (
+    <ChevronRight
+      className={cn(
+        "h-[13px] w-[13px] flex-shrink-0 text-fg-faint transition-transform duration-fast ease-snap",
+        open && "rotate-90"
+      )}
+    />
+  );
+}
+
+/* ── header chips ────────────────────────────────────────────────── */
+
+function DgChip({ chip }: { chip: TriageEngineChip }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md border-[1.5px] border-line bg-surface-card px-4 py-2.5">
+      <span className="label text-[9.5px]">{chip.label}</span>
+      <span
+        className="tnum font-display text-[30px] leading-none"
+        style={{ color: statusVar(chip.status) }}
+      >
+        {chip.score != null ? chip.score.toFixed(0) : "—"}
+      </span>
+      <div className="flex flex-col gap-0.5">
+        <span
+          className="font-mono text-[8.5px] font-bold tracking-[0.12em]"
+          style={{ color: statusVar(chip.status) }}
+        >
+          {chip.status ?? "NO DATA"}
+        </span>
+        <DgDelta delta={chip.delta} size={10} />
+      </div>
+      <DgDots dots={chip.dots} />
+    </div>
+  );
+}
+
+/* ── zone cards ──────────────────────────────────────────────────── */
+
+function DgActCard({
+  s,
+  mixed,
+  dimmed,
+}: {
+  s: TriageSignal;
+  mixed: boolean;
+  dimmed: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className={cn(
+        "min-w-0 flex-[1_1_380px] overflow-hidden rounded-md bg-surface-card shadow-hard transition-opacity",
+        dimmed && "opacity-40"
+      )}
+      style={{ border: "1.5px solid color-mix(in srgb, var(--danger) 45%, transparent)" }}
+    >
+      <div
+        className="px-[18px] pb-3.5 pt-4"
+        style={{ background: "color-mix(in srgb, var(--danger) 7%, transparent)" }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[11px] font-bold text-danger">{s.id}</span>
+          {mixed && <DgEngine engine={s.engine} />}
+          {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
+          <span className="ml-auto flex items-center gap-2">
+            <DgSpark data={s.trend} w={62} h={16} color="var(--danger)" />
+            <DgDelta delta={s.delta} />
+          </span>
+        </div>
+        <p className="mt-3 text-[15px] font-semibold leading-normal text-fg">
+          {s.diagnostic}
+        </p>
+      </div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between gap-2.5 border-t border-line-soft px-[18px] py-[11px] text-left"
+      >
+        <span className="inline-flex items-center gap-[7px] font-mono text-[11px] text-fg-muted">
+          <DgChevron open={open} />
+          {s.name} · score <b className="text-danger">{s.score?.toFixed(0) ?? "—"}</b>
+        </span>
+        {s.action && (
+          <span className="whitespace-nowrap rounded-sm bg-accent px-[11px] py-[5px] font-mono text-[10.5px] font-bold uppercase text-on-accent">
+            → {s.action}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="px-[18px] pb-3.5 pl-[38px]">
+          <DgEvidence s={s} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DgWatchCard({
+  s,
+  mixed,
+  dimmed,
+}: {
+  s: TriageSignal;
+  mixed: boolean;
+  dimmed: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className={cn(
+        "rounded-md border-[1.5px] border-line bg-surface-card transition-opacity",
+        dimmed && "opacity-40"
+      )}
+    >
+      <button
+        onClick={() => setOpen(!open)}
+        className="block w-full px-[15px] py-[13px] text-left"
+      >
+        <div className="flex items-center gap-[7px]">
+          <span className="font-mono text-[10.5px] font-bold text-warn">{s.id}</span>
+          {mixed && <DgEngine engine={s.engine} />}
+          {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
+          <span className="ml-auto flex items-center gap-2">
+            <DgSpark data={s.trend} w={52} h={14} color="var(--warn)" />
+            <DgDelta delta={s.delta} size={10} />
+          </span>
+        </div>
+        <p className="mt-[9px] text-[12.5px] leading-relaxed text-fg-secondary">
+          {s.diagnostic}
+        </p>
+        <div className="mt-2.5 flex items-center justify-between">
+          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-fg-faint">
+            <DgChevron open={open} />
+            {s.name}
+          </span>
+          <span className="tnum font-mono text-xs font-bold text-warn">
+            {s.score?.toFixed(0) ?? "—"}
+          </span>
+        </div>
+      </button>
+      {open && (
+        <div className="px-[15px] pb-[13px]">
+          <DgEvidence s={s} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DgHealthyRow({
+  s,
+  mixed,
+  dimmed,
+}: {
+  s: TriageSignal;
+  mixed: boolean;
+  dimmed: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className={cn(
+        "min-w-0 border-l border-t border-line-soft transition-opacity",
+        dimmed && "opacity-40"
+      )}
+    >
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full min-w-0 items-center gap-2.5 px-4 py-[9px] text-left"
+      >
+        <span className="w-[22px] flex-shrink-0 font-mono text-[10.5px] font-bold text-ok">
+          {s.id}
+        </span>
+        {mixed && <DgEngine engine={s.engine} />}
+        <span className="flex-1 truncate text-[12.5px] text-fg-secondary">{s.name}</span>
+        <DgSpark data={s.trend} w={52} h={14} color="var(--ok)" />
+        <span className="tnum w-6 text-right font-mono text-xs font-bold text-ok">
+          {s.score?.toFixed(0) ?? "—"}
+        </span>
+        <span className="w-[34px] text-right">
+          <DgDelta delta={s.delta} size={10} />
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 pb-[11px] pl-12">
+          <p className="mb-[7px] text-xs leading-relaxed text-fg-secondary">{s.diagnostic}</p>
+          <DgEvidence s={s} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DgZoneHead({
+  color,
+  title,
+  meta,
+}: {
+  color: string;
+  title: string;
+  meta: string;
+}) {
+  return (
+    <div className="mb-3 mt-[30px] flex items-baseline gap-3">
+      <span
+        className="font-display text-[22px] uppercase tracking-[0.01em]"
+        style={{ color }}
+      >
+        {title}
+      </span>
+      <span className="font-mono text-[10.5px] text-fg-faint">{meta}</span>
+    </div>
+  );
+}
+
+/* ── phase breakdown (preserved from v1) ─────────────────────────── */
+
+function PhaseBreakdownPanel({
+  phases,
+  lines,
+  activeSheetId,
+  onSelect,
+}: {
+  phases: PhaseSummary[];
+  lines: PacingLine[];
+  activeSheetId: string | null;
+  onSelect: (sheetId: string | null) => void;
+}) {
+  const linesBySheet = new Map<string, number>();
+  for (const l of lines) {
+    if (!l.sheet_id) continue;
+    linesBySheet.set(l.sheet_id, (linesBySheet.get(l.sheet_id) ?? 0) + 1);
+  }
+
+  return (
+    <Card className="mt-5 space-y-3">
+      <div className="flex items-baseline justify-between">
+        <div>
+          <Label className="text-fg-secondary">Phase breakdown</Label>
+          <p className="mt-1 text-[11px] text-fg-muted">
+            Click a phase to dim signals from engines with no lines in it.
+          </p>
+        </div>
+        {activeSheetId && (
+          <button
+            onClick={() => onSelect(null)}
+            className="font-mono text-[11px] uppercase tracking-[0.06em] text-fg-muted hover:text-fg"
+          >
+            Clear filter
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+        {phases.map((phase, idx) => {
+          const isActive = activeSheetId === phase.sheet_id;
+          const status = pacingStatus(phase.pacing_percentage);
+          const heading =
+            phase.phase_label ?? `Phase ${phase.display_order ?? idx + 1}`;
+          return (
+            <button
+              key={phase.sheet_id}
+              onClick={() => onSelect(isActive ? null : phase.sheet_id)}
+              className={cn(
+                "rounded-md border-2 px-3 py-2 text-left transition-colors duration-fast",
+                isActive
+                  ? "border-accent bg-tint-accent"
+                  : "border-line-soft bg-surface-sunken hover:border-line"
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-bold text-fg">{heading}</div>
+                  {!phase.is_active && (
+                    <span className="rounded-xs bg-surface-card px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-fg-muted">
+                      retired
+                    </span>
+                  )}
+                </div>
+                <div className={cn("tnum font-mono text-xs font-bold", pacingColor(status))}>
+                  {formatPercent(phase.pacing_percentage)}
+                </div>
+              </div>
+              <div className="mt-1 font-mono text-[11px] text-fg-muted">
+                {linesBySheet.get(phase.sheet_id) ?? phase.line_count} lines ·{" "}
+                {formatCurrency(phase.planned_budget)} planned
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+/* ── the tab ─────────────────────────────────────────────────────── */
+
 export function DiagnosticsTab({
   code,
   asOfDate,
   onRetrospectiveMetadata,
 }: {
   code: string;
-  /**
-   * When provided, fetch from the retrospective endpoint
-   * (`/api/diagnostics/as-of/{asOfDate}/project/{code}`) instead of the
-   * live latest-snapshot endpoint. Used by Retrospective Mode page
-   * (ADAC-51 commit 7). Re-run affordance is suppressed in retro mode.
-   */
+  /** Retrospective Mode: fetch from the as-of endpoint; history anchors at
+   *  this date; re-run is suppressed (snapshots are read-only). */
   asOfDate?: string;
-  /**
-   * Optional callback invoked when retrospective metadata (cached flag +
-   * engine version) is available. Lets the retro page surface those bits
-   * in its banner without doing a separate fetch.
-   */
+  /** Lets the retro page surface cached/engine-version in its banner. */
   onRetrospectiveMetadata?: (meta: RetrospectiveMetadata) => void;
 }) {
   const [outputs, setOutputs] = useState<DiagnosticOutput[]>([]);
+  const [history, setHistory] = useState<DiagnosticHistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Multi-plan: pacing carries the phase mapping (sheet_id → phase_label,
-  // line_ids → phase). Fetched alongside diagnostics so the per-phase
-  // breakdown panel + signal-evidence chips render without extra round-trips.
   const [pacing, setPacing] = useState<PacingResponse | null>(null);
-  // Active phase filter (sheet_id). null = "All phases" (aggregate view).
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
-    // Pacing is fetched in parallel — failure here is non-fatal (the
-    // phase-breakdown panel just won't render).
+    // Pacing feeds the phase panel; history feeds trends/deltas. Both are
+    // non-fatal on failure — the board renders without them.
     api.pacing.get(code, asOfDate).then(setPacing).catch(() => setPacing(null));
+    api.diagnostics
+      .history(code, 30, undefined, asOfDate, true)
+      .then(setHistory)
+      .catch(() => setHistory([]));
 
     if (asOfDate) {
       api.retrospective
@@ -149,17 +555,40 @@ export function DiagnosticsTab({
     }
   };
 
+  const model = useMemo(
+    () => buildTriageModel(outputs, history),
+    [outputs, history]
+  );
+
+  /* Phase dimming: engines whose output shares no line with the selected
+     phase get their signals dimmed (same semantics as v1's card dimming,
+     applied to the pooled board). */
+  const dimEngines = useMemo(() => {
+    if (!activeSheetId || !pacing) return new Set<string>();
+    const phaseLineIds = new Set(
+      pacing.lines
+        .filter((l) => l.sheet_id === activeSheetId)
+        .map((l) => l.line_id)
+    );
+    return new Set(
+      outputs
+        .filter((o) => !o.line_ids.some((id) => phaseLineIds.has(id)))
+        .map((o) => o.campaign_type)
+    );
+  }, [activeSheetId, pacing, outputs]);
+  const isDim = (s: TriageSignal) => dimEngines.has(s.engine);
+
   if (loading) {
     return (
       <div className="space-y-4">
         <Card className="animate-pulse">
           <div className="h-8 w-64 rounded bg-surface-sunken" />
-          <div className="mt-4 h-2 w-full rounded bg-surface-sunken" />
-          <div className="mt-6 grid grid-cols-3 gap-4">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="h-20 rounded bg-surface-sunken" />
+          <div className="mt-4 flex gap-3">
+            {[0, 1].map((i) => (
+              <div key={i} className="h-14 w-56 rounded bg-surface-sunken" />
             ))}
           </div>
+          <div className="mt-6 h-32 rounded bg-surface-sunken" />
         </Card>
       </div>
     );
@@ -190,12 +619,7 @@ export function DiagnosticsTab({
             </>
           )}
         </div>
-        {error && (
-          <p className="text-xs text-danger">{error}</p>
-        )}
-        {/* Re-run affordance suppressed in retro mode: there's nothing
-            actionable since the engine already auto-computes on miss via
-            the retrospective endpoint. */}
+        {error && <p className="text-xs text-danger">{error}</p>}
         {!asOfDate && (
           <Btn
             variant="primary"
@@ -211,35 +635,75 @@ export function DiagnosticsTab({
     );
   }
 
+  const first = outputs[0];
+  const campaignTypeLabel = model.mixed ? "mixed" : first.campaign_type;
+  // Efficiency: per-engine metrics partition naturally (CPM/CPC from the
+  // persuasion subset, CPA from conversion); merge first-non-null per key.
+  const eff: Record<string, number | null> = {};
+  for (const key of ["cpm", "cpc", "cpa", "cpcv", "pacing_pct"] as const) {
+    eff[key] = outputs.map((o) => o.efficiency?.[key]).find((v) => v != null) ?? null;
+  }
+  const effBits: string[] = [];
+  if (eff.cpm != null) effBits.push("CPM $" + eff.cpm.toFixed(2));
+  if (eff.cpc != null) effBits.push("CPC $" + eff.cpc.toFixed(2));
+  if (eff.cpa != null) effBits.push("CPA $" + eff.cpa.toFixed(2));
+  if (eff.cpcv != null) effBits.push("CPCV $" + eff.cpcv.toFixed(3));
+  if (eff.pacing_pct != null) effBits.push("Pacing " + eff.pacing_pct.toFixed(0) + "%");
+
+  const allAlerts: DiagnosticAlert[] = outputs.flatMap((o) => o.alerts ?? []);
+  const critAlerts = allAlerts.filter((a) => a.severity === "critical");
+  const softAlerts = allAlerts.filter((a) => a.severity !== "critical");
+
+  const { act, watch, strong, dead } = model;
+
   return (
-    <div className="space-y-6">
-      {/* Re-run is meaningless in retro mode (the date is fixed; the
-          retrospective endpoint already auto-computes on cache miss). */}
-      {!asOfDate && (
-        <div className="flex items-center justify-end">
-          <Btn
-            variant="outline"
-            size="sm"
-            onClick={handleRun}
-            disabled={running}
-            icon={<Play className="h-3 w-3" />}
-          >
-            {running ? "Running…" : "Re-run diagnostic"}
-          </Btn>
+    <div>
+      {/* header row */}
+      <div className="flex flex-wrap items-start justify-between gap-[18px]">
+        <Eyebrow>Campaign health · {campaignTypeLabel}</Eyebrow>
+        <div className="flex items-center gap-4">
+          <div className="text-right font-mono">
+            <div className="whitespace-nowrap text-[11px] text-fg-muted">
+              Day {first.flight_day} of {first.flight_total_days} · evaluated{" "}
+              {first.evaluation_date}
+            </div>
+            <div className="mt-[3px] whitespace-nowrap text-[10.5px] text-fg-faint">
+              {effBits.join(" · ")}
+            </div>
+          </div>
+          {!asOfDate && (
+            <Btn
+              variant="outline"
+              size="sm"
+              onClick={handleRun}
+              disabled={running}
+              icon={<Play className="h-3 w-3" />}
+            >
+              {running ? "Running…" : "Re-run diagnostic"}
+            </Btn>
+          )}
         </div>
-      )}
+      </div>
 
       {error && (
-        <div className="rounded-md border-2 border-tint-warn bg-tint-warn px-3 py-2 text-xs text-warn">
+        <div className="mt-3 rounded-md border-2 border-tint-warn bg-tint-warn px-3 py-2 text-xs text-warn">
           {error}
         </div>
       )}
 
-      {/* Multi-plan: aggregate diagnostic stays unchanged. The breakdown panel
-          shows how lines/budget split across phases, and clicking a phase
-          chip filters the signal-evidence highlight below. The aggregate
-          health score itself isn't recomputed per-phase — that would need
-          schema-level work (one fact_diagnostic_signals row per phase). */}
+      {/* score chips */}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {model.chips.map((chip) => (
+          <DgChip key={chip.id} chip={chip} />
+        ))}
+        <span className="ml-auto font-mono text-[10.5px] text-fg-faint">
+          {model.signalsActive}/{model.signalsTotal} signals
+          {model.coverage != null &&
+            ` · ${(model.coverage * 100).toFixed(0)}% weight`}
+        </span>
+      </div>
+
+      {/* phase breakdown (multi-plan projects) */}
       {pacing && pacing.phases && pacing.phases.length > 1 && (
         <PhaseBreakdownPanel
           phases={pacing.phases}
@@ -249,477 +713,127 @@ export function DiagnosticsTab({
         />
       )}
 
-      {outputs.map((out) => (
-        <DiagnosticCard
-          key={out.id}
-          output={out}
-          activePhaseLineIds={
-            activeSheetId && pacing
-              ? new Set(
-                  pacing.lines
-                    .filter((l) => l.sheet_id === activeSheetId)
-                    .map((l) => l.line_id),
-                )
-              : null
-          }
-        />
-      ))}
-    </div>
-  );
-}
-
-function PhaseBreakdownPanel({
-  phases,
-  lines,
-  activeSheetId,
-  onSelect,
-}: {
-  phases: PhaseSummary[];
-  lines: PacingLine[];
-  activeSheetId: string | null;
-  onSelect: (sheetId: string | null) => void;
-}) {
-  // Map sheet_id → set of line_ids so the chip can show the count even when
-  // pacing's per-phase aggregate dropped pending lines.
-  const linesBySheet = new Map<string, number>();
-  for (const l of lines) {
-    if (!l.sheet_id) continue;
-    linesBySheet.set(l.sheet_id, (linesBySheet.get(l.sheet_id) ?? 0) + 1);
-  }
-
-  return (
-    <Card className="space-y-3">
-      <div className="flex items-baseline justify-between">
-        <div>
-          <Label className="text-fg-secondary">Phase breakdown</Label>
-          <p className="mt-1 text-[11px] text-fg-muted">
-            Aggregate health is shown below. Click a phase to highlight its lines in the signal evidence.
-          </p>
-        </div>
-        {activeSheetId && (
-          <button
-            onClick={() => onSelect(null)}
-            className="font-mono text-[11px] uppercase tracking-[0.06em] text-fg-muted hover:text-fg"
-          >
-            Clear filter
-          </button>
-        )}
-      </div>
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
-        {phases.map((phase, idx) => {
-          const isActive = activeSheetId === phase.sheet_id;
-          const status = pacingStatus(phase.pacing_percentage);
-          const heading =
-            phase.phase_label ?? `Phase ${phase.display_order ?? idx + 1}`;
-          return (
-            <button
-              key={phase.sheet_id}
-              onClick={() => onSelect(isActive ? null : phase.sheet_id)}
-              className={cn(
-                "rounded-md border-2 px-3 py-2 text-left transition-colors duration-fast",
-                isActive
-                  ? "border-accent bg-tint-accent"
-                  : "border-line-soft bg-surface-sunken hover:border-line",
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="text-sm font-bold text-fg">{heading}</div>
-                  {!phase.is_active && (
-                    <span className="rounded-xs bg-surface-card px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-fg-muted">
-                      retired
-                    </span>
-                  )}
-                </div>
-                <div className={cn("tnum font-mono text-xs font-bold", pacingColor(status))}>
-                  {formatPercent(phase.pacing_percentage)}
-                </div>
-              </div>
-              <div className="mt-1 font-mono text-[11px] text-fg-muted">
-                {linesBySheet.get(phase.sheet_id) ?? phase.line_count} lines · {formatCurrency(phase.planned_budget)} planned
-              </div>
-              <div className="text-[11px] text-fg-secondary">
-                {formatCurrency(phase.actual_spend_to_date)} spent of {formatCurrency(phase.planned_spend_to_date)} planned to date
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
-
-function DiagnosticCard({
-  output,
-  activePhaseLineIds,
-}: {
-  output: DiagnosticOutput;
-  /**
-   * When non-null, identifies the lines belonging to the user-selected phase
-   * (multi-plan drill-down). The card surfaces an overlap chip showing how
-   * many of the diagnostic's lines fall in the chosen phase, and dims the
-   * card when the overlap is zero (the diagnostic doesn't apply to the
-   * selected phase). The aggregate score is intentionally NOT recomputed —
-   * per-phase scoring would need its own fact_diagnostic_signals row.
-   */
-  activePhaseLineIds: Set<string> | null;
-}) {
-  const pillarOrder =
-    output.campaign_type === "persuasion"
-      ? PILLAR_ORDER_PERSUASION
-      : PILLAR_ORDER_CONVERSION;
-
-  const flightPct = output.flight_total_days > 0
-    ? Math.min((output.flight_day / output.flight_total_days) * 100, 100)
-    : 0;
-
-  const overlapCount = activePhaseLineIds
-    ? output.line_ids.filter((id) => activePhaseLineIds.has(id)).length
-    : null;
-  const dimmed = overlapCount === 0;
-
-  return (
-    <Card className={cn("overflow-hidden p-0", dimmed && "opacity-50")}>
-      {/* Header band: health score + efficiency strip */}
-      <div className="flex flex-wrap items-start justify-between gap-6 border-b-2 border-line-soft bg-surface-sunken p-[22px]">
-        <div>
-          <Eyebrow>Campaign Health · {output.campaign_type}</Eyebrow>
-          <div className="mt-3 flex items-end gap-4">
-            <span
-              className="tnum font-display text-[64px] leading-[0.82] tracking-[0.005em] sm:text-[76px]"
-              style={{ color: statusVar(output.health_status) }}
-            >
-              {output.health_score != null ? output.health_score.toFixed(0) : "—"}
-            </span>
-            <div className="pb-1.5">
-              {output.health_status ? (
-                <StatusPill
-                  label={output.health_status}
-                  color={statusVar(output.health_status)}
-                />
-              ) : output.health_coverage != null ? (
-                <StatusPill
-                  label="Insufficient data"
-                  color="var(--text-faint)"
-                  dot={false}
-                />
-              ) : null}
-              {output.health_coverage != null && (
-                <div className="mt-2 font-mono text-[10.5px] text-fg-faint">
-                  {signalCoverageLabel(output)}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="mt-3.5 font-mono text-[11px] text-fg-muted">
-            {formatFlightDay(
-              {
-                flightDay: output.flight_day,
-                flightTotalDays: output.flight_total_days,
-                daysRemaining:
-                  output.flight_total_days != null && output.flight_day != null
-                    ? output.flight_total_days - output.flight_day
-                    : null,
-              },
-              "combined",
-            )}
-            {" · evaluated "}
-            {output.evaluation_date}
-          </div>
-          {/* Flight progress */}
-          <div className="mt-2.5 w-[260px] max-w-full">
-            <div className="h-[5px] overflow-hidden rounded-pill bg-surface-card">
-              <div
-                className="h-full rounded-pill bg-accent opacity-80"
-                style={{ width: `${flightPct}%` }}
-              />
-            </div>
-          </div>
-          {overlapCount !== null && (
-            <div className="mt-3 inline-flex items-center gap-1.5 rounded-sm border border-line bg-surface-card px-2 py-1 text-[11px] text-fg-secondary">
-              <span className="text-fg-muted">Selected phase:</span>
-              <span className="tnum font-mono font-semibold text-fg">
-                {overlapCount} / {output.line_ids.length}
-              </span>
-              <span className="text-fg-muted">lines in this diagnostic</span>
-            </div>
-          )}
-        </div>
-        <EfficiencyStrip efficiency={output.efficiency} />
-      </div>
-
-      <div className="p-[22px]">
-        {/* Pillars — column count matches pillar count (2 for conversion with
-            Quality deferred, 3 for persuasion). */}
+      {/* ACT NOW */}
+      <DgZoneHead
+        color="var(--danger)"
+        title="Act now"
+        meta={
+          act.length || critAlerts.length
+            ? `${act.length} signal${act.length === 1 ? "" : "s"} at ACTION${
+                critAlerts.length
+                  ? ` + ${critAlerts.length} critical alert${critAlerts.length === 1 ? "" : "s"}`
+                  : ""
+              }`
+            : "nothing requires action"
+        }
+      />
+      {critAlerts.map((a, i) => (
         <div
-          className={cn(
-            "grid grid-cols-1 gap-3",
-            pillarOrder.length === 2 ? "sm:grid-cols-2" : "sm:grid-cols-3"
-          )}
+          key={i}
+          className="mb-3 flex items-center gap-3 rounded-md px-4 py-3"
+          style={{
+            border: "1.5px solid color-mix(in srgb, var(--danger) 50%, transparent)",
+            background: "color-mix(in srgb, var(--danger) 9%, transparent)",
+          }}
         >
-          {pillarOrder.map((p) => (
-            <PillarGauge
-              key={p}
-              label={PILLAR_LABELS[p] ?? p}
-              pillar={output.pillars[p]}
-            />
+          <span className="whitespace-nowrap font-mono text-[9.5px] font-bold uppercase tracking-[0.12em] text-danger">
+            Critical · {a.type.replace(/_/g, " ")}
+          </span>
+          <span className="text-[13px] text-fg-secondary">{a.message}</span>
+        </div>
+      ))}
+      {act.length > 0 ? (
+        <div className="flex flex-wrap gap-3.5">
+          {act.map((s) => (
+            <DgActCard key={`${s.engine}-${s.id}`} s={s} mixed={model.mixed} dimmed={isDim(s)} />
           ))}
         </div>
-
-        {/* Alerts */}
-        {output.alerts.length > 0 && (
-          <div className="mt-6 space-y-2">
-            <Label>Critical Alerts</Label>
-            {output.alerts.map((a, i) => {
-              const c = a.severity === "critical" ? "var(--danger)" : "var(--warn)";
-              return (
-                <div
-                  key={`${a.type}-${i}`}
-                  className="flex items-start gap-2.5 rounded-sm px-3 py-2.5 text-xs"
-                  style={{
-                    border: `1.5px solid color-mix(in srgb, ${c} 35%, transparent)`,
-                    background: `color-mix(in srgb, ${c} 9%, transparent)`,
-                  }}
-                >
-                  <TriangleAlert
-                    className="mt-0.5 h-3.5 w-3.5 flex-shrink-0"
-                    style={{ color: c }}
-                  />
-                  <div>
-                    <div
-                      className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.1em]"
-                      style={{ color: c }}
-                    >
-                      {a.type.replace(/_/g, " ")}
-                    </div>
-                    <div className="mt-1 text-[13px] text-fg-secondary">{a.message}</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Signal list */}
-        <div className="mt-6">
-          <Label>Signal Detail</Label>
-          <div className="mt-2.5 divide-y divide-line-soft overflow-hidden rounded-sm border-[1.5px] border-line-soft">
-            {output.signals.map((s) => (
-              <SignalRow key={s.id} signal={s} />
-            ))}
-            {output.signals.length === 0 && (
-              <div className="px-3 py-2 text-xs text-fg-muted">
-                No signals were evaluated.
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function PillarGauge({
-  label,
-  pillar,
-}: {
-  label: string;
-  pillar: DiagnosticPillar | undefined;
-}) {
-  const score = pillar?.score ?? null;
-  const status = pillar?.status ?? null;
-  const c = statusVar(status);
-  // AI-040: coverage metadata is only present on post-fix snapshots.
-  // Legacy rows (hasCoverage === false) render exactly as before.
-  const hasCoverage = pillar?.coverage != null;
-  const coverageLabel =
-    hasCoverage && pillar?.signals_total
-      ? `${pillar.signals_active ?? 0} of ${pillar.signals_total} signals reporting`
-      : null;
-
-  return (
-    <div
-      className="rounded-sm p-3.5"
-      style={{
-        border: `1.5px solid color-mix(in srgb, ${c} 28%, transparent)`,
-        background: `color-mix(in srgb, ${c} 7%, transparent)`,
-      }}
-    >
-      <div className="flex items-center justify-between">
-        <div className="text-[13px] font-semibold text-fg-secondary">{label}</div>
-        {status ? (
-          <div
-            className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
-            style={{ color: c }}
-          >
-            {status}
-          </div>
-        ) : hasCoverage ? (
-          <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted">
-            Insufficient data
-          </div>
-        ) : null}
-      </div>
-      {score != null ? (
-        <>
-          <div
-            className="tnum mt-2.5 font-display text-[30px] leading-none"
-            style={{ color: c }}
-          >
-            {score.toFixed(0)}
-          </div>
-          {coverageLabel && (
-            <div className="mt-2 font-mono text-[9.5px] leading-tight text-fg-faint">
-              {coverageLabel}
-            </div>
-          )}
-          <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-pill bg-surface-sunken">
-            <div
-              className={cn("h-full rounded-pill transition-[width] duration-700 ease-snap", statusBarFill(status))}
-              style={{ width: `${Math.min(score, 100)}%` }}
-            />
-          </div>
-        </>
       ) : (
+        critAlerts.length === 0 && (
+          <div className="flex items-center gap-2.5 rounded-md px-4 py-[13px]"
+            style={{
+              border: "1.5px solid color-mix(in srgb, var(--ok) 35%, transparent)",
+              background: "color-mix(in srgb, var(--ok) 6%, transparent)",
+            }}
+          >
+            <CheckCircle2 className="h-[15px] w-[15px] flex-shrink-0 text-ok" />
+            <span className="text-[13px] text-fg-secondary">
+              No signals at ACTION — nothing needs intervention today.
+            </span>
+          </div>
+        )
+      )}
+
+      {/* KEEP AN EYE ON */}
+      {(watch.length > 0 || softAlerts.length > 0) && (
         <>
-          <div className="tnum mt-2.5 font-display text-[30px] leading-none text-fg-faint">
-            —
+          <DgZoneHead
+            color="var(--warn)"
+            title="Keep an eye on"
+            meta={`${watch.length} signal${watch.length === 1 ? "" : "s"} at WATCH${
+              softAlerts.length
+                ? ` · ${softAlerts.length} alert${softAlerts.length === 1 ? "" : "s"}`
+                : ""
+            }`}
+          />
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] gap-3">
+            {watch.map((s) => (
+              <DgWatchCard key={`${s.engine}-${s.id}`} s={s} mixed={model.mixed} dimmed={isDim(s)} />
+            ))}
+            {softAlerts.map((a, i) => (
+              <div
+                key={"al" + i}
+                className="rounded-md px-[15px] py-[13px]"
+                style={{
+                  border: "1.5px dashed color-mix(in srgb, var(--warn) 50%, transparent)",
+                  background: "color-mix(in srgb, var(--warn) 5%, transparent)",
+                }}
+              >
+                <div className="font-mono text-[9.5px] font-bold uppercase tracking-[0.12em] text-warn">
+                  Alert · {a.type.replace(/_/g, " ")}
+                </div>
+                <p className="mt-[9px] text-[12.5px] leading-relaxed text-fg-secondary">
+                  {a.message}
+                </p>
+              </div>
+            ))}
           </div>
-          <div className="mt-2 font-mono text-[9.5px] leading-tight text-fg-faint">
-            {coverageLabel
-              ? `${coverageLabel} — below the coverage floor for a reliable score`
-              : "Awaiting data — no signals have cleared their data guard yet"}
-          </div>
-          <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-pill bg-surface-sunken" />
         </>
       )}
-    </div>
-  );
-}
 
-function signalCoverageLabel(output: DiagnosticOutput): string {
-  const pillars = Object.values(output.pillars);
-  const active = pillars.reduce((n, p) => n + (p.signals_active ?? 0), 0);
-  const total = pillars.reduce((n, p) => n + (p.signals_total ?? 0), 0);
-  const pct =
-    output.health_coverage != null
-      ? ` · ${(output.health_coverage * 100).toFixed(0)}% of signal weight`
-      : "";
-  return `${active} of ${total} signals reporting${pct}`;
-}
+      {/* HEALTHY */}
+      {strong.length > 0 && (
+        <>
+          <DgZoneHead
+            color="var(--ok)"
+            title="Healthy"
+            meta={`${strong.length} signals STRONG — compact view`}
+          />
+          <div className="overflow-hidden rounded-md border-[1.5px] border-line-soft bg-surface-card">
+            {/* -1px margins hide the rows' outer borders against the card edge */}
+            <div className="-ml-px -mt-px grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))]">
+              {strong.map((s) => (
+                <DgHealthyRow key={`${s.engine}-${s.id}`} s={s} mixed={model.mixed} dimmed={isDim(s)} />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
-function SignalRow({ signal }: { signal: DiagnosticSignal }) {
-  const [expanded, setExpanded] = useState(false);
-  const noData = !signal.guard_passed;
-  const Icon = noData
-    ? CircleMinus
-    : signal.status === "STRONG"
-      ? CircleCheck
-      : signal.status === "ACTION"
-        ? AlertTriangle
-        : TriangleAlert;
-  const cls = noData ? "text-fg-faint" : statusColor(signal.status);
-
-  return (
-    <div className={cn("text-xs", expanded && "bg-surface-sunken")}>
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-sunken"
-      >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3 flex-shrink-0 text-fg-faint" />
-        ) : (
-          <ChevronRight className="h-3 w-3 flex-shrink-0 text-fg-faint" />
-        )}
-        <div className={cn("w-8 font-mono text-[11.5px] font-semibold", cls)}>
-          {signal.id}
-        </div>
-        <div className="flex-1 text-[13px] text-fg-secondary">{signal.name}</div>
-        <Icon className={cn("h-3.5 w-3.5", cls)} />
-        <div className={cn("tnum w-10 text-right font-mono font-semibold", cls)}>
-          {signal.score != null ? signal.score.toFixed(0) : "—"}
-        </div>
-        <div className={cn("w-16 text-right font-mono text-[10px] font-semibold tracking-[0.05em]", cls)}>
-          {noData ? "NO DATA" : (signal.status ?? "—")}
-        </div>
-      </button>
-      {expanded && (
-        <div className="space-y-2 border-t border-line-soft px-3.5 py-3 pl-[52px]">
-          {signal.diagnostic && (
-            <p className="text-[12.5px] leading-relaxed text-fg-secondary">{signal.diagnostic}</p>
-          )}
-          {noData && signal.guard_reason && (
-            <p className="text-fg-muted">
-              Guard failed: <span className="font-mono">{signal.guard_reason}</span>
-            </p>
-          )}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-fg-secondary sm:grid-cols-3">
-            {signal.raw_value != null && (
-              <KV k="Value" v={signal.raw_value.toFixed(3)} />
-            )}
-            {signal.benchmark != null && (
-              <KV k="Benchmark" v={signal.benchmark.toFixed(3)} />
-            )}
-            {signal.floor != null && (
-              <KV k="Floor" v={signal.floor.toFixed(3)} />
-            )}
-            {Object.entries(signal.inputs ?? {}).map(([k, v]) => (
-              <KV key={k} k={k} v={formatInput(v)} />
+      {/* NOT REPORTING */}
+      {dead.length > 0 && (
+        <div className="mt-[22px] flex flex-wrap items-baseline gap-6 border-t border-line-soft pt-3.5">
+          <span className="label whitespace-nowrap text-[9.5px]">Not reporting</span>
+          <div className="flex flex-wrap gap-x-[22px] gap-y-1.5">
+            {dead.map((s) => (
+              <span key={`${s.engine}-${s.id}`} className="font-mono text-[10.5px] text-fg-faint">
+                <b className="text-fg-muted">{s.id}</b> {s.name} —{" "}
+                {(s.guard_reason || "guard failed").replace(/_/g, " ")}
+              </span>
             ))}
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function KV({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-baseline gap-1">
-      <span className="text-fg-muted">{k}:</span>
-      <span className="font-mono text-fg-secondary">{v}</span>
-    </div>
-  );
-}
-
-function formatInput(v: unknown): string {
-  if (v == null) return "—";
-  if (typeof v === "number")
-    return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(3);
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-function EfficiencyStrip({
-  efficiency,
-}: {
-  efficiency: {
-    cpm: number | null;
-    cpc: number | null;
-    cpa: number | null;
-    cpcv: number | null;
-    pacing_pct: number | null;
-  };
-}) {
-  const items: Array<[string, string]> = [];
-  if (efficiency.cpm != null) items.push(["CPM", `$${efficiency.cpm.toFixed(2)}`]);
-  if (efficiency.cpc != null) items.push(["CPC", `$${efficiency.cpc.toFixed(2)}`]);
-  if (efficiency.cpa != null) items.push(["CPA", `$${efficiency.cpa.toFixed(2)}`]);
-  if (efficiency.cpcv != null) items.push(["CPCV", `$${efficiency.cpcv.toFixed(2)}`]);
-  if (efficiency.pacing_pct != null)
-    items.push(["Pacing", `${efficiency.pacing_pct.toFixed(0)}%`]);
-
-  if (items.length === 0) return null;
-
-  return (
-    <div className="flex flex-wrap justify-end gap-x-[22px] gap-y-3 text-right">
-      {items.map(([k, v]) => (
-        <div key={k}>
-          <div className="label text-[9.5px]">{k}</div>
-          <div className="tnum mt-1 font-mono text-base font-semibold text-fg">{v}</div>
-        </div>
-      ))}
     </div>
   );
 }

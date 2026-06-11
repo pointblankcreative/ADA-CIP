@@ -20,6 +20,7 @@ import {
   pacingStatus,
   pacingBarColor,
   pacingColor,
+  pacingVar,
   platformLabel,
   cn,
 } from "@/lib/utils";
@@ -88,6 +89,8 @@ export function PacingTab({
 }) {
   const [data, setData] = useState<PacingResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // line_id hovered in the Pacing Signal orbit — glows the matching row
+  const [sigHover, setSigHover] = useState<string | null>(null);
 
   useEffect(() => {
     api.pacing
@@ -210,9 +213,14 @@ export function PacingTab({
 
   return (
     <div className="space-y-6">
-      {/* Oscilloscope health card */}
+      {/* Pacing Signal — the campaign's lines in orbit */}
       {data.lines.length > 0 && (
-        <OscilloscopeCard pacing={data} code={code} asOfDate={asOfDate} />
+        <OscilloscopeCard
+          pacing={data}
+          code={code}
+          asOfDate={asOfDate}
+          onHover={setSigHover}
+        />
       )}
 
       {/* KPI cards */}
@@ -256,6 +264,7 @@ export function PacingTab({
         data={data}
         code={code}
         asOfDate={asOfDate}
+        sigHover={sigHover}
         onNameUpdate={handleNameUpdate}
         onBundleStateChange={handleBundleStateChange}
       />
@@ -351,12 +360,15 @@ function PacingLinesSection({
   data,
   code,
   asOfDate,
+  sigHover,
   onNameUpdate,
   onBundleStateChange,
 }: {
   data: PacingResponse;
   code: string;
   asOfDate?: string;
+  /** line_id hovered in the Pacing Signal orbit above. */
+  sigHover?: string | null;
   onNameUpdate: (lineId: string, newName: string) => void;
   onBundleStateChange: (
     bundleId: string,
@@ -380,6 +392,7 @@ function PacingLinesSection({
               line={line}
               code={code}
               asOfDate={asOfDate}
+              glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
             />
@@ -420,6 +433,7 @@ function PacingLinesSection({
             lines={linesBySheet.get(phase.sheet_id) ?? []}
             code={code}
             asOfDate={asOfDate}
+            sigHover={sigHover}
             onNameUpdate={onNameUpdate}
             onBundleStateChange={onBundleStateChange}
           />
@@ -441,6 +455,7 @@ function PacingLinesSection({
                   line={line}
                   code={code}
                   asOfDate={asOfDate}
+                  glow={sigHover === line.line_id}
                   onNameUpdate={onNameUpdate}
                   onBundleStateChange={onBundleStateChange}
                 />
@@ -459,6 +474,7 @@ function PhaseGroup({
   lines,
   code,
   asOfDate,
+  sigHover,
   onNameUpdate,
   onBundleStateChange,
 }: {
@@ -468,6 +484,8 @@ function PhaseGroup({
   lines: PacingLine[];
   code: string;
   asOfDate?: string;
+  /** line_id hovered in the Pacing Signal orbit above. */
+  sigHover?: string | null;
   onNameUpdate: (lineId: string, newName: string) => void;
   onBundleStateChange: (
     bundleId: string,
@@ -524,6 +542,7 @@ function PhaseGroup({
               line={line}
               code={code}
               asOfDate={asOfDate}
+              glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
             />
@@ -539,6 +558,7 @@ function LineRow({
   line,
   code,
   asOfDate,
+  glow = false,
   onNameUpdate,
   onBundleStateChange,
 }: {
@@ -547,6 +567,9 @@ function LineRow({
   code: string;
   /** Set in retrospective mode — disables interactive bundle buttons. */
   asOfDate?: string;
+  /** This line is hovered in the Pacing Signal orbit — light the row in
+   *  its status colour. */
+  glow?: boolean;
   onNameUpdate: (lineId: string, newName: string) => void;
   /** Called after a successful bundle Confirm/Reject/Clear API call so the
    *  parent state updates without a re-fetch. */
@@ -557,6 +580,8 @@ function LineRow({
 }) {
   const isCompleted = line.line_status === "completed";
   const status = pacingStatus(line.pacing_percentage);
+  const glowColor =
+    line.pacing_percentage == null ? "var(--info)" : pacingVar(status);
   const budgetPct =
     line.planned_budget > 0
       ? (line.actual_spend_to_date / line.planned_budget) * 100
@@ -667,7 +692,18 @@ function LineRow({
   };
 
   return (
-    <Card className={cn("!p-3 sm:!p-4", isCompleted && "opacity-60")}>
+    <Card
+      className={cn("!p-3 sm:!p-4", isCompleted && "opacity-60")}
+      style={
+        glow
+          ? {
+              borderColor: glowColor,
+              boxShadow: `0 0 0 1.5px ${glowColor}, 0 0 26px color-mix(in srgb, ${glowColor} 28%, transparent)`,
+              transition: "border-color var(--dur-base), box-shadow var(--dur-base)",
+            }
+          : undefined
+      }
+    >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <PlatformIcon platformId={line.platform_id} size={34} />

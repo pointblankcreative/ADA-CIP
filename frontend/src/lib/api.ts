@@ -654,12 +654,22 @@ export interface DiagnosticOutput {
   spec_version: string;
 }
 
+/** Slim per-signal entry on history rows (include_signals=true). */
+export interface DiagnosticSignalHistoryEntry {
+  id: string;
+  score: number | null;
+  status: DiagnosticStatus;
+}
+
 export interface DiagnosticHistoryPoint {
   evaluation_date: string;
   campaign_type: string;
   health_score: number | null;
   health_status: DiagnosticStatus;
   pillars: Record<string, DiagnosticPillar>;
+  /** Present only when requested with includeSignals — feeds the Triage
+   *  Board's per-signal sparklines and deltas. */
+  signals?: DiagnosticSignalHistoryEntry[];
 }
 
 export interface DiagnosticRunResponse {
@@ -757,10 +767,17 @@ export const api = {
       apiFetch<DiagnosticOutput[]>(
         `/api/diagnostics/${code}${date ? `?date=${date}` : ""}`
       ),
-    history: (code: string, days = 30, campaignType?: string, asOfDate?: string) => {
+    history: (
+      code: string,
+      days = 30,
+      campaignType?: string,
+      asOfDate?: string,
+      includeSignals = false
+    ) => {
       const qs = new URLSearchParams({ days: String(days) });
       if (campaignType) qs.set("campaign_type", campaignType);
       if (asOfDate) qs.set("as_of_date", asOfDate);
+      if (includeSignals) qs.set("include_signals", "true");
       return apiFetch<DiagnosticHistoryPoint[]>(
         `/api/diagnostics/${code}/history?${qs}`
       );

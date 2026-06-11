@@ -28,6 +28,7 @@ import {
   type SortKey,
 } from "@/components/flightdeck/controls";
 import { OrphanPanel } from "@/components/orphan-panel";
+import { SignalsPanel } from "@/components/signals/signals-panel";
 import { SyncStatus } from "@/components/sync-status";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,8 @@ export default function FlightdeckPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"active" | "ended">("active");
   const [sort, setSort] = useState<SortKey>("attention");
+  // campaign code hovered in the Signals orbit — glows the matching row
+  const [signalHover, setSignalHover] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -161,6 +164,13 @@ export default function FlightdeckPage() {
         <>
           <PortfolioPulse active={active} onOpen={onOpen} />
 
+          {/* Signals — the book's health, by sight and (opt-in) sound */}
+          <SignalsPanel
+            projects={active}
+            onOpen={onOpen}
+            onHover={setSignalHover}
+          />
+
           {/* Needs attention */}
           {issues.length > 0 && (
             <div className="mt-[30px]">
@@ -224,6 +234,7 @@ export default function FlightdeckPage() {
                     p={p}
                     onOpen={onOpen}
                     delay={i}
+                    glow={signalHover === p.project_code}
                   />
                 ))
               )}

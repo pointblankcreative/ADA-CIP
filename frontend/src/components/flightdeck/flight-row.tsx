@@ -48,10 +48,14 @@ export function FlightRow({
   p,
   onOpen,
   delay = 0,
+  glow = false,
 }: {
   p: Project;
   onOpen: (code: string) => void;
   delay?: number;
+  /** This campaign is hovered in the Signals orbit — light the row in its
+   *  status colour. */
+  glow?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const f = computeFlight(p);
@@ -70,6 +74,12 @@ export function FlightRow({
       )}
       style={{
         animation: `fade-up 0.36s cubic-bezier(0.2,0,0,1) ${delay * 0.025}s both`,
+        ...(glow
+          ? {
+              borderColor: color,
+              boxShadow: `0 0 0 1.5px ${color}, 0 0 26px color-mix(in srgb, ${color} 28%, transparent)`,
+            }
+          : {}),
       }}
     >
       {/* status dot */}
