@@ -34,6 +34,7 @@ import {
   type TriageEngineChip,
   type TriageSignal,
 } from "@/lib/diagnostics";
+import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
 import { Btn, Eyebrow, Label } from "@/components/ui";
 import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
@@ -159,7 +160,7 @@ function DgTag({ children }: { children: React.ReactNode }) {
 
 function DgKV({ k, v }: { k: string; v: string }) {
   return (
-    <span className="text-[11.5px]">
+    <span className="min-w-0 text-[11.5px] [overflow-wrap:anywhere]">
       <span className="text-fg-faint">{k}: </span>
       <span className="font-mono text-fg-secondary">{v}</span>
     </span>
@@ -170,8 +171,39 @@ function formatInput(v: unknown): string {
   if (v == null) return "—";
   if (typeof v === "number")
     return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(3);
-  if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+/* Raw payload: scalars as inline chips, objects/arrays pretty-printed in
+   their own contained blocks — the old single-line JSON.stringify of the
+   per-platform arrays overflowed the card and bled over neighbours. */
+function DgRawDump({ s }: { s: TriageSignal }) {
+  const inputs = s.inputs ?? {};
+  const entries = Object.entries(inputs);
+  const scalars = entries.filter(([, v]) => v == null || typeof v !== "object");
+  const objects = entries.filter(([, v]) => v != null && typeof v === "object");
+  return (
+    <div className="min-w-0 space-y-2 border-l-2 border-line-soft pl-3">
+      <div className="flex min-w-0 flex-wrap gap-x-[18px] gap-y-1">
+        {s.raw_value != null && <DgKV k="value" v={s.raw_value.toFixed(3)} />}
+        {s.benchmark != null && <DgKV k="benchmark" v={s.benchmark.toFixed(3)} />}
+        {s.floor != null && <DgKV k="floor" v={s.floor.toFixed(3)} />}
+        {scalars.map(([k, v]) => (
+          <DgKV key={k} k={k} v={formatInput(v)} />
+        ))}
+      </div>
+      {objects.map(([k, v]) => (
+        <div key={k} className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+            {k}
+          </div>
+          <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap rounded-sm bg-surface-sunken px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-fg-secondary [overflow-wrap:anywhere]">
+            {JSON.stringify(v, null, 2)}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function DgEvidence({ s }: { s: TriageSignal }) {
@@ -182,14 +214,14 @@ function DgEvidence({ s }: { s: TriageSignal }) {
     (f) => inputs[f.key] != null
   );
   return (
-    <div className="space-y-2.5">
+    <div className="min-w-0 space-y-2.5">
       {meaning && (
         <p className="max-w-[520px] text-[11.5px] leading-relaxed text-fg-muted">
           {meaning}
         </p>
       )}
       {facts.length > 0 && (
-        <div className="flex flex-wrap gap-x-[18px] gap-y-1">
+        <div className="flex min-w-0 flex-wrap gap-x-[18px] gap-y-1">
           {facts.map((f) => (
             <DgKV
               key={f.key}
@@ -211,18 +243,7 @@ function DgEvidence({ s }: { s: TriageSignal }) {
       >
         {showRaw ? "− Hide the numbers" : "+ All the numbers"}
       </button>
-      {showRaw && (
-        <div className="flex flex-wrap gap-x-[18px] gap-y-1 border-l-2 border-line-soft pl-3">
-          {s.raw_value != null && <DgKV k="value" v={s.raw_value.toFixed(3)} />}
-          {s.benchmark != null && (
-            <DgKV k="benchmark" v={s.benchmark.toFixed(3)} />
-          )}
-          {s.floor != null && <DgKV k="floor" v={s.floor.toFixed(3)} />}
-          {Object.entries(inputs).map(([k, v]) => (
-            <DgKV key={k} k={k} v={formatInput(v)} />
-          ))}
-        </div>
-      )}
+      {showRaw && <DgRawDump s={s} />}
     </div>
   );
 }
@@ -242,24 +263,32 @@ function DgChevron({ open }: { open: boolean }) {
 
 function DgChip({ chip }: { chip: TriageEngineChip }) {
   return (
-    <div className="flex items-center gap-3 rounded-md border-[1.5px] border-line bg-surface-card px-4 py-2.5">
-      <span className="label text-[9.5px]">{chip.label}</span>
-      <span
-        className="tnum font-display text-[30px] leading-none"
-        style={{ color: statusVar(chip.status) }}
-      >
-        {chip.score != null ? chip.score.toFixed(0) : "—"}
-      </span>
-      <div className="flex flex-col gap-0.5">
+    <div className="rounded-md border-[1.5px] border-line bg-surface-card px-4 pb-[11px] pt-2.5">
+      <div className="flex items-center gap-3">
+        <span className="label text-[9.5px]">{chip.label}</span>
         <span
-          className="font-mono text-[8.5px] font-bold tracking-[0.12em]"
+          className="tnum font-display text-[30px] leading-none"
           style={{ color: statusVar(chip.status) }}
         >
-          {chip.status ?? "NO DATA"}
+          {chip.score != null ? chip.score.toFixed(0) : "—"}
         </span>
-        <DgDelta delta={chip.delta} size={10} />
+        <div className="flex flex-col gap-0.5">
+          <span
+            className="font-mono text-[8.5px] font-bold tracking-[0.12em]"
+            style={{ color: statusVar(chip.status) }}
+          >
+            {chip.status ?? "NO DATA"}
+          </span>
+          <DgDelta delta={chip.delta} size={10} />
+        </div>
+        <DgDots dots={chip.dots} />
       </div>
-      <DgDots dots={chip.dots} />
+      {/* Gauge, not thermometer — see BandScale's rationale comment. */}
+      <BandScale
+        score={chip.score}
+        color={statusVar(chip.status)}
+        className="mt-2"
+      />
     </div>
   );
 }
@@ -694,11 +723,20 @@ export function DiagnosticsTab({
   if (eff.cpcv != null) effBits.push("CPCV $" + eff.cpcv.toFixed(3));
   if (eff.pacing_pct != null) effBits.push("Pacing " + eff.pacing_pct.toFixed(0) + "%");
 
-  const allAlerts: DiagnosticAlert[] = outputs.flatMap((o) => o.alerts ?? []);
+  const { act, watch, strong, dead } = model;
+
+  /* The engine emits one CRITICAL alert per ACTION signal. On this board
+     the signal already renders as an ACT NOW card with the same
+     diagnostic, so the per-signal alert banner is a duplicate — suppress
+     it when its signal is on the board. Engine-level alerts (health
+     regression, etc.) keep their banners, and signal alerts still
+     surface everywhere else (Summary, Alerts page, Slack). */
+  const onBoard = new Set([...act, ...watch].map((s) => s.id));
+  const allAlerts: DiagnosticAlert[] = outputs
+    .flatMap((o) => o.alerts ?? [])
+    .filter((a) => !(a.signal_id && onBoard.has(a.signal_id)));
   const critAlerts = allAlerts.filter((a) => a.severity === "critical");
   const softAlerts = allAlerts.filter((a) => a.severity !== "critical");
-
-  const { act, watch, strong, dead } = model;
 
   return (
     <div>
