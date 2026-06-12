@@ -453,7 +453,9 @@ class TestTargetingSync:
         ):
             result = ca.sync_adset_targeting()
 
-        assert result == {"status": "success", "matched": 1, "written": 1}
+        assert result == {
+            "status": "success", "complete": True, "matched": 1, "written": 1,
+        }
         merge_sql, merge_params = rec.calls[-1]
         assert "adset_targeting" in merge_sql and "MERGE" in merge_sql
         # THE SAME slug the audiences/matrix endpoint computes.
@@ -475,7 +477,9 @@ class TestTargetingSync:
             patch.object(ca, "_meta_adsets", return_value=adsets),
         ):
             result = ca.sync_adset_targeting()
-        assert result == {"status": "success", "matched": 0, "written": 0}
+        assert result == {
+            "status": "success", "complete": True, "matched": 0, "written": 0,
+        }
         assert len(rec.calls) == 1  # the known-adsets read, nothing written
 
 

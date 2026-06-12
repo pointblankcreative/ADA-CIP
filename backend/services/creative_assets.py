@@ -29,6 +29,7 @@ thing no-ops gracefully when the tokens are unset (the settings default).
 import hashlib
 import logging
 import re
+import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -650,19 +651,80 @@ def _record_targeting(
     )
 
 
+# ── time budget ────────────────────────────────────────────────────────
+#
+# The sync runs inside a Cloud Run request (300s service timeout). The
+# first wide-scope run blew past it and the request died with nothing
+# usable returned, so both syncs now work against a deadline: store as
+# you scan, stop cleanly when time runs out, report complete=False, and
+# let the next run (daily or manual) pick up where this one left off.
+
+SYNC_TIME_BUDGET_SECS = 240.0
+
+
+class _Deadline:
+    def __init__(self, ends_at: float):
+        self.ends_at = ends_at
+
+    @classmethod
+    def in_secs(cls, secs: float) -> "_Deadline":
+        return cls(time.monotonic() + secs)
+
+    def exceeded(self) -> bool:
+        return time.monotonic() >= self.ends_at
+
+    def remaining(self) -> float:
+        return max(0.0, self.ends_at - time.monotonic())
+
+
 # ── sync 1: creative images ────────────────────────────────────────────
 
 
-def sync_creative_images() -> dict:
+def _store_variant_image(
+    http: httpx.Client,
+    variant: str,
+    project_code: str,
+    url: str,
+    source: str,
+    counts: dict,
+) -> None:
+    """Download → GCS → ledger for one matched variant. Inline during the
+    scan so a timed-out run keeps everything it already found."""
+    try:
+        downloaded = _download_image(http, url)
+        if not downloaded:
+            _record_asset(variant, project_code, source, None, "fetch_failed")
+            counts["fetch_failed"] += 1
+            return
+        data, ext, content_type = downloaded
+        object_name = _asset_object_name(variant, ext)
+        _store_bytes(data, object_name, content_type)
+        _record_asset(variant, project_code, source, object_name, "stored")
+        counts["stored"] += 1
+    except Exception:
+        logger.warning("Creative image sync failed for variant %s", variant, exc_info=True)
+        try:
+            _record_asset(variant, project_code, source, None, "fetch_failed")
+            counts["fetch_failed"] += 1
+        except Exception:
+            logger.warning("Ledger write failed for variant %s", variant, exc_info=True)
+
+
+def sync_creative_images(deadline: _Deadline | None = None) -> dict:
     """Find and store stills for creative variants that lack one.
 
-    Meta first, then StackAdapt for whatever's left. Counts come back for
-    the admin endpoint; failures are logged per item and never raise.
+    Meta first, then StackAdapt for whatever's left. Matches are stored
+    the moment they're found; `no_match` is only recorded when BOTH
+    sources were fully scanned inside the budget — running out of time
+    must not look like "this creative doesn't exist on the platforms".
+    Counts come back for the admin endpoint; failures are logged per
+    item and never raise.
     """
+    deadline = deadline or _Deadline.in_secs(SYNC_TIME_BUDGET_SECS)
     if not settings.meta_access_token and not settings.stackadapt_api_key:
         logger.info("Creative image sync skipped — no platform tokens configured")
         return {
-            "status": "skipped", "reason": "no_tokens",
+            "status": "skipped", "reason": "no_tokens", "complete": True,
             "pending": 0, "stored": 0, "no_match": 0, "fetch_failed": 0,
         }
 
@@ -676,7 +738,7 @@ def sync_creative_images() -> dict:
                 ad_name_to_variant.setdefault(ad_name, (variant, project_code))
     except Exception:
         logger.warning("Creative image sync: variant enumeration failed", exc_info=True)
-        return {"status": "error", "pending": 0, **counts}
+        return {"status": "error", "complete": False, "pending": 0, **counts}
 
     states = _asset_states()
     now = datetime.now(timezone.utc)
@@ -686,98 +748,129 @@ def sync_creative_images() -> dict:
             pending[variant] = project_code
 
     if not pending:
-        return {"status": "success", "pending": 0, **counts}
+        return {
+            "status": "success", "complete": True,
+            "pending": 0, **counts,
+        }
 
-    # ── find a source URL per pending variant ───────────────────────
-    found: dict[str, tuple[str, str]] = {}  # variant → (url, source_platform)
+    # ── scan sources, storing matches as they appear ────────────────
+    remaining = dict(pending)
+    scanned_all = True
     with _http() as http:
         if settings.meta_access_token:
             try:
                 for account_id in _meta_ad_accounts(http):
+                    if deadline.exceeded() or not remaining:
+                        scanned_all = scanned_all and not remaining
+                        break
                     try:
                         for ad in _meta_ads(http, account_id):
+                            if deadline.exceeded():
+                                scanned_all = False
+                                break
                             mapped = ad_name_to_variant.get(ad.get("name") or "")
                             if not mapped:
                                 continue
                             variant = mapped[0]
-                            if variant not in pending or variant in found:
+                            if variant not in remaining:
                                 continue
                             url = _meta_image_url(ad.get("creative"))
                             if url:
-                                found[variant] = (url, "meta")
+                                _store_variant_image(
+                                    http, variant, remaining.pop(variant),
+                                    url, "meta", counts,
+                                )
                     except Exception:
                         logger.warning("Meta ads listing failed for %s", account_id, exc_info=True)
             except Exception:
                 logger.warning("Meta ad account enumeration failed", exc_info=True)
 
-        if settings.stackadapt_api_key and len(found) < len(pending):
-            try:
-                for creative in _stackadapt_creatives(http):
-                    name = creative["name"]
-                    mapped = ad_name_to_variant.get(name)
-                    # StackAdapt creative names usually equal ad names; a
-                    # creative named exactly like the variant also counts.
-                    variant = mapped[0] if mapped else (name if name in pending else None)
-                    if not variant or variant not in pending or variant in found:
-                        continue
-                    found[variant] = (creative["url"], "stackadapt")
-            except Exception:
-                logger.warning("StackAdapt creative listing failed", exc_info=True)
+        if settings.stackadapt_api_key and remaining:
+            if deadline.exceeded():
+                scanned_all = False
+            else:
+                try:
+                    for creative in _stackadapt_creatives(http):
+                        if deadline.exceeded():
+                            scanned_all = False
+                            break
+                        name = creative["name"]
+                        mapped = ad_name_to_variant.get(name)
+                        # StackAdapt creative names usually equal ad names;
+                        # a creative named exactly like the variant counts.
+                        variant = (
+                            mapped[0]
+                            if mapped
+                            else (name if name in remaining else None)
+                        )
+                        if not variant or variant not in remaining:
+                            continue
+                        _store_variant_image(
+                            http, variant, remaining.pop(variant),
+                            creative["url"], "stackadapt", counts,
+                        )
+                except Exception:
+                    logger.warning("StackAdapt creative listing failed", exc_info=True)
 
-        # ── download, store, record — every variant gets a ledger row ──
-        for variant, project_code in pending.items():
-            source = found.get(variant, (None, None))[1]
-            try:
-                hit = found.get(variant)
-                if not hit:
+        # ── no_match — only when the scan actually finished ─────────
+        if scanned_all and not deadline.exceeded():
+            for variant, project_code in remaining.items():
+                try:
                     _record_asset(variant, project_code, None, None, "no_match")
                     counts["no_match"] += 1
-                    continue
-                url, source = hit
-                downloaded = _download_image(http, url)
-                if not downloaded:
-                    _record_asset(variant, project_code, source, None, "fetch_failed")
-                    counts["fetch_failed"] += 1
-                    continue
-                data, ext, content_type = downloaded
-                object_name = _asset_object_name(variant, ext)
-                _store_bytes(data, object_name, content_type)
-                _record_asset(variant, project_code, source, object_name, "stored")
-                counts["stored"] += 1
-            except Exception:
-                logger.warning("Creative image sync failed for variant %s", variant, exc_info=True)
-                try:
-                    _record_asset(variant, project_code, source, None, "fetch_failed")
-                    counts["fetch_failed"] += 1
                 except Exception:
                     logger.warning("Ledger write failed for variant %s", variant, exc_info=True)
+        elif remaining:
+            logger.info(
+                "Creative image sync out of budget with %d variants unscanned — "
+                "they stay pending for the next run", len(remaining),
+            )
 
-    return {"status": "success", "pending": len(pending), **counts}
+    return {
+        "status": "success",
+        "complete": scanned_all and not deadline.exceeded(),
+        "pending": len(pending),
+        **counts,
+    }
 
 
 # ── sync 2: ad-set targeting personas ──────────────────────────────────
 
 
-def sync_adset_targeting() -> dict:
+# Stop asking Meta for delivery estimates after this many consecutive
+# failures in one run: when the API doesn't support it (or the ad sets
+# are all ended), each refusal costs two HTTP round-trips and personas
+# don't need it.
+ESTIMATE_BREAKER_THRESHOLD = 6
+
+
+def sync_adset_targeting(deadline: _Deadline | None = None) -> dict:
     """Render Meta targeting specs into personas for ADA's ad sets.
 
     Only ad sets whose names appear in fact_digital_daily (platform meta)
     are written — the matrix can't render targeting for ad sets it has
     never heard of. Keyed by the matrix endpoint's own audience slug.
+    Writes happen per ad set, so a timed-out run keeps its progress.
     """
+    deadline = deadline or _Deadline.in_secs(SYNC_TIME_BUDGET_SECS)
     if not settings.meta_access_token:
         logger.info("Ad-set targeting sync skipped — META_ACCESS_TOKEN not set")
-        return {"status": "skipped", "reason": "no_token", "matched": 0, "written": 0}
+        return {
+            "status": "skipped", "reason": "no_token", "complete": True,
+            "matched": 0, "written": 0,
+        }
 
     try:
         known = _known_meta_adsets()
     except Exception:
         logger.warning("Ad-set targeting sync: known ad-set read failed", exc_info=True)
-        return {"status": "error", "matched": 0, "written": 0}
+        return {"status": "error", "complete": False, "matched": 0, "written": 0}
     if not known:
-        return {"status": "success", "matched": 0, "written": 0}
+        return {"status": "success", "complete": True, "matched": 0, "written": 0}
 
     matched = written = 0
+    complete = True
+    estimate_failures = 0
     with _http() as http:
         try:
             accounts = _meta_ad_accounts(http)
@@ -785,18 +878,36 @@ def sync_adset_targeting() -> dict:
             logger.warning("Meta ad account enumeration failed", exc_info=True)
             accounts = []
         for account_id in accounts:
+            if deadline.exceeded():
+                complete = False
+                break
             try:
                 for adset in _meta_adsets(http, account_id):
+                    if deadline.exceeded():
+                        complete = False
+                        break
                     fact_name = known.get(_normalize_adset_name(adset.get("name") or ""))
                     if not fact_name:
                         continue
                     matched += 1
                     try:
                         persona = render_persona(adset.get("targeting"))
-                        pool = (
-                            _adset_pool_size(http, adset["id"])
-                            if adset.get("id") else None
-                        )
+                        pool = None
+                        if (
+                            adset.get("id")
+                            and estimate_failures < ESTIMATE_BREAKER_THRESHOLD
+                            and deadline.remaining() > 15
+                        ):
+                            pool = _adset_pool_size(http, adset["id"])
+                            estimate_failures = (
+                                0 if pool is not None else estimate_failures + 1
+                            )
+                            if estimate_failures == ESTIMATE_BREAKER_THRESHOLD:
+                                logger.info(
+                                    "Delivery estimates unavailable %d times in a "
+                                    "row — skipping for the rest of this run",
+                                    ESTIMATE_BREAKER_THRESHOLD,
+                                )
                         if persona is None and pool is None:
                             continue
                         _record_targeting(
@@ -811,22 +922,31 @@ def sync_adset_targeting() -> dict:
             except Exception:
                 logger.warning("Meta ad set listing failed for %s", account_id, exc_info=True)
 
-    return {"status": "success", "matched": matched, "written": written}
+    return {
+        "status": "success", "complete": complete,
+        "matched": matched, "written": written,
+    }
 
 
 # ── orchestration ──────────────────────────────────────────────────────
 
 
-def run_sync() -> dict:
-    """Run both Phase 19 syncs back to back. Never raises — the daily
-    pipeline and the admin endpoint both treat this as best-effort."""
+def run_sync(budget_secs: float = SYNC_TIME_BUDGET_SECS) -> dict:
+    """Run both Phase 19 syncs inside one time budget. Images get the
+    first ~55%, targeting runs to the end of the full budget — both
+    report complete=False when they ran out of road, and repeated runs
+    converge. Never raises: the daily pipeline and the admin endpoint
+    both treat this as best-effort."""
+    started = time.monotonic()
+    image_deadline = _Deadline(started + budget_secs * 0.55)
+    full_deadline = _Deadline(started + budget_secs)
     try:
-        images = sync_creative_images()
+        images = sync_creative_images(image_deadline)
     except Exception as e:
         logger.error("Creative image sync crashed: %s", e, exc_info=True)
         images = {"status": "error", "error": str(e)}
     try:
-        targeting = sync_adset_targeting()
+        targeting = sync_adset_targeting(full_deadline)
     except Exception as e:
         logger.error("Ad-set targeting sync crashed: %s", e, exc_info=True)
         targeting = {"status": "error", "error": str(e)}
