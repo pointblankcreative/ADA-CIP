@@ -328,6 +328,125 @@ export interface CreativeVariantResponse {
   creatives: CreativeVariantRow[];
 }
 
+/* ── Creative rotation + resonance matrices (Phases 15–17) ──
+   Backend contract built in parallel — rates are fractions (0–1) and money
+   is account currency, matching PerformanceResponse / CreativeVariantRow
+   conventions. */
+
+export type RotationWindow = "flight" | "7d";
+export type CreativeType = "video" | "static";
+
+/** KPI fields shared by each rotation creative and the rotation totals. */
+export interface RotationKpis {
+  spend: number;
+  impressions: number;
+  frequency: number | null;
+  hook_rate: number | null;
+  completion_rate: number | null;
+  engagement_rate: number | null;
+  ctr: number | null;
+  clicks: number;
+  cpm: number | null;
+  conversions: number;
+  cpa: number | null;
+}
+
+export interface RotationTrends {
+  /** Last syncs, oldest → newest. */
+  ctr: number[];
+  frequency: number[];
+  /** The objective's primary KPI series (completion rate or CPA). */
+  primary: number[];
+}
+
+export interface RotationCreative extends RotationKpis {
+  variant: string;
+  type: CreativeType;
+  platforms: string[];
+  /** Share of rotation spend, 0–1. */
+  spend_share: number;
+  trend: RotationTrends;
+}
+
+/** Which platforms report each attention metric (honesty lines). */
+export interface RotationCoverage {
+  hook: string[];
+  completion: string[];
+  engagement: string[];
+}
+
+export interface CreativeRotationResponse {
+  objective: ObjectiveType;
+  window: RotationWindow;
+  as_of: string;
+  creatives: RotationCreative[];
+  coverage: RotationCoverage;
+  totals: RotationKpis;
+}
+
+export interface CreativeMatrixPlatform {
+  platform_id: string;
+  spend: number;
+  /** Share of matrix spend, 0–1. */
+  share: number;
+}
+
+export interface CreativeMatrixCell {
+  spend: number;
+  impressions: number;
+  hook_rate: number | null;
+  completion_rate: number | null;
+  engagement_rate: number | null;
+  ctr: number | null;
+  cpm: number | null;
+  conversions: number;
+  cpa: number | null;
+}
+
+export interface CreativeMatrixResponse {
+  platforms: CreativeMatrixPlatform[];
+  creatives: string[];
+  /** cells[variant][platform_id] — a missing key means the creative
+   *  doesn't run on that platform. */
+  cells: Record<string, Record<string, CreativeMatrixCell>>;
+}
+
+export interface MatrixAudience {
+  id: string;
+  name: string;
+  platform_id: string;
+  role: string | null;
+  spend: number;
+  frequency: number | null;
+  /** Last syncs, oldest → newest. */
+  frequency_trend: number[];
+  impressions: number;
+  ctr: number | null;
+  completion_rate: number | null;
+  engagement_rate: number | null;
+  conversions: number;
+  cpa: number | null;
+}
+
+export interface AudienceMatrixCell {
+  spend: number;
+  impressions: number;
+  hook_rate: number | null;
+  completion_rate: number | null;
+  engagement_rate: number | null;
+  ctr: number | null;
+  conversions: number;
+  cpa: number | null;
+}
+
+export interface AudienceMatrixResponse {
+  audiences: MatrixAudience[];
+  creatives: string[];
+  /** cells[audienceId][variant] — a missing key means the creative
+   *  doesn't run in that ad set. */
+  cells: Record<string, Record<string, AudienceMatrixCell>>;
+}
+
 export interface Alert {
   alert_id: string;
   project_code: string;
@@ -581,6 +700,8 @@ export interface BenchmarkValue {
 export interface BenchmarkResponse {
   project_code: string;
   objective_type: string;
+  /** Keyed by metric name. Phases 15–17 add `hook_rate` and
+   *  `engagement_rate` quartiles alongside the existing metrics. */
   benchmarks: Record<string, BenchmarkValue>;
   platform_benchmarks: Record<string, Record<string, BenchmarkValue>>;
 }
@@ -742,6 +863,22 @@ export const api = {
     creatives: (code: string, days?: number) =>
       apiFetch<CreativeVariantResponse>(
         `/api/performance/${code}/creatives${days ? `?days=${days}` : ""}`
+      ),
+  },
+  creative: {
+    rotation: (code: string, window: RotationWindow = "flight") =>
+      apiFetch<CreativeRotationResponse>(
+        `/api/projects/${code}/creative/rotation?window=${window}`
+      ),
+    matrix: (code: string) =>
+      apiFetch<CreativeMatrixResponse>(
+        `/api/projects/${code}/creative/matrix`
+      ),
+  },
+  audiences: {
+    matrix: (code: string) =>
+      apiFetch<AudienceMatrixResponse>(
+        `/api/projects/${code}/audiences/matrix`
       ),
   },
   alerts: {

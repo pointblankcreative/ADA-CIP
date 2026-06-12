@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * Project detail shell — v0.3 structure.
+ * Project detail shell — Phases 15–17 structure.
  *
- * Tabs: Summary (default, verdict-first) / Pacing / Performance /
- * Diagnostics. Settings lives behind the gear icon; the old Alerts tab
- * is folded into Summary. The shell renders on tokens (light theme);
- * the not-yet-migrated tab bodies (pacing / performance / diagnostics /
- * settings) are pinned dark until their re-skin phases land.
+ * Tabs: Summary (default, verdict-first) / Pacing / Creative /
+ * Audiences / Diagnostics. Settings lives behind the gear icon; the
+ * old Alerts tab is folded into Summary. The Performance tab was
+ * replaced by Creative + Audiences — legacy "performance" tab params
+ * map to "creative" (performance-tab.tsx stays on disk, unimported).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -15,11 +15,12 @@ import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Gauge,
-  BarChart3,
   Activity,
+  Clapperboard,
   ScanLine,
   Settings2,
   Clock,
+  Users,
 } from "lucide-react";
 import { api, type Alert, type Project } from "@/lib/api";
 import { computeFlight, verdict } from "@/lib/flight";
@@ -28,18 +29,31 @@ import { SyncStatus } from "@/components/sync-status";
 import { cn, formatCurrency, formatFlightDay } from "@/lib/utils";
 import { SummaryTab } from "./summary-tab";
 import { PacingTab } from "./pacing-tab";
-import { PerformanceTab } from "./performance-tab";
+import { CreativeTab } from "./creative-tab";
+import { AudiencesTab } from "./audiences-tab";
 import { SettingsTab } from "./settings-tab";
 import { DiagnosticsTab } from "./diagnostics-tab";
 
 const TABS = [
   { id: "summary", label: "Summary", icon: ScanLine },
   { id: "pacing", label: "Pacing", icon: Gauge },
-  { id: "performance", label: "Performance", icon: BarChart3 },
+  { id: "creative", label: "Creative", icon: Clapperboard },
+  { id: "audiences", label: "Audiences", icon: Users },
   { id: "diagnostics", label: "Diagnostics", icon: Activity },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"] | "settings";
+
+/**
+ * Map any tab name (including legacy deep-links and cross-tab jumps)
+ * to a live tab. "performance" became Creative in Phases 15–17.
+ */
+function normalizeTab(tab: string): TabId {
+  if (tab === "performance") return "creative";
+  if (tab === "settings") return "settings";
+  const known = TABS.find((t) => t.id === tab);
+  return known ? known.id : "summary";
+}
 
 function isUnprovisioned(p: Project): boolean {
   return !p.net_budget || p.net_budget === 0;
@@ -268,11 +282,16 @@ export default function ProjectDetailPage() {
             code={code}
             alerts={alerts}
             onAcknowledge={handleAcknowledge}
-            onTab={(t) => setActiveTab(t as TabId)}
+            onTab={(t) => setActiveTab(normalizeTab(t))}
           />
         )}
         {activeTab === "pacing" && <PacingTab code={code} />}
-        {activeTab === "performance" && <PerformanceTab code={code} />}
+        {activeTab === "creative" && (
+          <CreativeTab code={code} onTab={(t) => setActiveTab(normalizeTab(t))} />
+        )}
+        {activeTab === "audiences" && (
+          <AudiencesTab code={code} onTab={(t) => setActiveTab(normalizeTab(t))} />
+        )}
         {activeTab === "diagnostics" && <DiagnosticsTab code={code} />}
         {activeTab === "settings" && <SettingsTab code={code} />}
       </div>

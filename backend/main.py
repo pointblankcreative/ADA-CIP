@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.routers import admin, alerts, benchmarks, diagnostics, ffs, ga4, orphans, pacing, performance, projects, retrospective, traditional
+from backend.routers import admin, alerts, benchmarks, creative, diagnostics, ffs, ga4, orphans, pacing, performance, projects, retrospective, traditional
 from backend.services import bigquery_client as bq
 
 logging.basicConfig(
@@ -46,6 +46,7 @@ app.add_middleware(FirebaseAuthMiddleware)
 
 app.include_router(projects.router)
 app.include_router(performance.router)
+app.include_router(creative.router)
 app.include_router(pacing.router)
 app.include_router(alerts.router)
 app.include_router(ga4.router)

@@ -38,6 +38,19 @@ export function formatCurrencyCompact(value: number | null | undefined): string 
 }
 
 /**
+ * Compact plain-number formatting for dense UI (12.8M, 156.6K). The
+ * count sibling of formatCurrencyCompact — used by the Creative and
+ * Audiences tabs for impressions / clicks / conversions.
+ */
+export function formatNumberCompact(value: number | null | undefined): string {
+  if (value == null || isNaN(value)) return "—";
+  const abs = Math.abs(value);
+  if (abs >= 1e6) return (value / 1e6).toFixed(abs >= 1e7 ? 1 : 2) + "M";
+  if (abs >= 1e3) return (value / 1e3).toFixed(abs >= 1e5 ? 0 : 1) + "K";
+  return formatNumber(value);
+}
+
+/**
  * Magnitude-aware currency tick formatter for chart axes.
  *
  * Under $1k:   "$200", "$400"

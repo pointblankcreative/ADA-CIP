@@ -43,6 +43,7 @@ GUARDED_FILES = [
     ("backend/routers/pacing.py",               2),  # pacing endpoint + bundle members
     ("backend/routers/performance.py",          1),
     ("backend/routers/benchmarks.py",           1),
+    ("backend/routers/creative.py",             2),  # objectives + audience roles
     ("backend/services/ffs_entries.py",         2),  # list + get
 ]
 
