@@ -130,16 +130,16 @@ function DgEngine({ engine }: { engine: string }) {
   const isP = engine === "persuasion";
   return (
     <span
-      className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-xs font-mono text-[9px] font-bold"
-      title={engine + " engine"}
+      className="inline-flex flex-shrink-0 items-center rounded-xs px-1.5 py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-[0.1em]"
+      title={`This signal comes from the ${engine} engine`}
       style={{
         background: isP
-          ? "color-mix(in srgb, var(--info) 18%, transparent)"
-          : "color-mix(in srgb, var(--accent-ink) 18%, transparent)",
+          ? "color-mix(in srgb, var(--info) 16%, transparent)"
+          : "color-mix(in srgb, var(--accent-ink) 16%, transparent)",
         color: isP ? "var(--info)" : "var(--accent-ink)",
       }}
     >
-      {isP ? "P" : "C"}
+      {isP ? "Persuasion" : "Conversion"}
     </span>
   );
 }
@@ -174,32 +174,105 @@ function formatInput(v: unknown): string {
   return String(v);
 }
 
-/* Raw payload: scalars as inline chips, objects/arrays pretty-printed in
-   their own contained blocks — the old single-line JSON.stringify of the
-   per-platform arrays overflowed the card and bled over neighbours. */
+/* Raw payload, rendered as a readable tree rather than a JSON export:
+   no braces, no quotes, no inner scrollbars. Empty fields are dropped
+   entirely — an "excluded_no_metric: []" row reads like an unfinished
+   corner of the tool, and an empty list carries no information. */
+
+function rawLabel(k: string): string {
+  return k.replace(/_/g, " ");
+}
+
+function isEmptyVal(v: unknown): boolean {
+  if (v == null) return true;
+  if (typeof v === "string") return v.length === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return Object.keys(v as object).length === 0;
+  return false;
+}
+
+function RawTree({ v }: { v: unknown }): React.ReactElement {
+  if (Array.isArray(v)) {
+    if (v.every((x) => x == null || typeof x !== "object")) {
+      return (
+        <span className="font-mono text-[10.5px] text-fg-secondary [overflow-wrap:anywhere]">
+          {v.map(formatInput).join(", ")}
+        </span>
+      );
+    }
+    return (
+      <div className="space-y-2">
+        {v.map((item, i) => (
+          <div key={i} className="border-l border-line-soft pl-2.5">
+            <RawTree v={item} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (v != null && typeof v === "object") {
+    const entries = Object.entries(v as Record<string, unknown>).filter(
+      ([, x]) => !isEmptyVal(x)
+    );
+    const scalars = entries.filter(([, x]) => x == null || typeof x !== "object");
+    const nested = entries.filter(([, x]) => x != null && typeof x === "object");
+    return (
+      <div className="min-w-0 space-y-1.5">
+        {scalars.length > 0 && (
+          <div className="flex min-w-0 flex-wrap gap-x-3.5 gap-y-0.5">
+            {scalars.map(([k, x]) => (
+              <span key={k} className="text-[10.5px] [overflow-wrap:anywhere]">
+                <span className="text-fg-faint">{rawLabel(k)} </span>
+                <span className="font-mono text-fg-secondary">
+                  {formatInput(x)}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
+        {nested.map(([k, x]) => (
+          <div key={k} className="min-w-0">
+            <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-faint">
+              {rawLabel(k)}
+            </div>
+            <div className="mt-0.5 border-l border-line-soft pl-2.5">
+              <RawTree v={x} />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <span className="font-mono text-[10.5px] text-fg-secondary">
+      {formatInput(v)}
+    </span>
+  );
+}
+
 function DgRawDump({ s }: { s: TriageSignal }) {
   const inputs = s.inputs ?? {};
-  const entries = Object.entries(inputs);
-  const scalars = entries.filter(([, v]) => v == null || typeof v !== "object");
+  const entries = Object.entries(inputs).filter(([, v]) => !isEmptyVal(v));
+  const scalars = entries.filter(([, v]) => typeof v !== "object");
   const objects = entries.filter(([, v]) => v != null && typeof v === "object");
   return (
-    <div className="min-w-0 space-y-2 border-l-2 border-line-soft pl-3">
+    <div className="min-w-0 space-y-2.5 border-l-2 border-line-soft pl-3">
       <div className="flex min-w-0 flex-wrap gap-x-[18px] gap-y-1">
         {s.raw_value != null && <DgKV k="value" v={s.raw_value.toFixed(3)} />}
         {s.benchmark != null && <DgKV k="benchmark" v={s.benchmark.toFixed(3)} />}
         {s.floor != null && <DgKV k="floor" v={s.floor.toFixed(3)} />}
         {scalars.map(([k, v]) => (
-          <DgKV key={k} k={k} v={formatInput(v)} />
+          <DgKV key={k} k={rawLabel(k)} v={formatInput(v)} />
         ))}
       </div>
       {objects.map(([k, v]) => (
         <div key={k} className="min-w-0">
           <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-faint">
-            {k}
+            {rawLabel(k)}
           </div>
-          <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap rounded-sm bg-surface-sunken px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-fg-secondary [overflow-wrap:anywhere]">
-            {JSON.stringify(v, null, 2)}
-          </pre>
+          <div className="mt-1 rounded-sm bg-surface-sunken px-2.5 py-2">
+            <RawTree v={v} />
+          </div>
         </div>
       ))}
     </div>
@@ -314,11 +387,14 @@ function DgActCard({
       style={{ border: "1.5px solid color-mix(in srgb, var(--danger) 45%, transparent)" }}
     >
       <div
-        className="px-[18px] pb-3.5 pt-4"
+        className="px-[18px] pb-4 pt-4"
         style={{ background: "color-mix(in srgb, var(--danger) 7%, transparent)" }}
       >
-        <div className="flex items-center gap-2">
+        {/* Lead with the signal's plain name — "D3" alone means nothing
+            to most users. The code stays as quiet metadata beside it. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <span className="font-mono text-[11px] font-bold text-danger">{s.id}</span>
+          <span className="text-[11.5px] font-semibold text-fg-muted">{s.name}</span>
           {mixed && <DgEngine engine={s.engine} />}
           {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
           <span className="ml-auto flex items-center gap-2">
@@ -329,6 +405,18 @@ function DgActCard({
         <p className="mt-3 text-[15px] font-semibold leading-normal text-fg">
           {s.diagnostic}
         </p>
+        {/* Guidance, not a control: labelled prose that wraps freely.
+            The old solid chip read as a clickable button and clipped
+            against the card edge when the copy ran long. */}
+        {s.action && (
+          <p className="mt-3 min-w-0 text-[13px] leading-snug [overflow-wrap:anywhere]">
+            <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.12em] text-accent-ink">
+              Suggested move
+            </span>
+            <span className="mx-1.5 text-fg-faint">→</span>
+            <span className="font-semibold text-fg-secondary">{s.action}</span>
+          </p>
+        )}
       </div>
       <button
         onClick={() => setOpen(!open)}
@@ -336,16 +424,14 @@ function DgActCard({
       >
         <span className="inline-flex items-center gap-[7px] font-mono text-[11px] text-fg-muted">
           <DgChevron open={open} />
-          {s.name} · score <b className="text-danger">{s.score?.toFixed(0) ?? "—"}</b>
+          {open ? "Hide details" : "Details"}
         </span>
-        {s.action && (
-          <span className="whitespace-nowrap rounded-sm bg-accent px-[11px] py-[5px] font-mono text-[10.5px] font-bold uppercase text-on-accent">
-            → {s.action}
-          </span>
-        )}
+        <span className="font-mono text-[11px] text-fg-muted">
+          score <b className="text-danger">{s.score?.toFixed(0) ?? "—"}</b>
+        </span>
       </button>
       {open && (
-        <div className="px-[18px] pb-3.5 pl-[38px]">
+        <div className="px-[18px] pb-4 pt-1">
           <DgEvidence s={s} />
         </div>
       )}
@@ -374,8 +460,9 @@ function DgWatchCard({
         onClick={() => setOpen(!open)}
         className="block w-full px-[15px] py-[13px] text-left"
       >
-        <div className="flex items-center gap-[7px]">
+        <div className="flex flex-wrap items-center gap-x-[7px] gap-y-1">
           <span className="font-mono text-[10.5px] font-bold text-warn">{s.id}</span>
+          <span className="text-[11px] font-semibold text-fg-muted">{s.name}</span>
           {mixed && <DgEngine engine={s.engine} />}
           {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
           <span className="ml-auto flex items-center gap-2">
@@ -389,7 +476,7 @@ function DgWatchCard({
         <div className="mt-2.5 flex items-center justify-between">
           <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-fg-faint">
             <DgChevron open={open} />
-            {s.name}
+            {open ? "Hide details" : "Details"}
           </span>
           <span className="tnum font-mono text-xs font-bold text-warn">
             {s.score?.toFixed(0) ?? "—"}
@@ -825,7 +912,10 @@ export function DiagnosticsTab({
         </div>
       ))}
       {act.length > 0 ? (
-        <div className="flex flex-wrap gap-3.5">
+        /* items-start: expanding one card must not stretch its row
+           siblings — equalized heights read as "data missing" on the
+           cards that simply aren't expanded. */
+        <div className="flex flex-wrap items-start gap-3.5">
           {act.map((s) => (
             <DgActCard key={`${s.engine}-${s.id}`} s={s} mixed={model.mixed} dimmed={isDim(s)} />
           ))}
@@ -858,7 +948,7 @@ export function DiagnosticsTab({
                 : ""
             }`}
           />
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] items-start gap-3">
             {watch.map((s) => (
               <DgWatchCard key={`${s.engine}-${s.id}`} s={s} mixed={model.mixed} dimmed={isDim(s)} />
             ))}
