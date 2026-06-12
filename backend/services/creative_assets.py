@@ -291,31 +291,49 @@ def _meta_image_url(creative: dict | None) -> str | None:
     return link.get("picture") or video.get("image_url") or None
 
 
+def _pool_from_estimate(est: dict) -> int | None:
+    """Extract a pool size from one delivery_estimate entry. estimate_mau
+    (monthly uniques) is the truest pool proxy; estimate_dau and the
+    users bounds are fallbacks across Graph versions."""
+    for key in ("estimate_mau", "estimate_dau"):
+        if est.get(key):
+            return int(est[key])
+    lo, hi = est.get("users_lower_bound"), est.get("users_upper_bound")
+    if lo is not None and hi is not None:
+        return (int(lo) + int(hi)) // 2
+    if lo is not None:
+        return int(lo)
+    if hi is not None:
+        return int(hi)
+    return None
+
+
 def _adset_pool_size(http: httpx.Client, adset_id: str) -> int | None:
-    """Pool size from the ad set's delivery_estimate: estimate_dau
-    preferred, else the users_lower_bound/users_upper_bound midpoint.
-    None when Meta returns nothing usable (common on paused ad sets)."""
-    try:
-        url = f"{META_GRAPH_BASE}/{settings.meta_api_version}/{adset_id}/delivery_estimate"
-        resp = http.get(url, params={"access_token": settings.meta_access_token})
-        resp.raise_for_status()
-        data = resp.json().get("data") or []
-        if not data:
-            return None
-        est = data[0] or {}
-        if est.get("estimate_dau"):
-            return int(est["estimate_dau"])
-        lo, hi = est.get("users_lower_bound"), est.get("users_upper_bound")
-        if lo is not None and hi is not None:
-            return (int(lo) + int(hi)) // 2
-        if lo is not None:
-            return int(lo)
-        if hi is not None:
-            return int(hi)
-        return None
-    except Exception:
-        logger.warning("delivery_estimate failed for ad set %s", adset_id, exc_info=True)
-        return None
+    """Pool size from the ad set's delivery_estimate. Some Graph
+    versions 400 without an optimization_goal, so a bare call is tried
+    first and retried with REACH before giving up. None when Meta
+    returns nothing usable (common on paused or ended ad sets)."""
+    url = f"{META_GRAPH_BASE}/{settings.meta_api_version}/{adset_id}/delivery_estimate"
+    for params in (
+        {"access_token": settings.meta_access_token},
+        {
+            "access_token": settings.meta_access_token,
+            "optimization_goal": "REACH",
+        },
+    ):
+        try:
+            resp = http.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+            if not data:
+                return None
+            pool = _pool_from_estimate(data[0] or {})
+            if pool is not None:
+                return pool
+        except Exception:
+            continue
+    logger.warning("delivery_estimate unusable for ad set %s", adset_id)
+    return None
 
 
 # ── StackAdapt GraphQL ─────────────────────────────────────────────────
@@ -462,12 +480,18 @@ def signed_url(object_name: str, expiry_days: int = SIGNED_URL_DAYS) -> str | No
 
 
 def _tracked_projects() -> list[str]:
-    """Active project codes — the set whose creatives get thumbnails."""
+    """Project codes whose creatives get thumbnails: active flights plus
+    anything that ended in the last 120 days. Ended campaigns still get
+    looked at (retrospectives, client reporting, the Creative tab on a
+    landed flight), and the image fetch is one-time-cheap — the daily
+    retry guard keeps no_match variants from being hammered."""
     rows = bq.run_query(
         f"""
         SELECT project_code
         FROM {bq.table('dim_projects')}
         WHERE status = 'active'
+           OR (end_date IS NOT NULL
+               AND end_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 120 DAY))
         ORDER BY project_code
         """
     )
