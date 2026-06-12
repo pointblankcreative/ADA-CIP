@@ -256,10 +256,19 @@ def _meta_ad_accounts(http: httpx.Client) -> list[str]:
 
 
 def _meta_ads(http: httpx.Client, account_id: str) -> Iterator[dict]:
-    """Ads with creative image fields for one account, paged."""
+    """Ads with creative image fields for one account, paged.
+
+    thumbnail_url defaults to a 64x64 crop unless dimensions are asked
+    for explicitly — the .param(value) field-expansion modifiers request
+    a full-size still for the creatives (videos, object_story_spec
+    statics) where image_url is absent and the thumbnail is all we get.
+    """
     url = f"{META_GRAPH_BASE}/{settings.meta_api_version}/{account_id}/ads"
     params = {
-        "fields": "name,creative{thumbnail_url,image_url,object_story_spec}",
+        "fields": (
+            "name,creative.thumbnail_width(1080).thumbnail_height(1080)"
+            "{thumbnail_url,image_url,object_story_spec}"
+        ),
         "access_token": settings.meta_access_token,
         "limit": 100,
     }
@@ -516,7 +525,7 @@ def _asset_states() -> dict[str, dict]:
     try:
         rows = bq.run_query(
             f"""
-            SELECT variant, status, gcs_path, checked_at
+            SELECT variant, status, gcs_path, source_platform, checked_at
             FROM {bq.table('creative_assets')}
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY variant ORDER BY checked_at DESC
@@ -671,14 +680,25 @@ def _store_variant_image(
     url: str,
     source: str,
     counts: dict,
+    preserve_on_failure: bool = False,
 ) -> None:
     """Download → GCS → ledger for one matched variant. Inline during the
-    scan so a timed-out run keeps everything it already found."""
+    scan so a timed-out run keeps everything it already found.
+
+    preserve_on_failure is set for forced refreshes of already-stored
+    variants: a failed re-download must not downgrade a working image,
+    so the ledger keeps its stored row and only the count records the
+    failure."""
+
+    def _failed() -> None:
+        counts["fetch_failed"] += 1
+        if not preserve_on_failure:
+            _record_asset(variant, project_code, source, None, "fetch_failed")
+
     try:
         downloaded = _download_image(http, url)
         if not downloaded:
-            _record_asset(variant, project_code, source, None, "fetch_failed")
-            counts["fetch_failed"] += 1
+            _failed()
             return
         data, ext, content_type = downloaded
         object_name = _asset_object_name(variant, ext)
@@ -688,8 +708,7 @@ def _store_variant_image(
     except Exception:
         logger.warning("Creative image sync failed for variant %s", variant, exc_info=True)
         try:
-            _record_asset(variant, project_code, source, None, "fetch_failed")
-            counts["fetch_failed"] += 1
+            _failed()
         except Exception:
             logger.warning("Ledger write failed for variant %s", variant, exc_info=True)
 
@@ -705,10 +724,12 @@ def sync_creative_images(
     sources were fully scanned inside the budget AND neither source
     failed — running out of time or a broken source must not look like
     "this creative doesn't exist on the platforms". `force` retries
-    no_match / fetch_failed variants regardless of the daily guard
-    (stored variants are never refetched). Counts and per-source status
-    come back for the admin endpoint; failures are logged per item and
-    never raise.
+    no_match / fetch_failed variants regardless of the daily guard AND
+    re-downloads Meta-sourced stored stills (Meta thumbnails used to be
+    fetched at 64px; StackAdapt serves the original asset, so those are
+    left alone). A refresh that fails or finds no match keeps the
+    existing image. Counts and per-source status come back for the
+    admin endpoint; failures are logged per item and never raise.
     """
     deadline = deadline or _Deadline.in_secs(SYNC_TIME_BUDGET_SECS)
     sources = {
@@ -741,15 +762,23 @@ def sync_creative_images(
     states = _asset_states()
     now = datetime.now(timezone.utc)
     pending: dict[str, str] = {}  # variant → project_code
+    refreshing: set[str] = set()  # stored variants being re-downloaded
     for variant, project_code in ad_name_to_variant.values():
         if variant in pending:
             continue
         state = states.get(variant)
+        stored = bool(
+            state and state.get("status") == "stored" and state.get("gcs_path")
+        )
         if force:
-            wanted = not (state and state.get("status") == "stored" and state.get("gcs_path"))
-        else:
-            wanted = _needs_attempt(state, now)
-        if wanted:
+            if stored:
+                # Only Meta stills can be stuck at the old 64px default;
+                # StackAdapt objects are the original asset.
+                if (state.get("source_platform") or "").lower() != "meta":
+                    continue
+                refreshing.add(variant)
+            pending[variant] = project_code
+        elif _needs_attempt(state, now):
             pending[variant] = project_code
 
     if not pending:
@@ -784,6 +813,7 @@ def sync_creative_images(
                                 _store_variant_image(
                                     http, variant, remaining.pop(variant),
                                     url, "meta", counts,
+                                    preserve_on_failure=variant in refreshing,
                                 )
                     except Exception:
                         logger.warning("Meta ads listing failed for %s", account_id, exc_info=True)
@@ -817,6 +847,7 @@ def sync_creative_images(
                         _store_variant_image(
                             http, variant, remaining.pop(variant),
                             creative["url"], "stackadapt", counts,
+                            preserve_on_failure=variant in refreshing,
                         )
                 except Exception:
                     logger.warning("StackAdapt creative listing failed", exc_info=True)
@@ -826,6 +857,10 @@ def sync_creative_images(
         # ── no_match — only when the scan actually finished ─────────
         if scanned_all and not deadline.exceeded():
             for variant, project_code in remaining.items():
+                if variant in refreshing:
+                    # A forced refresh that found nothing keeps the
+                    # stored image rather than flipping to no_match.
+                    continue
                 try:
                     _record_asset(variant, project_code, None, None, "no_match")
                     counts["no_match"] += 1
@@ -952,7 +987,8 @@ def run_sync(
     first ~55%, targeting runs to the end of the full budget — both
     report complete=False when they ran out of road, and repeated runs
     converge. `force` retries no_match/fetch_failed image variants past
-    the daily guard. Never raises: the daily pipeline and the admin
+    the daily guard and re-downloads Meta-sourced stored stills (64px
+    thumbnail healing). Never raises: the daily pipeline and the admin
     endpoint both treat this as best-effort."""
     started = time.monotonic()
     image_deadline = _Deadline(started + budget_secs * 0.55)

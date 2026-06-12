@@ -391,6 +391,103 @@ class TestImageSync:
             result = ca.sync_creative_images()
         assert result["pending"] == 0
 
+    def test_meta_ads_requests_full_size_thumbnails(self, monkeypatch):
+        # thumbnail_url defaults to 64x64 — the request must carry the
+        # field-expansion size modifiers or video/object_story_spec
+        # creatives come back blurry.
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        captured: dict = {}
+
+        def fake_paged(http, url, params):
+            captured.update(params)
+            return iter([])
+
+        with patch.object(ca, "_meta_paged", side_effect=fake_paged):
+            list(ca._meta_ads(None, "act_1"))
+
+        fields = captured["fields"]
+        assert "thumbnail_width(1080)" in fields
+        assert "thumbnail_height(1080)" in fields
+        assert "thumbnail_url" in fields and "image_url" in fields
+
+    def _stored_meta_state(self):
+        return [{
+            "variant": HERO_VARIANT, "status": "stored",
+            "gcs_path": f"creative-assets/{HERO_SHA1}.jpg",
+            "source_platform": "meta",
+            "checked_at": datetime.now(timezone.utc) - timedelta(days=30),
+        }]
+
+    def test_force_refreshes_stored_meta_stills(self, monkeypatch):
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, self._stored_meta_state())
+        ads = [{"name": HERO_AD_NAME,
+                "creative": {"thumbnail_url": "https://cdn.meta/thumb_1080.jpg"}}]
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=ads),
+            patch.object(ca, "_download_image",
+                         return_value=(b"BIG", "jpg", "image/jpeg")),
+            patch.object(ca, "_store_bytes", return_value=None),
+        ):
+            result = ca.sync_creative_images(force=True)
+
+        assert result["pending"] == 1 and result["stored"] == 1
+        merge_sql, merge_params = rec.calls[-1]
+        assert "MERGE" in merge_sql
+        assert ("string", "status", "stored") in merge_params
+
+    def test_force_leaves_stackadapt_stored_alone(self, monkeypatch):
+        # StackAdapt serves the original asset — nothing to heal.
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        state = self._stored_meta_state()
+        state[0]["source_platform"] = "stackadapt"
+        _image_sync_responses(rec, state)
+        with _Patched(ca, rec):
+            result = ca.sync_creative_images(force=True)
+        assert result["pending"] == 0
+
+    def test_forced_refresh_miss_keeps_stored_row(self, monkeypatch):
+        # A refresh that finds nothing must not flip stored → no_match.
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, self._stored_meta_state())
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=[]),
+        ):
+            result = ca.sync_creative_images(force=True)
+
+        assert result["pending"] == 1
+        assert result["no_match"] == 0 and result["fetch_failed"] == 0
+        assert len(rec.calls) == 4  # state reads only, no MERGE writes
+
+    def test_forced_refresh_failed_download_keeps_stored_row(self, monkeypatch):
+        # A refresh whose download fails keeps the working image too.
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, self._stored_meta_state())
+        ads = [{"name": HERO_AD_NAME,
+                "creative": {"thumbnail_url": "https://cdn.meta/thumb_1080.jpg"}}]
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=ads),
+            patch.object(ca, "_download_image", return_value=None),
+        ):
+            result = ca.sync_creative_images(force=True)
+
+        assert result["fetch_failed"] == 1 and result["stored"] == 0
+        assert len(rec.calls) == 4  # ledger untouched — stored row survives
+
 
 # ── delivery_estimate parsing ─────────────────────────────────────────
 
