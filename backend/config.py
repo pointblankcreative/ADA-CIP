@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     # just without images (graceful degradation).
     alert_charts_bucket: str = "point-blank-ada_resources"
 
+    # Creative assets sync (Phase 19) — platform tokens for the creative
+    # thumbnail + ad-set targeting sync. Both live in Secret Manager
+    # (cip-meta-token / cip-stackadapt-key) and arrive as env vars via the
+    # deploy's --update-secrets. Empty (the default) makes the corresponding
+    # sync a no-op — local dev needs no platform access.
+    meta_access_token: str = ""
+    stackadapt_api_key: str = ""
+    # Graph API version for the Meta calls above. Bump deliberately — Meta
+    # retires versions roughly two years after release.
+    meta_api_version: str = "v23.0"
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"

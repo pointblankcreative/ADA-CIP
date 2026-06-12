@@ -768,5 +768,46 @@ OPTIONS(
 
 
 -- ==============================================================================
+-- CREATIVE ASSETS + AD-SET TARGETING (Phase 19)
+-- ==============================================================================
+
+-- Sync ledger for creative stills pulled from Meta / StackAdapt into GCS.
+-- One row per creative variant (the sync MERGEs on variant; latest attempt
+-- wins). gcs_path points at creative-assets/{sha1(variant)}.{ext} in the
+-- shared resources bucket — never a platform CDN URL, those expire.
+-- status: 'stored' | 'no_match' | 'fetch_failed'. Non-stored rows retry on
+-- later runs, at most once per UTC day (checked_at guard in the sync).
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.creative_assets` (
+  variant STRING NOT NULL,
+  project_code STRING,
+  source_platform STRING,
+  gcs_path STRING,
+  status STRING NOT NULL,
+  checked_at TIMESTAMP NOT NULL
+)
+CLUSTER BY variant
+OPTIONS(
+  description='Creative thumbnail sync ledger (Phase 19). One row per creative variant; gcs_path is an object under creative-assets/ in the shared resources bucket (signed-URL reads only). status: stored | no_match | fetch_failed.'
+);
+
+-- Plain-English personas + audience pool sizes rendered from Meta ad-set
+-- targeting specs. audience_key is the SAME slug the audiences/matrix
+-- endpoint computes (ad_set_name + platform_id), so the join is free.
+-- pool_size comes from the ad set's delivery_estimate; saturation is
+-- derived at read time (reach / pool_size) and never stored.
+CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.adset_targeting` (
+  audience_key STRING NOT NULL,
+  platform_id STRING NOT NULL,
+  persona STRING,
+  pool_size INT64,
+  fetched_at TIMESTAMP NOT NULL
+)
+CLUSTER BY audience_key
+OPTIONS(
+  description='Ad-set targeting personas (Phase 19). audience_key = the audiences/matrix slug of ad_set_name + platform_id; persona is a deterministic plain-language render of the Meta targeting spec; pool_size from delivery_estimate.'
+);
+
+
+-- ==============================================================================
 -- END OF SCHEMA DEFINITION
 -- ==============================================================================

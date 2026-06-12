@@ -35,6 +35,9 @@ class CreativeTrend(BaseModel):
 class CreativeRotationRow(BaseModel):
     variant: str
     type: str  # "video" | "static"
+    # Signed GCS URL for the stored ad still (Phase 19 asset sync), ~7-day
+    # expiry like the alert charts. None until the sync finds a match.
+    image_url: str | None = None
     platforms: list[str] = []
     spend: float = 0
     spend_share: float = 0  # share of total creative spend, 0-1
@@ -128,6 +131,14 @@ class AudienceRow(BaseModel):
     engagement_rate: float | None = None
     conversions: float = 0
     cpa: float | None = None
+    # Phase 19 targeting sync (Meta ad sets only) — all None elsewhere.
+    # persona is a deterministic plain-English render of the targeting
+    # spec; pool_size comes from delivery_estimate; saturation is
+    # reach / pool_size (AI-103 latest-snapshot reach), None when either
+    # side is missing.
+    persona: str | None = None
+    pool_size: int | None = None
+    saturation: float | None = None
 
 
 class AudienceMatrixCell(BaseModel):

@@ -9,9 +9,10 @@
  * Expanded = the dossier: how this audience responds vs PB history,
  * plus its frequency trend.
  *
- * v1 scope: NO persona text and NO saturation bar — both wait on the
- * Meta targeting-spec integration. Their structural slots are marked
- * in the Dossier component so v2 drops in without a relayout.
+ * v2 (Phase 19): the dossier's WHO THIS IS persona and SATURATION bar
+ * are live, fed by the Meta targeting-spec sync. Both render only when
+ * the backend has data (persona / saturation non-null) — non-Meta ad
+ * sets keep the v1 layout with the slots invisible.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Users } from "lucide-react";
@@ -51,7 +52,12 @@ import { Card } from "@/components/card";
 import { Eyebrow } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 import { SyncStatus } from "@/components/sync-status";
-import { cn, formatCurrencyCompact, platformLabel } from "@/lib/utils";
+import {
+  cn,
+  formatCurrencyCompact,
+  formatNumberCompact,
+  platformLabel,
+} from "@/lib/utils";
 
 /* ── Per-audience read: status from the primary-KPI quartile ─────── */
 
@@ -198,6 +204,56 @@ function buildDossierRows(
   return rows;
 }
 
+/* ── SaturationBar — how much of the pool the ads have reached ──────
+   The prototype's AUSat bar: fill = saturation, a quiet tick at the 80%
+   guardrail, danger tint once the pool is mostly spent. */
+
+function SaturationBar({
+  saturation,
+  poolSize,
+}: {
+  saturation: number;
+  poolSize: number | null;
+}) {
+  const pct = Math.min(saturation, 1) * 100;
+  const hot = saturation > 0.8;
+  const tone = hot ? "var(--danger)" : "var(--accent)";
+  return (
+    <div className="max-w-[200px]">
+      <div className="relative h-[5px] overflow-hidden rounded-full bg-surface-card">
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${pct}%`, background: tone }}
+        />
+        {/* the 80% guardrail tick */}
+        <div
+          className="absolute bottom-0 top-0 w-px"
+          style={{ left: "80%", background: "var(--text-faint)" }}
+        />
+      </div>
+      <div className="mt-1 flex items-baseline gap-1.5">
+        <span
+          className="tnum font-mono text-[10px] font-bold"
+          style={{ color: tone }}
+        >
+          {Math.round(saturation * 100)}%
+        </span>
+        {poolSize != null && (
+          <span className="font-mono text-[8.5px] text-fg-faint">
+            of {formatNumberCompact(poolSize)} pool reached
+          </span>
+        )}
+      </div>
+      {hot && (
+        <div className="mt-1 font-mono text-[8.5px] text-danger">
+          Most of this pool has already seen the ads: spend here buys
+          repetition, not new people.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Dossier({
   a,
   read,
@@ -278,10 +334,27 @@ function Dossier({
             {platformLabel(a.platform_id)} ad set
           </span>
         </div>
-        {/* WHO THIS IS slot: persona text is v2, pending the Meta
-            targeting-spec integration. This column keeps room for it. */}
-        {/* SATURATION slot: pool penetration bar is v2, pending audience
-            pool sizes from platform targeting specs. */}
+        {/* WHO THIS IS — the persona from the platform targeting spec.
+            Invisible when the sync has nothing (non-Meta ad sets). */}
+        {a.persona != null && (
+          <div>
+            <div className="mb-1 font-mono text-[7.5px] tracking-[0.12em] text-fg-faint">
+              WHO THIS IS · FROM PLATFORM TARGETING
+            </div>
+            <p className="text-xs leading-[1.55] text-fg-secondary">
+              {a.persona}
+            </p>
+          </div>
+        )}
+        {/* SATURATION — pool penetration. Same rule: absent data, no UI. */}
+        {a.saturation != null && (
+          <div>
+            <div className="mb-1.5 font-mono text-[7.5px] tracking-[0.12em] text-fg-faint">
+              SATURATION
+            </div>
+            <SaturationBar saturation={a.saturation} poolSize={a.pool_size} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -578,6 +651,9 @@ export function AudiencesTab({
                           {a.role ? ` · ${a.role}` : ""}
                           {read.freqHot && read.latestFreq != null
                             ? ` · ${formatTimes(read.latestFreq)} frequency`
+                            : ""}
+                          {a.saturation != null
+                            ? ` · ${Math.round(a.saturation * 100)}% saturated`
                             : ""}
                         </div>
                       </div>

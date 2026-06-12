@@ -362,6 +362,10 @@ export interface RotationTrends {
 export interface RotationCreative extends RotationKpis {
   variant: string;
   type: CreativeType;
+  /** Signed GCS URL for the stored ad still (Phase 19 asset sync);
+   *  null until the sync finds a match. Expires after ~7 days, so it is
+   *  rendered, never persisted. */
+  image_url: string | null;
   platforms: string[];
   /** Share of rotation spend, 0–1. */
   spend_share: number;
@@ -426,6 +430,13 @@ export interface MatrixAudience {
   engagement_rate: number | null;
   conversions: number;
   cpa: number | null;
+  /** Plain-English render of the platform targeting spec (Phase 19,
+   *  Meta ad sets only); null elsewhere. */
+  persona: string | null;
+  /** Targetable pool size from the platform's delivery estimate. */
+  pool_size: number | null;
+  /** reach / pool_size, 0–1; null when either side is missing. */
+  saturation: number | null;
 }
 
 export interface AudienceMatrixCell {

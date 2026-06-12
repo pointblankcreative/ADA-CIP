@@ -459,6 +459,123 @@ def _date_key(value) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
+# ── Phase 19 additive lookups (thumbnails, personas, saturation) ──────
+
+
+def _load_variant_images(project_code: str, variants: list[str]) -> dict[str, str]:
+    """variant → signed GCS URL for stored creative_assets rows.
+
+    Best-effort and additive: the table may not exist yet and signing can
+    fail — both degrade to {} so the rotation renders without thumbnails.
+    Rows written before a project_code backfill carry NULL project_code,
+    so those match any project (variants are already project-scoped here).
+    """
+    if not variants:
+        return {}
+    try:
+        rows = bq.run_query(
+            f"""
+            SELECT variant, gcs_path
+            FROM {bq.table('creative_assets')}
+            WHERE status = 'stored'
+              AND gcs_path IS NOT NULL
+              AND variant IN UNNEST(@variants)
+              AND (project_code = @project_code OR project_code IS NULL)
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY variant ORDER BY checked_at DESC
+            ) = 1
+            """,
+            [
+                bq.array_param("variants", "STRING", variants),
+                bq.string_param("project_code", project_code),
+            ],
+        )
+    except Exception as e:
+        logger.warning("creative_assets lookup failed for %s: %s", project_code, e, exc_info=True)
+        return {}
+    if not rows:
+        return {}
+
+    # Lazy import — creative_assets imports this router's helpers, so a
+    # module-level import here would be circular.
+    from backend.services import creative_assets
+
+    urls: dict[str, str] = {}
+    for r in rows:
+        try:
+            url = creative_assets.signed_url(r["gcs_path"])
+        except Exception:
+            logger.warning("Signing failed for %s", r.get("gcs_path"), exc_info=True)
+            url = None
+        if url:
+            urls[r["variant"]] = url
+    return urls
+
+
+def _load_adset_targeting(audience_ids: list[str]) -> dict[str, dict]:
+    """audience_key → {persona, pool_size} from the Phase 19 targeting
+    sync. Best-effort: a missing table just means every persona is None."""
+    if not audience_ids:
+        return {}
+    try:
+        rows = bq.run_query(
+            f"""
+            SELECT audience_key, persona, pool_size
+            FROM {bq.table('adset_targeting')}
+            WHERE audience_key IN UNNEST(@audience_keys)
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY audience_key ORDER BY fetched_at DESC
+            ) = 1
+            """,
+            [bq.array_param("audience_keys", "STRING", audience_ids)],
+        )
+        return {r["audience_key"]: r for r in rows if r.get("audience_key")}
+    except Exception as e:
+        logger.warning("adset_targeting lookup failed: %s", e, exc_info=True)
+        return {}
+
+
+def _load_audience_reach(project_code: str) -> dict[tuple[str, str], int]:
+    """(platform_id, ad_set_name) → reach for the saturation numerator.
+
+    AI-103 semantics, same as frequency in this router: the LATEST
+    snapshot per (platform, campaign, ad_set), then summed across the
+    audience's ad sets. AI-120 platforms never contribute. Best-effort:
+    {} on failure and saturation stays None.
+    """
+    try:
+        rows = bq.run_query(
+            f"""
+            WITH latest AS (
+                SELECT platform_id, campaign_id, ad_set_id, ad_set_name, reach
+                FROM {bq.table('fact_adset_daily')}
+                WHERE project_code = @project_code
+                  AND ad_set_id IS NOT NULL
+                  AND ad_set_name IS NOT NULL
+                  AND reach IS NOT NULL
+                  -- AI-120: StackAdapt R&F excluded pending direct-API supplement
+                  AND platform_id NOT IN UNNEST(@rf_excluded)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY platform_id, campaign_id, ad_set_id
+                    ORDER BY date DESC, loaded_at DESC
+                ) = 1
+            )
+            SELECT platform_id, ad_set_name, SUM(reach) AS reach
+            FROM latest
+            GROUP BY platform_id, ad_set_name
+            """,
+            [bq.string_param("project_code", project_code), _rf_excluded_param()],
+        )
+        return {
+            (r["platform_id"], r.get("ad_set_name") or ""): _int(r.get("reach"))
+            for r in rows
+            if r.get("reach")
+        }
+    except Exception as e:
+        logger.warning("Audience reach lookup failed for %s: %s", project_code, e, exc_info=True)
+        return {}
+
+
 # ── 1. creative rotation ──────────────────────────────────────────────
 
 
@@ -600,6 +717,13 @@ async def get_creative_rotation(
                 ),
             )
         )
+
+    # Phase 19 (additive): signed thumbnail URLs for variants the asset
+    # sync has stored a still for. Missing table / signing failure just
+    # means image_url stays None everywhere.
+    image_urls = _load_variant_images(project_code, [c.variant for c in creatives])
+    for row in creatives:
+        row.image_url = image_urls.get(row.variant)
 
     totals_kpis = _rate_kpis(totals_agg, hook_platforms, engagement_platforms)
     return CreativeRotationResponse(
@@ -976,6 +1100,22 @@ async def get_audience_matrix(project_code: str):
                 cpa=spend / conversions if conversions > 0 else None,
             )
         )
+
+    # ── Phase 19 (additive): persona / pool / saturation ────────────
+    # Both lookups are best-effort and run AFTER the existing queries so
+    # the canned-response call order in older tests is undisturbed.
+    targeting = _load_adset_targeting([a.id for a in audiences])
+    reach_by_adset = _load_audience_reach(project_code)
+    for a in audiences:
+        t = targeting.get(a.id)
+        if t:
+            a.persona = t.get("persona")
+            pool = t.get("pool_size")
+            a.pool_size = int(pool) if pool is not None else None
+        reach = reach_by_adset.get((a.platform_id, a.name))
+        # Null unless both sides exist — a saturation guess helps nobody.
+        if a.pool_size and a.pool_size > 0 and reach:
+            a.saturation = reach / a.pool_size
 
     variant_spend: dict[str, float] = {}
     cells: dict[str, dict[str, AudienceMatrixCell]] = {}

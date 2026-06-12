@@ -68,7 +68,7 @@ jobs:
             --port=8000 \
             --service-account="${{ env.SA_EMAIL }}" \
             --update-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},BIGQUERY_DATASET=cip,SHEETS_SERVICE_ACCOUNT_FILE=/secrets/cip-sheets-reader.json,APP_ENV=${{ needs.determine-environment.outputs.environment }},ENGINE_VERSION=${{ github.sha }}" \
-            --update-secrets="/secrets/cip-sheets-reader.json=cip-sheets-reader-key:latest,SLACK_BOT_TOKEN=cip-slack-bot-token:latest" \
+            --update-secrets="/secrets/cip-sheets-reader.json=cip-sheets-reader-key:latest,SLACK_BOT_TOKEN=cip-slack-bot-token:latest,META_ACCESS_TOKEN=cip-meta-token:latest,STACKADAPT_API_KEY=cip-stackadapt-key:latest" \
             --memory=1Gi \
             --cpu=1 \
             --timeout=300 \

@@ -226,6 +226,31 @@ def run_daily_pipeline() -> dict:
             "error": str(e),
         }
 
+    # ── Stage 1d: Creative assets + audience targeting (Phase 19) ──
+    # Pulls ad stills from Meta/StackAdapt into GCS (creative-assets/) and
+    # renders ad-set targeting specs into plain-English personas. Runs
+    # after 1c so fresh ad-set names are matchable. Best-effort by design:
+    # run_sync never raises, and empty tokens make it a no-op, so this
+    # stage can't take the pipeline down.
+    logger.info("=== Daily Pipeline: Stage 1d — Creative Assets Sync ===")
+    try:
+        from backend.services.creative_assets import run_sync as run_creative_assets_sync
+
+        t1d = time.time()
+        ca_result = run_creative_assets_sync()
+        results["stages"]["creative_assets"] = {
+            "status": "success",
+            "images": ca_result.get("images", {}),
+            "targeting": ca_result.get("targeting", {}),
+            "elapsed_seconds": round(time.time() - t1d, 1),
+        }
+    except Exception as e:
+        logger.warning("Creative assets sync failed (non-critical): %s", e, exc_info=True)
+        results["stages"]["creative_assets"] = {
+            "status": "error",
+            "error": str(e),
+        }
+
     # ── Stage 2: Pacing ─────────────────────────────────────────────
     logger.info("=== Daily Pipeline: Stage 2 — Pacing ===")
     try:
