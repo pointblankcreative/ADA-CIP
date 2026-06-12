@@ -118,17 +118,19 @@ async def daily_run():
 
 
 @router.post("/creative-assets/sync")
-async def api_creative_assets_sync():
+async def api_creative_assets_sync(force: bool = False):
     """Trigger the Phase 19 creative-image + ad-set targeting sync
     (Meta Graph API + StackAdapt GraphQL → GCS / BigQuery).
 
     Also runs inside the daily pipeline (Stage 1d); this endpoint is the
-    manual lever. Returns per-sync counts; no-ops when the platform
-    tokens aren't configured.
+    manual lever. `force=true` retries no_match / fetch_failed image
+    variants past the once-per-day guard (stored images are never
+    refetched). Returns per-sync counts and per-source status; no-ops
+    when the platform tokens aren't configured.
     """
     from backend.services.creative_assets import run_sync
 
-    return run_sync()
+    return run_sync(force=force)
 
 
 @router.get("/data-freshness")

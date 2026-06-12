@@ -1,4 +1,6 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+/** Exported for the few places that build asset URLs (the creative
+ * image proxy returns API-relative paths the UI must absolutize). */
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export async function apiFetch<T>(
   path: string,

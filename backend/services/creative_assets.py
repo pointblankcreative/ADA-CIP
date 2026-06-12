@@ -31,7 +31,7 @@ import logging
 import re
 import time
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 # GCS prefix inside settings.alert_charts_bucket. Objects are private (the
 # bucket enforces Public Access Prevention); reads go through signed URLs.
 ASSETS_PREFIX = "creative-assets/"
-SIGNED_URL_DAYS = 7  # matches the alert-chart URLs
 
 META_GRAPH_BASE = "https://graph.facebook.com"
 META_PLATFORM_ID = "meta"  # fact_digital_daily's platform_id for Meta
@@ -426,8 +425,11 @@ def _download_image(http: httpx.Client, url: str) -> tuple[bytes, str, str] | No
 
 def _store_bytes(data: bytes, object_name: str, content_type: str) -> None:
     """Upload to the shared resources bucket. Objects stay private — the
-    bucket enforces Public Access Prevention — and reads go through
-    ``signed_url`` instead (same posture as the alert charts)."""
+    bucket enforces Public Access Prevention — and reads are served
+    through the backend image proxy with the runtime SA's ordinary
+    storage access (signed URLs needed an IAM signBlob grant the staging
+    SA doesn't hold, and the proxy removes that failure mode plus URL
+    expiry entirely)."""
     from google.cloud import storage
 
     client = storage.Client(project=settings.gcp_project_id)
@@ -436,44 +438,26 @@ def _store_bytes(data: bytes, object_name: str, content_type: str) -> None:
     blob.upload_from_string(data, content_type=content_type)
 
 
-def signed_url(object_name: str, expiry_days: int = SIGNED_URL_DAYS) -> str | None:
-    """V4 signed GET URL for an object in the shared resources bucket.
+def read_bytes(object_name: str) -> tuple[bytes, str] | None:
+    """Download one stored asset for the image proxy endpoint.
 
-    Same signing approach as alert_charts._upload_png: the bucket enforces
-    Public Access Prevention so objects stay private, and Cloud Run's
-    runtime SA has no local key, so signing goes through the IAM signBlob
-    API (the SA needs roles/iam.serviceAccountTokenCreator on itself).
-    7-day expiry matches the chart URLs. Best-effort: None on any failure.
+    Returns (bytes, content_type), or None when the object is missing
+    or unreadable. Best-effort by design: the Creative tab renders its
+    placeholder frame when a thumbnail can't be served.
     """
     bucket_name = settings.alert_charts_bucket
     if not bucket_name or not object_name:
         return None
-
-    import google.auth
-    from google.auth.transport import requests as ga_requests
     from google.cloud import storage
 
     try:
         client = storage.Client(project=settings.gcp_project_id)
         blob = client.bucket(bucket_name).blob(object_name)
-
-        creds = getattr(client, "_credentials", None)
-        if creds is None:
-            creds, _ = google.auth.default()
-        try:
-            creds.refresh(ga_requests.Request())
-        except Exception:
-            pass
-
-        return blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(days=expiry_days),
-            method="GET",
-            service_account_email=getattr(creds, "service_account_email", None),
-            access_token=getattr(creds, "token", None),
-        )
+        data = blob.download_as_bytes()
+        content_type = blob.content_type or "image/jpeg"
+        return data, content_type
     except Exception:
-        logger.warning("Signed URL generation failed for %s", object_name, exc_info=True)
+        logger.warning("Asset read failed for %s", object_name, exc_info=True)
         return None
 
 
@@ -710,21 +694,32 @@ def _store_variant_image(
             logger.warning("Ledger write failed for variant %s", variant, exc_info=True)
 
 
-def sync_creative_images(deadline: _Deadline | None = None) -> dict:
+def sync_creative_images(
+    deadline: _Deadline | None = None,
+    force: bool = False,
+) -> dict:
     """Find and store stills for creative variants that lack one.
 
     Meta first, then StackAdapt for whatever's left. Matches are stored
     the moment they're found; `no_match` is only recorded when BOTH
-    sources were fully scanned inside the budget — running out of time
-    must not look like "this creative doesn't exist on the platforms".
-    Counts come back for the admin endpoint; failures are logged per
-    item and never raise.
+    sources were fully scanned inside the budget AND neither source
+    failed — running out of time or a broken source must not look like
+    "this creative doesn't exist on the platforms". `force` retries
+    no_match / fetch_failed variants regardless of the daily guard
+    (stored variants are never refetched). Counts and per-source status
+    come back for the admin endpoint; failures are logged per item and
+    never raise.
     """
     deadline = deadline or _Deadline.in_secs(SYNC_TIME_BUDGET_SECS)
+    sources = {
+        "meta": "ok" if settings.meta_access_token else "skipped",
+        "stackadapt": "ok" if settings.stackadapt_api_key else "skipped",
+    }
     if not settings.meta_access_token and not settings.stackadapt_api_key:
         logger.info("Creative image sync skipped — no platform tokens configured")
         return {
             "status": "skipped", "reason": "no_tokens", "complete": True,
+            "sources": sources,
             "pending": 0, "stored": 0, "no_match": 0, "fetch_failed": 0,
         }
 
@@ -738,18 +733,28 @@ def sync_creative_images(deadline: _Deadline | None = None) -> dict:
                 ad_name_to_variant.setdefault(ad_name, (variant, project_code))
     except Exception:
         logger.warning("Creative image sync: variant enumeration failed", exc_info=True)
-        return {"status": "error", "complete": False, "pending": 0, **counts}
+        return {
+            "status": "error", "complete": False, "sources": sources,
+            "pending": 0, **counts,
+        }
 
     states = _asset_states()
     now = datetime.now(timezone.utc)
     pending: dict[str, str] = {}  # variant → project_code
     for variant, project_code in ad_name_to_variant.values():
-        if variant not in pending and _needs_attempt(states.get(variant), now):
+        if variant in pending:
+            continue
+        state = states.get(variant)
+        if force:
+            wanted = not (state and state.get("status") == "stored" and state.get("gcs_path"))
+        else:
+            wanted = _needs_attempt(state, now)
+        if wanted:
             pending[variant] = project_code
 
     if not pending:
         return {
-            "status": "success", "complete": True,
+            "status": "success", "complete": True, "sources": sources,
             "pending": 0, **counts,
         }
 
@@ -782,8 +787,12 @@ def sync_creative_images(deadline: _Deadline | None = None) -> dict:
                                 )
                     except Exception:
                         logger.warning("Meta ads listing failed for %s", account_id, exc_info=True)
+                        sources["meta"] = "failed"
+                        scanned_all = False
             except Exception:
                 logger.warning("Meta ad account enumeration failed", exc_info=True)
+                sources["meta"] = "failed"
+                scanned_all = False
 
         if settings.stackadapt_api_key and remaining:
             if deadline.exceeded():
@@ -811,6 +820,8 @@ def sync_creative_images(deadline: _Deadline | None = None) -> dict:
                         )
                 except Exception:
                     logger.warning("StackAdapt creative listing failed", exc_info=True)
+                    sources["stackadapt"] = "failed"
+                    scanned_all = False
 
         # ── no_match — only when the scan actually finished ─────────
         if scanned_all and not deadline.exceeded():
@@ -822,13 +833,15 @@ def sync_creative_images(deadline: _Deadline | None = None) -> dict:
                     logger.warning("Ledger write failed for variant %s", variant, exc_info=True)
         elif remaining:
             logger.info(
-                "Creative image sync out of budget with %d variants unscanned — "
-                "they stay pending for the next run", len(remaining),
+                "Creative image sync stopped with %d variants unresolved "
+                "(budget or source failure) — they stay pending for the "
+                "next run", len(remaining),
             )
 
     return {
         "status": "success",
         "complete": scanned_all and not deadline.exceeded(),
+        "sources": sources,
         "pending": len(pending),
         **counts,
     }
@@ -931,17 +944,21 @@ def sync_adset_targeting(deadline: _Deadline | None = None) -> dict:
 # ── orchestration ──────────────────────────────────────────────────────
 
 
-def run_sync(budget_secs: float = SYNC_TIME_BUDGET_SECS) -> dict:
+def run_sync(
+    budget_secs: float = SYNC_TIME_BUDGET_SECS,
+    force: bool = False,
+) -> dict:
     """Run both Phase 19 syncs inside one time budget. Images get the
     first ~55%, targeting runs to the end of the full budget — both
     report complete=False when they ran out of road, and repeated runs
-    converge. Never raises: the daily pipeline and the admin endpoint
-    both treat this as best-effort."""
+    converge. `force` retries no_match/fetch_failed image variants past
+    the daily guard. Never raises: the daily pipeline and the admin
+    endpoint both treat this as best-effort."""
     started = time.monotonic()
     image_deadline = _Deadline(started + budget_secs * 0.55)
     full_deadline = _Deadline(started + budget_secs)
     try:
-        images = sync_creative_images(image_deadline)
+        images = sync_creative_images(image_deadline, force=force)
     except Exception as e:
         logger.error("Creative image sync crashed: %s", e, exc_info=True)
         images = {"status": "error", "error": str(e)}

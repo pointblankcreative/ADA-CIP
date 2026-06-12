@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Layers, Pencil, Plug } from "lucide-react";
 import {
   api,
+  API_BASE,
   type AdPerformanceResponse,
   type AudienceMatrixResponse,
   type BenchmarkResponse,
@@ -384,7 +385,16 @@ function RotationCard({
         {/* The still from the asset sync, when stored; the abstract
             glyph frame otherwise. The VIDEO/STATIC chip stays overlaid
             either way. */}
-        <ThumbFrame type={cr.type} height={104} imageUrl={cr.image_url} />
+        <ThumbFrame
+          type={cr.type}
+          height={104}
+          imageUrl={
+            /* The proxy returns an API-relative path; absolutize it. */
+            cr.image_url && cr.image_url.startsWith("/")
+              ? `${API_BASE}${cr.image_url}`
+              : cr.image_url
+          }
+        />
         <div className="mt-3 flex items-center justify-between gap-2.5">
           <AliasName name={cr.variant} onRename={(v) => onRename(cr.variant, v)} />
           <CreativeVerdictChip verdict={j.verdict} />

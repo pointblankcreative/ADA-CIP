@@ -542,19 +542,20 @@ class TestRotationImageUrl:
             asset_rows,
         ]
 
-    def test_image_url_signed_when_asset_row_exists(self):
+    def test_image_url_is_proxy_path_when_asset_row_exists(self):
+        """Phase 19 follow-up: images serve through the API's own proxy
+        (the bucket blocks public access and signed URLs needed an IAM
+        grant the staging SA doesn't hold)."""
         rec = QueryRecorder()
         rec.responses = self._responses(
             [{"variant": "Hero Video", "gcs_path": f"creative-assets/{HERO_SHA1}.jpg"}]
         )
-        with patch.object(ca, "signed_url",
-                          side_effect=lambda p: f"https://signed/{p}"):
-            resp = _get(rec, "/api/projects/26018/creative/rotation")
+        resp = _get(rec, "/api/projects/26018/creative/rotation")
         assert resp.status_code == 200, resp.text
         rows = {c["variant"]: c for c in resp.json()["creatives"]}
 
         assert rows["Hero Video"]["image_url"] == (
-            f"https://signed/creative-assets/{HERO_SHA1}.jpg"
+            "/api/projects/creative-assets/image?variant=Hero%20Video"
         )
         # No stored asset → null, never a guessed URL.
         assert rows["Static Banner"]["image_url"] is None
@@ -652,3 +653,114 @@ class TestAudienceEnrichment:
         members = {a["name"]: a for a in resp.json()["audiences"]}["Members EN"]
         assert members["pool_size"] == 1_000_000
         assert members["saturation"] is None
+
+
+class TestImageSyncResilience:
+    """Phase 19 follow-ups: force retries, source-failure honesty, and
+    the image proxy endpoint that replaced signed URLs."""
+
+    def test_force_retries_no_match_past_the_daily_guard(self, monkeypatch):
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [{
+            "variant": HERO_VARIANT, "status": "no_match",
+            "gcs_path": None, "checked_at": datetime.now(timezone.utc),
+        }])
+        ads = [{
+            "name": HERO_AD_NAME,
+            "creative": {"image_url": "https://cdn.meta/full.jpg"},
+        }]
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=ads),
+            patch.object(ca, "_download_image",
+                         return_value=(b"IMG", "jpg", "image/jpeg")),
+            patch.object(ca, "_store_bytes", return_value=None),
+        ):
+            # Without force: attempted today already, nothing pending.
+            guarded = ca.sync_creative_images()
+            # With force: the no_match row is retried and stores.
+            # (Re-prime the recorder — each sync call consumes the four
+            # canned BQ reads.)
+            _image_sync_responses(rec, [{
+                "variant": HERO_VARIANT, "status": "no_match",
+                "gcs_path": None, "checked_at": datetime.now(timezone.utc),
+            }])
+            forced = ca.sync_creative_images(force=True)
+
+        assert guarded["pending"] == 0
+        assert forced["pending"] == 1
+        assert forced["stored"] == 1
+
+    def test_force_never_refetches_stored_variants(self, monkeypatch):
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [{
+            "variant": HERO_VARIANT, "status": "stored",
+            "gcs_path": "creative-assets/x.jpg",
+            "checked_at": datetime.now(timezone.utc) - timedelta(days=30),
+        }])
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=[]),
+        ):
+            result = ca.sync_creative_images(force=True)
+        assert result["pending"] == 0
+        assert result["complete"] is True
+
+    def test_source_failure_blocks_no_match_and_is_reported(self, monkeypatch):
+        """A broken source scan must not look like "this creative doesn't
+        exist": no no_match rows, complete=False, source flagged."""
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [])
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts",
+                         side_effect=RuntimeError("graph down")),
+        ):
+            result = ca.sync_creative_images()
+        assert result["status"] == "success"
+        assert result["complete"] is False
+        assert result["sources"]["meta"] == "failed"
+        assert result["no_match"] == 0
+        # No ledger MERGE happened — the 4 reads are the only BQ calls.
+        assert all("MERGE" not in sql for sql, _ in rec.calls)
+
+
+class TestImageProxyEndpoint:
+    def test_serves_stored_image_with_cache_headers(self):
+        rec = QueryRecorder()
+        rec.responses = [[{"gcs_path": "creative-assets/abc.jpg"}]]
+        with patch.object(ca, "read_bytes", return_value=(b"IMGBYTES", "image/jpeg")):
+            resp = _get(
+                rec,
+                "/api/projects/creative-assets/image?variant=Hero%20Video",
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.content == b"IMGBYTES"
+        assert resp.headers["content-type"].startswith("image/jpeg")
+        assert resp.headers["cache-control"] == "public, max-age=86400"
+
+    def test_404_when_variant_has_no_stored_asset(self):
+        rec = QueryRecorder()
+        rec.responses = [[]]
+        resp = _get(
+            rec, "/api/projects/creative-assets/image?variant=Nope"
+        )
+        assert resp.status_code == 404
+
+    def test_404_when_object_unreadable(self):
+        rec = QueryRecorder()
+        rec.responses = [[{"gcs_path": "creative-assets/abc.jpg"}]]
+        with patch.object(ca, "read_bytes", return_value=None):
+            resp = _get(
+                rec,
+                "/api/projects/creative-assets/image?variant=Hero%20Video",
+            )
+        assert resp.status_code == 404

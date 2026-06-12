@@ -32,8 +32,9 @@ always survive the guard.
 import logging
 import re
 from datetime import date, timedelta
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from google.cloud import exceptions as gcp_exceptions
 
 from backend.models.creative import (
@@ -463,12 +464,16 @@ def _date_key(value) -> str:
 
 
 def _load_variant_images(project_code: str, variants: list[str]) -> dict[str, str]:
-    """variant → signed GCS URL for stored creative_assets rows.
+    """variant → image-proxy path for stored creative_assets rows.
 
-    Best-effort and additive: the table may not exist yet and signing can
-    fail — both degrade to {} so the rotation renders without thumbnails.
-    Rows written before a project_code backfill carry NULL project_code,
-    so those match any project (variants are already project-scoped here).
+    The bucket enforces Public Access Prevention and signed URLs need an
+    IAM signBlob grant the runtime SA doesn't reliably hold, so images
+    are served through this API's own proxy endpoint instead: a relative
+    path the frontend prefixes with its API base. Best-effort and
+    additive: a missing table degrades to {} and the rotation renders
+    without thumbnails. Rows written before a project_code backfill
+    carry NULL project_code, so those match any project (variants are
+    already project-scoped here).
     """
     if not variants:
         return {}
@@ -493,23 +498,52 @@ def _load_variant_images(project_code: str, variants: list[str]) -> dict[str, st
     except Exception as e:
         logger.warning("creative_assets lookup failed for %s: %s", project_code, e, exc_info=True)
         return {}
+    return {
+        r["variant"]: "/api/projects/creative-assets/image?variant=" + quote(r["variant"])
+        for r in rows
+        if r.get("variant") and r.get("gcs_path")
+    }
+
+
+@router.get("/creative-assets/image")
+async def get_creative_asset_image(variant: str = Query(...)):
+    """Serve one stored creative still from GCS through the API.
+
+    Replaces signed GCS URLs: the runtime SA reads the private object
+    directly, the browser caches the response, and nothing expires.
+    404 when the variant has no stored asset.
+    """
+    try:
+        rows = bq.run_query(
+            f"""
+            SELECT gcs_path
+            FROM {bq.table('creative_assets')}
+            WHERE status = 'stored'
+              AND gcs_path IS NOT NULL
+              AND variant = @variant
+            QUALIFY ROW_NUMBER() OVER (ORDER BY checked_at DESC) = 1
+            """,
+            [bq.string_param("variant", variant)],
+        )
+    except Exception as e:
+        logger.warning("creative_assets image lookup failed: %s", e, exc_info=True)
+        rows = []
     if not rows:
-        return {}
+        raise HTTPException(status_code=404, detail="No stored image for this creative")
 
     # Lazy import — creative_assets imports this router's helpers, so a
     # module-level import here would be circular.
     from backend.services import creative_assets
 
-    urls: dict[str, str] = {}
-    for r in rows:
-        try:
-            url = creative_assets.signed_url(r["gcs_path"])
-        except Exception:
-            logger.warning("Signing failed for %s", r.get("gcs_path"), exc_info=True)
-            url = None
-        if url:
-            urls[r["variant"]] = url
-    return urls
+    asset = creative_assets.read_bytes(rows[0]["gcs_path"])
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Stored image is unreadable")
+    data, content_type = asset
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 def _load_adset_targeting(audience_ids: list[str]) -> dict[str, dict]:
