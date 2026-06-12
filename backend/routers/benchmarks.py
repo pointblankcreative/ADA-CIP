@@ -178,27 +178,60 @@ def _pb_history_quartiles(objective: str) -> dict[str, BenchmarkValue]:
     return result
 
 
+# Mixed campaigns judge attention metrics against awareness history and
+# cost/result metrics against conversion history. When BOTH objective
+# sets carry the same metric, the preferred side wins (Phase 14 fix:
+# mixed projects previously matched objective_type = 'mixed', which has
+# no seeded rows, so they got no benchmarks at all and the Creative and
+# Audiences tabs read NO BENCHMARK everywhere).
+_AWARENESS_PREFERRED_METRICS = {
+    "vcr", "hook_rate", "engagement_rate", "cpm", "frequency", "cpcv",
+}
+
+
+def _mixed_pref_rank(metric_name: str, objective_type: str) -> int:
+    """0 = the preferred source objective for this metric, 1 = fallback."""
+    prefers_awareness = metric_name in _AWARENESS_PREFERRED_METRICS
+    return 0 if (objective_type == "awareness") == prefers_awareness else 1
+
+
 @router.get("/{project_code}", response_model=BenchmarkResponse)
 async def get_benchmarks(project_code: str):
     objective = _detect_project_objective(project_code)
+    source_objectives = (
+        ["awareness", "conversion"] if objective == "mixed" else [objective]
+    )
 
     sql = f"""
         SELECT
             benchmark_id, scope, platform_id, metric_name, metric_unit,
-            p25, p50, p75, sample_size, source, notes
+            p25, p50, p75, sample_size, source, notes, objective_type
         FROM {bq.table('benchmarks')}
         WHERE benchmark_type = 'industry'
-          AND objective_type = @objective
+          AND objective_type IN UNNEST(@objectives)
           AND (valid_to IS NULL OR valid_to >= CURRENT_DATE())
         ORDER BY
             CASE WHEN platform_id IS NULL THEN 0 ELSE 1 END,
             scope, metric_name
     """
     try:
-        rows = bq.run_query(sql, [bq.string_param("objective", objective)])
+        rows = bq.run_query(
+            sql, [bq.array_param("objectives", "STRING", source_objectives)]
+        )
     except Exception:
         logger.warning("Failed to query benchmarks for %s (objective=%s)", project_code, objective, exc_info=True)
         rows = []
+
+    if objective == "mixed":
+        # Stable sort: preferred objective first per metric; the
+        # first-wins fill below then keeps the right source. SQL order
+        # is preserved within each rank.
+        rows = sorted(
+            rows,
+            key=lambda r: _mixed_pref_rank(
+                r.get("metric_name", ""), r.get("objective_type", "")
+            ),
+        )
 
     cross_platform: dict[str, BenchmarkValue] = {}
     platform_specific: dict[str, dict[str, BenchmarkValue]] = {}
@@ -228,7 +261,15 @@ async def get_benchmarks(project_code: str):
 
     # Phase 14: hook_rate / engagement_rate quartiles from PB campaign
     # history. Additive only — a seeded table row for either metric wins.
-    for metric, bv in _pb_history_quartiles(objective).items():
+    # Mixed projects take the awareness-history read first (hook and
+    # engagement are attention metrics), conversion history as fallback.
+    if objective == "mixed":
+        history = _pb_history_quartiles("awareness")
+        for metric, bv in _pb_history_quartiles("conversion").items():
+            history.setdefault(metric, bv)
+    else:
+        history = _pb_history_quartiles(objective)
+    for metric, bv in history.items():
         cross_platform.setdefault(metric, bv)
 
     return BenchmarkResponse(

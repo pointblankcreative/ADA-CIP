@@ -644,8 +644,11 @@ function ReportTile({
 }
 
 const SCALE_METRIC_NOTE = (
-  <span className="font-mono text-[8.5px] tracking-[0.1em] text-fg-faint">
-    SCALE METRIC · NO BENCHMARK
+  <span
+    className="font-mono text-[8.5px] tracking-[0.1em] text-fg-faint"
+    title="Scale metrics measure size, not quality: no benchmark applies"
+  >
+    SCALE METRIC
   </span>
 );
 

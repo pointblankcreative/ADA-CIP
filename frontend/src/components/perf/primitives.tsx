@@ -41,6 +41,8 @@ export function QuartileBar({
 }) {
   const q = quartileRead(value, bench);
   if (!q) {
+    /* Quiet, not loud: a missing benchmark is a footnote, not a state
+       worth shouting about on every row (it spammed mixed campaigns). */
     return (
       <span
         className={cn(
@@ -48,8 +50,9 @@ export function QuartileBar({
           className
         )}
         style={{ width }}
+        title="No PB-history benchmark for this metric yet"
       >
-        NO BENCHMARK
+        —
       </span>
     );
   }
@@ -124,12 +127,15 @@ export function VerdictWord({
 }) {
   const q = quartileRead(value, bench);
   if (!q) {
+    /* Same quieting as QuartileBar: benchmarks explain, their absence
+       shouldn't dominate the page. */
     return (
       <span
         className={cn("font-mono tracking-[0.1em] text-fg-faint", className)}
         style={{ fontSize: size }}
+        title="No PB-history benchmark for this metric yet"
       >
-        NO BENCHMARK
+        —
       </span>
     );
   }
@@ -462,7 +468,7 @@ export function MatrixCell({
           color: fatigued ? "var(--danger)" : q?.color ?? "var(--text-faint)",
         }}
       >
-        {fatigued ? "FATIGUED HERE" : q?.word ?? "NO BENCHMARK"}
+        {fatigued ? "FATIGUED HERE" : q?.word ?? ""}
       </div>
       {spend != null && (
         <div className="mt-[3px] font-mono text-[7.5px] text-fg-faint">

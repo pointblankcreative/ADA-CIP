@@ -95,7 +95,10 @@ function readAudience(
   else if (read.rank === 0) status = "ACT";
   else if (read.rank === 1) status = "WATCH";
   else status = "STRONG";
-  if (freqHot && status === "STRONG") status = "WATCH";
+  // Hot frequency is actionable on its own, benchmark or not.
+  if (freqHot && (status === "STRONG" || status === "NO DATA")) {
+    status = "WATCH";
+  }
 
   let hookNum = 0;
   let hookDen = 0;
@@ -108,7 +111,9 @@ function readAudience(
 
   return {
     status,
-    needsDecision: status !== "STRONG",
+    /* NO DATA is an unknown, not a decision: counting it inflated the
+       hero ("8 need a decision") on campaigns with no benchmarks yet. */
+    needsDecision: status === "WATCH" || status === "ACT",
     latestFreq,
     freqHot,
     hookRate: hookDen > 0 ? hookNum / hookDen : null,
@@ -417,7 +422,10 @@ export function AudiencesTab({
     const ib = judged.findIndex((j) => j.creative.variant === b);
     return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
   });
-  const cols = `minmax(0,1.25fr) repeat(${columns.length}, minmax(96px, 110px)) 92px`;
+  /* First track needs a floor: at minmax(0,…) the audience-label column
+     collapsed under 12 creative columns and the corner label overlapped
+     the first header. */
+  const cols = `minmax(190px,1.25fr) repeat(${columns.length}, minmax(96px, 110px)) 92px`;
   const needCount = audiences.filter((a) => reads.get(a.id)?.needsDecision)
     .length;
 

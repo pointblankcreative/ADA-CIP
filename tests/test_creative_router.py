@@ -703,6 +703,63 @@ def test_benchmarks_seeded_rows_win_over_computed():
     assert hook["source"] == "cross_client"
 
 
+def test_benchmarks_mixed_objective_merges_both_sets():
+    """Mixed projects previously matched objective_type = 'mixed' (no
+    seeded rows exist) and got NO benchmarks at all. They now merge both
+    sets: attention metrics from awareness history, cost/result metrics
+    from conversion history, conversion preferred on the overlap."""
+    awr_ctr = dict(
+        EXISTING_CTR_ROW,
+        benchmark_id="ind_xplat_awr_ctr", objective_type="awareness",
+    )
+    conv_ctr = dict(
+        EXISTING_CTR_ROW,
+        benchmark_id="ind_xplat_conv_ctr", objective_type="conversion",
+        p25=0.004, p50=0.006, p75=0.009,
+    )
+    conv_cpa = dict(
+        EXISTING_CTR_ROW,
+        benchmark_id="ind_xplat_conv_cpa", metric_name="cpa",
+        metric_unit="cad", objective_type="conversion",
+        p25=12.0, p50=8.0, p75=5.0,
+    )
+    awr_vcr = dict(
+        EXISTING_CTR_ROW,
+        benchmark_id="ind_xplat_awr_vcr", metric_name="vcr",
+        objective_type="awareness", p25=0.1, p50=0.2, p75=0.3,
+    )
+    rec = QueryRecorder()
+    rec.responses = [
+        [],  # media-plan objectives
+        [    # distinct campaigns → one awareness + one conversion = mixed
+            {"campaign_name": "Awareness Video", "platform_id": "meta"},
+            {"campaign_name": "Lead Gen Conversion", "platform_id": "meta"},
+        ],
+        [awr_ctr, conv_ctr, conv_cpa, awr_vcr],  # both objective sets
+        [],  # PB history (awareness pass)
+        [],  # PB history (conversion pass)
+    ]
+    resp = _get(bench_router, rec, "/api/benchmarks/26018")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["objective_type"] == "mixed"
+    # Cost metric arrives from the conversion set.
+    assert body["benchmarks"]["cpa"]["p50"] == 8.0
+    # Attention metric arrives from the awareness set.
+    assert body["benchmarks"]["vcr"]["p50"] == 0.2
+    # Overlapping metric: conversion preferred (ctr is a cost-side read
+    # on a results-bought campaign).
+    assert body["benchmarks"]["ctr"]["benchmark_id"] == "ind_xplat_conv_ctr"
+
+    # The table query asks for both objective sets in one pass.
+    sql, params = rec.calls[2]
+    assert "IN UNNEST(@objectives)" in sql
+    assert (
+        "array", "objectives", "STRING", ["awareness", "conversion"],
+    ) in params
+
+
 def test_benchmarks_min_sample_gate_omits_thin_quartiles():
     history = [
         _history_campaign("Awareness A", 100_000, 10_000, 0),

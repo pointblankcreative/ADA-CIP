@@ -389,8 +389,17 @@ export function buildCreativeCall(judged: JudgedCreative[]): CreativeCall {
   const scale = judged.filter((j) => j.verdict === "SCALE");
   const refresh = judged.filter((j) => j.verdict === "REFRESH");
   const hold = judged.filter((j) => j.verdict === "HOLD");
-  const name = (j: JudgedCreative) => j.creative.variant;
-  const list = (js: JudgedCreative[]) => js.map(name).join(" and ");
+  /* Variant names are raw ad names until someone sets aliases, and a
+     12-creative rotation read as a run-on sentence of full system names.
+     Strip the project-code prefix, and above two names per group, switch
+     to counts: the cards below carry the specifics. */
+  const name = (j: JudgedCreative) =>
+    j.creative.variant.replace(/^\d{4,6}\s*[-·:]?\s*/, "").trim() ||
+    j.creative.variant;
+  const list = (js: JudgedCreative[]) =>
+    js.length > 2
+      ? `${js.length} creatives`
+      : js.map(name).join(" and ");
 
   if (judged.length === 1) {
     const j = judged[0];
@@ -414,18 +423,24 @@ export function buildCreativeCall(judged: JudgedCreative[]): CreativeCall {
 
   const parts: string[] = [];
   if (scale.length > 0) {
-    parts.push(`${list(scale)} earns the next dollar.`);
+    parts.push(
+      `${list(scale)} ${scale.length > 1 ? "earn" : "earns"} the next dollar.`
+    );
   }
   if (refresh.length > 0) {
     parts.push(
-      `${list(refresh)} is fatigued and getting pricier by the sync: swap it.`
+      refresh.length > 1
+        ? `${list(refresh)} are fatigued and getting pricier by the sync: swap them.`
+        : `${list(refresh)} is fatigued and getting pricier by the sync: swap it.`
     );
   }
   if (hold.length > 0) {
-    parts.push(`${list(hold)} holds.`);
+    parts.push(`${list(hold)} ${hold.length > 1 ? "hold" : "holds"}.`);
   }
   if (early.length > 0) {
-    parts.push(`${list(early)} is too new to judge.`);
+    parts.push(
+      `${list(early)} ${early.length > 1 ? "are" : "is"} too new to judge.`
+    );
   }
   const body = parts.join(" ");
 
@@ -433,7 +448,11 @@ export function buildCreativeCall(judged: JudgedCreative[]): CreativeCall {
     return { headline: "Scale one. Swap one.", body };
   }
   if (refresh.length > 0) {
-    return { headline: "Swap the tired one.", body };
+    return {
+      headline:
+        refresh.length > 1 ? "Swap the tired ones." : "Swap the tired one.",
+      body,
+    };
   }
   if (scale.length > 0) {
     return { headline: "Feed the leader.", body };
