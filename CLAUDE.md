@@ -4,63 +4,42 @@
 
 Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Looker. Centralises campaign monitoring, budget pacing, automated reporting, and client-facing dashboards for a political advertising agency running 5-15 concurrent campaigns across Meta, Google Ads, LinkedIn, StackAdapt, TikTok, Snapchat, and Perion/Hivestack (DOOH).
 
-## Section 2: Current Status (Updated 2026-04-20)
+## Section 2: Current Status (Updated 2026-06-12)
 
-**Phase:** Phase 2 (Brightwater) — building out features to make CIP compelling for team adoption.
+**Phase:** Full UI overhaul SHIPPED TO STAGING (Claude Design exports 01-03 implemented), including the Creative/Audiences redesign and the Meta/StackAdapt creative-asset integration. **Production branch is substantially behind** — promote `main → production` once Frazer signs off staging.
 
-### Deployed to Staging + Production (as of 2026-04-20)
-- Core data pipeline: Funnel.io → BigQuery transformation for all 8 platforms
-- GA4 sessions/conversions ingestion and URL management
-- Admin panel: project management, pipeline controls, media plan sync
-- Performance dashboard: daily metrics, budget pacing, platform breakdown, ad set & ad drill-downs
-- Industry benchmarks (political advertising baselines)
-- Reach/frequency ingestion from ad-set-level Funnel.io data
-- Creative variant aliases with nullable platform_id
-- Media plan sync: budget-based tab filtering, non-destructive matching, dedup fix, audience_name override persistence across re-syncs, per-line flight date parsing, retry on _delete_old_versions (3× with backoff)
-- Pacing engine: per-line flight date spend attribution, 2-day grace period for new flights, completed flight UI treatment, stale line_id auto-purge on every pacing run
-- All media_plan_lines queries protected with ROW_NUMBER dedup CTE (pacing router, pacing service, performance router, benchmarks router, diagnostic engine)
-- Oscilloscope pacing health visualization with pending-line handling
-- Overview page: recently ended section, budget bar uses utilization color
-- Objective-based KPI classification (awareness/conversion/mixed) with reach/freq endpoint
-- Cross-region BigQuery fix for adset transform
-- Dual-URL CORS fix for Cloud Run new URL format
-- Google Drive sharing instructions for media plan setup
-- **Diagnostic Signal Engine — Persuasion:** Distribution (D1-D4) + Attention (A1-A5) + Resonance (R1-R3) all live. R2 guard-fails pending Phase 3 earned-impression connectors.
-- **Diagnostic Signal Engine — Conversion:** Acquisition (C1-C3) + Funnel (F1-F5) live. Quality (Q1-Q3) **deferred** pending per-client CRM integration — weight redistributed to Acq 0.43 / Funnel 0.57. See `docs/diagnostics/quality-pillar-deferred.md`.
-- **Diagnostic Signal Engine — Mixed campaigns:** Engine + queries + tests + frontend dual-health-card rendering **shipped to main + production** (Build Plan §12). Per-line classification, dual DiagnosticOutput, per-subset pacing.
-- **Engine resilience:** `_query_platform_metrics_by_type` / `_query_daily_metrics_by_type` now fall back to `campaign_name` when `campaign_objective` is NULL (mirrors adset path). Regression test `test_null_campaign_objective_falls_back_to_campaign_name` locks it in.
-- **Transformation regression fix (2026-04-20):** `campaign_objective` column was NULL for Meta rows from 2026-04-07+ due to a deploy gap (production branch predated commit `0a6cd71`). Fixed by merging `main → production` + running full-mode backfill. Verified `null_obj = 0` for Meta rows 2026-04-01 → 2026-04-16. See `05-Internal Projects--00002-ADA/meta-campaign-objective-regression-2026-04-17.md`.
+### Shipped 2026-06-11 → 06-12 (main/staging)
+- **Design system:** PB tokens (light default, dark-ready), Folsom/Inter/Chivo Mono via next/font (font variables MUST stay on `<html>`, not `<body>`), semantic Tailwind mapping, favicon set.
+- **Shell + Flightdeck:** top bar + ⌘K palette replace the sidebar; Flightdeck replaces Overview at `/` (portfolio pulse, attention list, flight rows, Signals orbit for active campaigns).
+- **Project tabs:** Summary · Pacing · Creative · Audiences · Diagnostics (Settings behind the gear; legacy `?tab=performance` → creative). Summary is verdict-first (`lib/flight.ts`).
+- **Pacing:** orbit instrument ("lines in flight", opt-in audio), envelope history chart.
+- **Diagnostics:** Triage Board (ACT NOW / KEEP AN EYE ON / HEALTHY / NOT REPORTING); engine copy rewritten in plain language with platform display labels (`shared/normalization.platform_label` — keep in sync with frontend `platformLabel`); layered evidence (plain meaning → curated facts → raw tree); per-signal alert banners deduped against board cards; band-zone gauges (`band-scale.tsx`: 70+ is the goal, not 100).
+- **Creative tab ("Call Sheet"):** rule-generated verdicts in `lib/creative.ts` (SCALE/HOLD/REFRESH/EARLY; awareness ranks on completion rate, conversion/mixed on CPA — deliberately NOT CPCV, clients see rates); rotation cards with attention funnels + 8-day sparklines; creative×platform matrix with KPI lenses (incl. CPM); reporting strip; GA4 after-the-click; long-tables drawer; alias rename; real thumbnails.
+- **Audiences tab ("Electorate"):** audience×creative matrix with lenses; dossiers (response stack vs PB-history quartiles, frequency trend, Meta personas, saturation slots).
+- **Backend (Phase 14):** `routers/creative.py` — rotation (`window=flight|7d`), creative/matrix, audiences/matrix; benchmarks extended with hook_rate/engagement_rate quartiles; mixed projects get MERGED awareness+conversion benchmark sets (per-metric preference). 1,000-impression honesty guards throughout.
+- **Creative assets (Phase 19):** `services/creative_assets.py` — time-budgeted sync (240s, store-as-you-scan, per-source status, `POST /api/admin/creative-assets/sync?force=true`); Meta images fetched ONCE → GCS (`creative-assets/` in the alert-charts bucket) → served via the backend image proxy `/api/projects/creative-assets/image?variant=` (signed URLs abandoned — SA lacks signBlob); Meta targeting specs → deterministic personas + delivery-estimate pool sizes in `cip.adset_targeting`; daily pipeline Stage 1d. Secrets `cip-meta-token`/`cip-stackadapt-key` → env `META_ACCESS_TOKEN`/`STACKADAPT_API_KEY` (runtime SA needed per-secret secretAccessor grants).
+- **Slack alerts:** Block Kit redesign, verdict-word headlines, brand severity colours; alert acknowledge with IAP user + optional note (`ack_note`); twice-daily sync countdown in UI (2:30 AM/PM America/Vancouver).
 
-### What Needs Doing Next
+### Open items
+- **StackAdapt creative matching:** ~7 `no_match` statics — SA creative-library names ≠ Funnel ad names; match via SA campaign→ad relationship instead of creative name.
+- **pool_size/saturation null:** Meta refuses delivery estimates on ENDED ad sets; verify on the first live campaign (estimate circuit breaker stops after 6 consecutive refusals per run).
+- Promote `main → production`.
+- `performance-tab.tsx` retired but on disk (unimported) — delete when comfortable.
+- Deferred: audience CTR-trend sparkline slot, per-row matrix narrative reads, dark-mode toggle, ESLint setup (repo has no config; `tsc --noEmit` is the type gate).
+- Carried from 2026-04: diagnostic threshold calibration pass, FFS wizard, Quality pillar (blocked on CRM), Asana backlog (tab confirmation UI, blurred creative underlay, client logos, client-level benchmarks).
 
-**Active — scoring rules & threshold calibration (new priority 2026-04-20):**
-Diagnostic engine is functionally complete for persuasion + conversion (minus deferred Quality pillar). Next pass is tuning the rules, thresholds, and scoring weights against real-world campaign management judgment — not building new signals. Specific amendments to be scoped in a dedicated session.
+### Engine + data (stable since 2026-04-20)
+Pipeline Funnel.io → BigQuery for all 8 platforms; GA4 ingestion (the GA4 config dropdown lists properties present in `fact_ga4_daily` — a client property must be connected as a Funnel source to appear; GA4 ownership irrelevant). Diagnostic Signal Engine live for persuasion (D/A/R) + conversion (C/F), mixed campaigns dual-output; Quality pillar deferred (CRM). Convention: any file reading `media_plan_lines` more than once must register in `tests/test_plan_id_dedup_guard.py`.
 
-**Validation / calibration:**
-- Phase 0 validation across all active projects (not just 25042) — compare automated scores to manual analyst reads
-- Historical backfill of completed campaigns for calibration corpus
-- FFS wizard in project settings (Form Friction Score inputs for F-pillar)
-
-**Future / Blocked on CRM:**
-- **Quality pillar (Q1-Q3)** — deferred indefinitely pending per-client CRM disposition-data ingestion. See `docs/diagnostics/quality-pillar-deferred.md`.
-
-**Other Features (Asana backlog):**
-- **Interactive tab confirmation UI** for media plan sync (two-step preview/confirm flow)
-- **Blurred creative underlay** — campaign-specific visual backgrounds
-- **Auto-display client logo** in campaign UI
-- **Client-level & cross-client historical benchmarks** (blocked on creative duration/format metadata audit)
-
-**Recently landed:**
-- Engine `campaign_name` fallback + transformation regression fix (2026-04-20)
-- `daily_job.py` alert integration — signal-level ACTION + health regression with 24h dedup matching `services/pacing` pattern. See `docs/diagnostics/alert-rules.md`.
-- Phase 2.5 design note — within-a-line ad-set arch mixing limitation documented in `docs/diagnostics/phase-2-5-arch-mixing.md`. Deferred pending ad-set-grain FFS.
-- `feat/engine-mixed-campaigns` merged to main + production; dual-health-card frontend rendering live.
+### Verification recipes (Claude sandbox)
+- Backend: run pytest from a directory OUTSIDE the repo (the repo `.env` CORS list breaks pydantic-settings parsing): `cd /tmp && PYTHONPATH=$REPO python3 -m pytest $REPO/tests -q` (519 passing as of 2026-06-12).
+- Frontend: rsync to /tmp, `npm install --legacy-peer-deps` (`npm ci` broken: eslint 9 vs eslint-config-next), then `tsc --noEmit`. Full `next build` may be OOM-killed in the sandbox; tsc is the gate.
 
 ### Current Users
-Only Frazer so far. Goal is to make it good enough that the whole team adopts it immediately on rollout.
+Only Frazer so far. Goal is team-wide adoption on rollout.
 
 ### Branch Model
-`main` → staging, `production` → production (both auto-deploy via GitHub Actions, ~7 min). Branches are in sync as of 2026-04-10. Create a new branch per PR, merge to main, then merge main → production when ready.
+`main` → staging, `production` → production (auto-deploy via GitHub Actions, ~7 min). Create a branch per PR (`feat/ada-ui-overhaul` carried the whole overhaul), merge to main, promote main → production when ready. Claude's sandbox cannot run git push — Frazer runs handed-off commands.
 
 ## Section 3: Architecture
 
