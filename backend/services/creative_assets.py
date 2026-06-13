@@ -27,6 +27,7 @@ thing no-ops gracefully when the tokens are unset (the settings default).
 """
 
 import hashlib
+import json
 import logging
 import re
 import time
@@ -267,7 +268,7 @@ def _meta_ads(http: httpx.Client, account_id: str) -> Iterator[dict]:
     params = {
         "fields": (
             "name,creative.thumbnail_width(1080).thumbnail_height(1080)"
-            "{thumbnail_url,image_url,object_story_spec}"
+            "{thumbnail_url,image_url,image_hash,object_story_spec,asset_feed_spec}"
         ),
         "access_token": settings.meta_access_token,
         "limit": 100,
@@ -287,8 +288,10 @@ def _meta_adsets(http: httpx.Client, account_id: str) -> Iterator[dict]:
 
 
 def _meta_image_url(creative: dict | None) -> str | None:
-    """Best still on a Meta creative: image_url (full size) first,
-    thumbnail_url second, then whatever the object_story_spec carries."""
+    """Best directly-carried still on a Meta creative: image_url (full
+    size) first, thumbnail_url second, then whatever the
+    object_story_spec carries. Link/conversion creatives often have
+    none of these at real size — see _meta_image_hash for those."""
     if not creative:
         return None
     url = creative.get("image_url") or creative.get("thumbnail_url")
@@ -298,6 +301,79 @@ def _meta_image_url(creative: dict | None) -> str | None:
     link = spec.get("link_data") or {}
     video = spec.get("video_data") or {}
     return link.get("picture") or video.get("image_url") or None
+
+
+def _meta_image_hash(creative: dict | None) -> str | None:
+    """Image hash on a Meta creative, wherever it hides. Link-style
+    conversion ads carry no image_url, and their thumbnails ignore the
+    size modifiers (64x64 crops of link_data.picture) — but the hash
+    resolves to the original upload via the account's adimages edge."""
+    if not creative:
+        return None
+    if creative.get("image_hash"):
+        return creative["image_hash"]
+    spec = creative.get("object_story_spec") or {}
+    for key in ("link_data", "video_data"):
+        h = (spec.get(key) or {}).get("image_hash")
+        if h:
+            return h
+    images = (creative.get("asset_feed_spec") or {}).get("images") or []
+    if images and isinstance(images[0], dict) and images[0].get("hash"):
+        return images[0]["hash"]
+    return None
+
+
+def _resolve_image_hash(
+    http: httpx.Client,
+    account_id: str,
+    image_hash: str,
+    cache: dict[str, str | None],
+) -> str | None:
+    """Full-size source URL for an image hash via /{account}/adimages.
+    Cached per account scan; failures cache None so a broken hash costs
+    one round-trip per run."""
+    if image_hash in cache:
+        return cache[image_hash]
+    url = None
+    try:
+        resp = http.get(
+            f"{META_GRAPH_BASE}/{settings.meta_api_version}/{account_id}/adimages",
+            params={
+                "hashes": json.dumps([image_hash]),
+                "fields": "hash,url",
+                "access_token": settings.meta_access_token,
+            },
+        )
+        resp.raise_for_status()
+        for row in (resp.json().get("data") or []):
+            if row.get("hash") == image_hash and row.get("url"):
+                url = row["url"]
+                break
+    except Exception:
+        logger.warning("adimages lookup failed for hash %s", image_hash, exc_info=True)
+    cache[image_hash] = url
+    return url
+
+
+def _meta_best_image(
+    http: httpx.Client,
+    account_id: str,
+    creative: dict | None,
+    hash_cache: dict[str, str | None],
+) -> str | None:
+    """The largest still we can get for one creative: explicit image_url,
+    then the original upload via image-hash resolution, then the (size-
+    modified) thumbnail and story-spec fallbacks."""
+    if not creative:
+        return None
+    if creative.get("image_url"):
+        return creative["image_url"]
+    image_hash = _meta_image_hash(creative)
+    if image_hash:
+        resolved = _resolve_image_hash(http, account_id, image_hash, hash_cache)
+        if resolved:
+            return resolved
+    return _meta_image_url(creative)
 
 
 def _pool_from_estimate(est: dict) -> int | None:
@@ -797,6 +873,7 @@ def sync_creative_images(
                     if deadline.exceeded() or not remaining:
                         scanned_all = scanned_all and not remaining
                         break
+                    hash_cache: dict[str, str | None] = {}
                     try:
                         for ad in _meta_ads(http, account_id):
                             if deadline.exceeded():
@@ -808,7 +885,9 @@ def sync_creative_images(
                             variant = mapped[0]
                             if variant not in remaining:
                                 continue
-                            url = _meta_image_url(ad.get("creative"))
+                            url = _meta_best_image(
+                                http, account_id, ad.get("creative"), hash_cache,
+                            )
                             if url:
                                 _store_variant_image(
                                     http, variant, remaining.pop(variant),

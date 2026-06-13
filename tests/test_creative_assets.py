@@ -391,6 +391,106 @@ class TestImageSync:
             result = ca.sync_creative_images()
         assert result["pending"] == 0
 
+    def test_meta_image_hash_found_wherever_it_hides(self):
+        assert ca._meta_image_hash({"image_hash": "h1"}) == "h1"
+        assert ca._meta_image_hash(
+            {"object_story_spec": {"link_data": {"image_hash": "h2"}}}
+        ) == "h2"
+        assert ca._meta_image_hash(
+            {"object_story_spec": {"video_data": {"image_hash": "h3"}}}
+        ) == "h3"
+        assert ca._meta_image_hash(
+            {"asset_feed_spec": {"images": [{"hash": "h4"}]}}
+        ) == "h4"
+        assert ca._meta_image_hash({"thumbnail_url": "x"}) is None
+        assert ca._meta_image_hash(None) is None
+
+    def test_hash_resolution_preferred_over_tiny_link_thumbnail(self, monkeypatch):
+        # Link/conversion creatives: no image_url, 64px thumbnail — the
+        # image hash must be resolved to the original upload instead.
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [])
+        ads = [{
+            "name": HERO_AD_NAME,
+            "creative": {
+                "thumbnail_url": "https://cdn.meta/p64x64.jpg",
+                "object_story_spec": {"link_data": {"image_hash": "abc123",
+                                                    "picture": "https://cdn.meta/p64x64.jpg"}},
+            },
+        }]
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=ads),
+            patch.object(ca, "_resolve_image_hash",
+                         return_value="https://cdn.meta/original_full.jpg"),
+            patch.object(ca, "_download_image",
+                         return_value=(b"BIG", "jpg", "image/jpeg")),
+            patch.object(ca, "_store_bytes", return_value=None),
+        ) as started:
+            result = ca.sync_creative_images()
+            resolve = started[8]   # _resolve_image_hash mock
+            download = started[9]  # _download_image mock
+
+        assert result["stored"] == 1
+        assert resolve.call_args[0][2] == "abc123"
+        assert download.call_args[0][1] == "https://cdn.meta/original_full.jpg"
+
+    def test_hash_resolution_failure_falls_back_to_thumbnail(self, monkeypatch):
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [])
+        ads = [{
+            "name": HERO_AD_NAME,
+            "creative": {
+                "thumbnail_url": "https://cdn.meta/thumb.jpg",
+                "image_hash": "abc123",
+            },
+        }]
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=ads),
+            patch.object(ca, "_resolve_image_hash", return_value=None),
+            patch.object(ca, "_download_image",
+                         return_value=(b"IMG", "jpg", "image/jpeg")),
+            patch.object(ca, "_store_bytes", return_value=None),
+        ) as started:
+            result = ca.sync_creative_images()
+            download = started[9]
+
+        assert result["stored"] == 1
+        assert download.call_args[0][1] == "https://cdn.meta/thumb.jpg"
+
+    def test_explicit_image_url_skips_hash_resolution(self, monkeypatch):
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [])
+        ads = [{
+            "name": HERO_AD_NAME,
+            "creative": {"image_url": "https://cdn.meta/full.jpg",
+                         "image_hash": "abc123"},
+        }]
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
+            patch.object(ca, "_meta_ads", return_value=ads),
+            patch.object(ca, "_resolve_image_hash", return_value=None),
+            patch.object(ca, "_download_image",
+                         return_value=(b"IMG", "jpg", "image/jpeg")),
+            patch.object(ca, "_store_bytes", return_value=None),
+        ) as started:
+            ca.sync_creative_images()
+            resolve = started[8]
+            download = started[9]
+
+        assert resolve.call_count == 0
+        assert download.call_args[0][1] == "https://cdn.meta/full.jpg"
+
     def test_meta_ads_requests_full_size_thumbnails(self, monkeypatch):
         # thumbnail_url defaults to 64x64 — the request must carry the
         # field-expansion size modifiers or video/object_story_spec
@@ -409,6 +509,8 @@ class TestImageSync:
         assert "thumbnail_width(1080)" in fields
         assert "thumbnail_height(1080)" in fields
         assert "thumbnail_url" in fields and "image_url" in fields
+        # Needed for the adimages hash-resolution path.
+        assert "image_hash" in fields and "asset_feed_spec" in fields
 
     def _stored_meta_state(self):
         return [{
