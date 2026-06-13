@@ -53,6 +53,7 @@ ASSETS_PREFIX = "creative-assets/"
 
 META_GRAPH_BASE = "https://graph.facebook.com"
 META_PLATFORM_ID = "meta"  # fact_digital_daily's platform_id for Meta
+STACKADAPT_PLATFORM_ID = "stackadapt"  # fact_digital_daily's platform_id for StackAdapt
 STACKADAPT_GRAPHQL_URL = "https://api.stackadapt.com/graphql"
 
 HTTP_TIMEOUT = 30.0
@@ -423,20 +424,39 @@ def _adset_pool_size(http: httpx.Client, adset_id: str) -> int | None:
 
 # ── StackAdapt GraphQL ─────────────────────────────────────────────────
 
-# StackAdapt's GraphQL API (docs.stackadapt.com) follows Relay connection
-# conventions: creatives(first:, after:) returning nodes + pageInfo, with
-# type-specific fields behind inline fragments — ImageCreative exposes
-# s3Url; video creatives expose a poster/preview still. The exact schema
-# sits behind a docs login, so the parser below tolerates nodes/edges
-# shape differences and missing fields rather than trusting this query
-# string. Verify field names live after deploy.
-_STACKADAPT_CREATIVES_QUERY = """
-query AdaCreativeStills($after: String) {
-  creatives(first: 100, after: $after) {
+# Verified live against api.stackadapt.com by schema introspection
+# (2026-06-12). There is NO root `creatives` field — the prior query
+# targeted a field that does not exist, so the StackAdapt path never
+# resolved a single still and every SA static/video sat at no_match.
+#
+# The real entity is `ads` (AdConnection), filterable by id via
+# AdFilters.ids: [ID!]. `Ad` is an interface; each concrete channel
+# carries a `creativesConnection` whose leaf node holds the still:
+#   DisplayAd / NativeAd → ImageCreative.s3Url
+#   VideoAd  / CtvAd     → UploadedVideo.thumbS3Url (poster) ?? s3Url,
+#                          or VastCreative.s3Url
+# Funnel reports StackAdapt at the ad level, so fact_digital_daily.ad_id
+# is the StackAdapt Ad.id — matching on that id (not the creative-library
+# name) is what lets SA stills resolve. The parser stays tolerant of
+# nodes/edges shape so a schema tweak degrades to no_match, never a crash.
+_STACKADAPT_ADS_QUERY = """
+query AdaAdStills($ids: [ID!], $after: String) {
+  ads(filterBy: { ids: $ids }, first: 100, after: $after) {
     nodes {
-      name
-      ... on ImageCreative { s3Url }
-      ... on VideoCreative { posterUrl previewUrl }
+      id
+      __typename
+      ... on DisplayAd { creativesConnection(first: 5) { nodes {
+        __typename ... on ImageCreative { s3Url width height } } } }
+      ... on NativeAd { creativesConnection(first: 5) { nodes {
+        __typename ... on ImageCreative { s3Url width height } } } }
+      ... on VideoAd { creativesConnection(first: 5) { nodes {
+        __typename
+        ... on UploadedVideo { thumbS3Url s3Url }
+        ... on VastCreative { s3Url } } } }
+      ... on CtvAd { creativesConnection(first: 5) { nodes {
+        __typename
+        ... on UploadedVideo { thumbS3Url s3Url }
+        ... on VastCreative { s3Url } } } }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -444,37 +464,86 @@ query AdaCreativeStills($after: String) {
 """
 
 
-def _stackadapt_creatives(http: httpx.Client) -> Iterator[dict]:
-    """Yield {name, url} for StackAdapt creatives that carry a still."""
+def _stackadapt_still_from_ad(node: dict) -> str | None:
+    """Best still URL for one StackAdapt ad node — always an image the
+    Creative tab can render in an <img>: a video poster (thumbS3Url) or an
+    ImageCreative's s3Url, never a raw video/VAST file. Tolerant of the
+    per-channel union shapes and of the nodes/edges connection variants."""
+    conn = node.get("creativesConnection") or {}
+    nodes = conn.get("nodes")
+    if nodes is None:  # edges/node fallback
+        nodes = [e.get("node") for e in conn.get("edges") or [] if e and e.get("node")]
+    fallback: str | None = None
+    for cnode in nodes or []:
+        cnode = cnode or {}
+        thumb = cnode.get("thumbS3Url")
+        if thumb:  # video / CTV poster — guaranteed an image
+            return thumb
+        if cnode.get("__typename") == "ImageCreative" and cnode.get("s3Url"):
+            return cnode["s3Url"]
+        # Defensive: an s3Url whose type we couldn't read (schema drift on
+        # __typename) is a last resort only — the download step still
+        # validates the content type before anything is stored.
+        if fallback is None and cnode.get("s3Url") and not cnode.get("__typename"):
+            fallback = cnode["s3Url"]
+    return fallback
+
+
+def _chunked(items: list, size: int) -> Iterator[list]:
+    """Yield successive size-length slices — keeps the ads(ids:) filter
+    under a sane query length when many variants are pending."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _stackadapt_ad_stills(
+    http: httpx.Client, ad_ids: list[str],
+) -> Iterator[dict]:
+    """Yield {ad_id, url} for StackAdapt ads that carry a still. Fetches
+    only the requested ids (== Funnel ad_id) via AdFilters.ids, batched and
+    paged. Each ad's attached creative is resolved to a renderable still."""
+    if not ad_ids:
+        return
     headers = {
-        # docs.stackadapt.com: GraphQL authenticates with the API key in
-        # the Authorization header. Verify the exact scheme live.
         "Authorization": f"Bearer {settings.stackadapt_api_key}",
         "Content-Type": "application/json",
     }
-    after: str | None = None
-    for _ in range(MAX_PAGES):
-        resp = http.post(
-            STACKADAPT_GRAPHQL_URL,
-            json={"query": _STACKADAPT_CREATIVES_QUERY, "variables": {"after": after}},
-            headers=headers,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        conn = ((payload.get("data") or {}).get("creatives")) or {}
-        nodes = conn.get("nodes")
-        if nodes is None:  # edges/node shape fallback
-            nodes = [e.get("node") for e in conn.get("edges") or [] if e and e.get("node")]
-        for node in nodes or []:
-            node = node or {}
-            name = (node.get("name") or "").strip()
-            url = node.get("s3Url") or node.get("posterUrl") or node.get("previewUrl")
-            if name and url:
-                yield {"name": name, "url": url}
-        info = conn.get("pageInfo") or {}
-        after = info.get("endCursor")
-        if not info.get("hasNextPage") or not after:
-            break
+    for batch in _chunked(list(ad_ids), 100):
+        after: str | None = None
+        for _ in range(MAX_PAGES):
+            resp = http.post(
+                STACKADAPT_GRAPHQL_URL,
+                json={
+                    "query": _STACKADAPT_ADS_QUERY,
+                    "variables": {"ids": batch, "after": after},
+                },
+                headers=headers,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            # StackAdapt returns auth/permission/schema problems as HTTP 200
+            # with an `errors` body and data:null (e.g. "The access token
+            # expired"). Treat that as a source failure — NOT a clean scan —
+            # so the caller skips recording no_match for variants we never
+            # actually got to look at.
+            if payload.get("errors"):
+                raise RuntimeError(
+                    f"StackAdapt GraphQL error: {payload['errors']}"
+                )
+            conn = ((payload.get("data") or {}).get("ads")) or {}
+            nodes = conn.get("nodes")
+            if nodes is None:  # edges/node fallback
+                nodes = [e.get("node") for e in conn.get("edges") or [] if e and e.get("node")]
+            for node in nodes or []:
+                node = node or {}
+                ad_id = str(node.get("id") or "").strip()
+                url = _stackadapt_still_from_ad(node)
+                if ad_id and url:
+                    yield {"ad_id": ad_id, "url": url}
+            info = conn.get("pageInfo") or {}
+            after = info.get("endCursor")
+            if not info.get("hasNextPage") or not after:
+                break
 
 
 # ── GCS storage + signing ──────────────────────────────────────────────
@@ -592,6 +661,36 @@ def _variant_map(project_code: str) -> dict[str, str]:
         r["ad_name"]: r["creative_variant"]
         for r in rows
         if r.get("ad_name") and r.get("creative_variant")
+    }
+
+
+def _stackadapt_adid_map(project_code: str) -> dict[str, str]:
+    """StackAdapt ad_id → creative_variant for one project, resolved by the
+    SAME alias join + regex normalization as _variant_map. StackAdapt's
+    GraphQL keys ads by this id, so matching on it — not the creative-library
+    name, which never lines up with the Funnel ad name — is what lets SA
+    stills resolve. Several ad_ids (one per creative size) can map to one
+    variant; the first that yields a still wins."""
+    alias_join, variant_expr = _alias_resolution("ad_agg")
+    sql = f"""
+        WITH ad_agg AS (
+            SELECT f.ad_id, f.ad_name, f.platform_id
+            FROM {bq.table('fact_digital_daily')} f
+            WHERE f.project_code = @project_code
+              AND f.platform_id = '{STACKADAPT_PLATFORM_ID}'
+              AND f.ad_id IS NOT NULL AND f.ad_id != ''
+              AND f.ad_name IS NOT NULL AND f.ad_name != ''
+            GROUP BY f.ad_id, f.ad_name, f.platform_id
+        )
+        SELECT ad_agg.ad_id, {variant_expr} AS creative_variant
+        FROM ad_agg
+        {alias_join}
+    """
+    rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
+    return {
+        r["ad_id"]: r["creative_variant"]
+        for r in rows
+        if r.get("ad_id") and r.get("creative_variant")
     }
 
 
@@ -908,24 +1007,24 @@ def sync_creative_images(
                 scanned_all = False
             else:
                 try:
-                    for creative in _stackadapt_creatives(http):
+                    # StackAdapt is keyed by ad id, not creative name: build
+                    # ad_id → variant for the projects that still have
+                    # unresolved variants, then fetch exactly those ads.
+                    adid_to_variant: dict[str, str] = {}
+                    for project_code in set(remaining.values()):
+                        for ad_id, variant in _stackadapt_adid_map(project_code).items():
+                            if variant in remaining:
+                                adid_to_variant[ad_id] = variant
+                    for sa in _stackadapt_ad_stills(http, list(adid_to_variant)):
                         if deadline.exceeded():
                             scanned_all = False
                             break
-                        name = creative["name"]
-                        mapped = ad_name_to_variant.get(name)
-                        # StackAdapt creative names usually equal ad names;
-                        # a creative named exactly like the variant counts.
-                        variant = (
-                            mapped[0]
-                            if mapped
-                            else (name if name in remaining else None)
-                        )
+                        variant = adid_to_variant.get(sa["ad_id"])
                         if not variant or variant not in remaining:
                             continue
                         _store_variant_image(
                             http, variant, remaining.pop(variant),
-                            creative["url"], "stackadapt", counts,
+                            sa["url"], "stackadapt", counts,
                             preserve_on_failure=variant in refreshing,
                         )
                 except Exception:

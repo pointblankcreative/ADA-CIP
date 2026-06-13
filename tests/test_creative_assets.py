@@ -280,11 +280,17 @@ class TestImageSync:
         monkeypatch.setattr(ca.settings, "stackadapt_api_key", "key")
         rec = QueryRecorder()
         _image_sync_responses(rec, [])
+        # The StackAdapt branch resolves ad_id → variant via its own query
+        # (alias probe + adid map) before fetching stills by id.
+        rec.responses += [
+            [],  # _stackadapt_adid_map alias-table probe
+            [{"ad_id": "sa-1", "creative_variant": HERO_VARIANT}],
+        ]
         with _Patched(
             ca, rec,
             patch.object(ca, "_meta_ad_accounts", return_value=[]),
-            patch.object(ca, "_stackadapt_creatives",
-                         return_value=[{"name": HERO_AD_NAME, "url": "https://sa/img.png"}]),
+            patch.object(ca, "_stackadapt_ad_stills",
+                         return_value=[{"ad_id": "sa-1", "url": "https://sa/img.png"}]),
             patch.object(ca, "_download_image",
                          return_value=(b"PNG", "png", "image/png")),
             patch.object(ca, "_store_bytes", return_value=None),
@@ -296,6 +302,128 @@ class TestImageSync:
         assert ("scalar", "source_platform", "STRING", "stackadapt") in merge_params
         assert ("scalar", "gcs_path", "STRING",
                 f"creative-assets/{HERO_SHA1}.png") in merge_params
+
+    def test_stackadapt_still_prefers_poster_then_image_never_raw_video(self):
+        # Display / native image creative → its own s3Url.
+        assert ca._stackadapt_still_from_ad(
+            {"creativesConnection": {"nodes": [
+                {"__typename": "ImageCreative", "s3Url": "https://sa/i.jpg"}]}}
+        ) == "https://sa/i.jpg"
+        # Video / CTV → the poster thumbnail, not the playable mp4.
+        assert ca._stackadapt_still_from_ad(
+            {"creativesConnection": {"nodes": [
+                {"__typename": "UploadedVideo",
+                 "thumbS3Url": "https://sa/poster.jpg",
+                 "s3Url": "https://sa/clip.mp4"}]}}
+        ) == "https://sa/poster.jpg"
+        # A VAST tag carries only a non-image s3Url → nothing renderable.
+        assert ca._stackadapt_still_from_ad(
+            {"creativesConnection": {"nodes": [
+                {"__typename": "VastCreative", "s3Url": "https://sa/vast.xml"}]}}
+        ) is None
+        # edges/node connection shape resolves the same way.
+        assert ca._stackadapt_still_from_ad(
+            {"creativesConnection": {"edges": [
+                {"node": {"__typename": "ImageCreative", "s3Url": "https://sa/e.jpg"}}]}}
+        ) == "https://sa/e.jpg"
+        # Empty / missing connection → None, never a crash.
+        assert ca._stackadapt_still_from_ad({}) is None
+        assert ca._stackadapt_still_from_ad(
+            {"creativesConnection": {"nodes": []}}) is None
+
+    def test_stackadapt_adid_map_normalizes_and_pins_platform(self):
+        rec = QueryRecorder()
+        rec.responses = [
+            [],  # alias-table probe (no exception → alias join included)
+            [{"ad_id": "14223195",
+              "creative_variant": "26018 CAPE Pre-Bargaining Awareness Ad B"}],
+        ]
+        with _Patched(ca, rec):
+            mapping = ca._stackadapt_adid_map("26018")
+
+        assert mapping == {
+            "14223195": "26018 CAPE Pre-Bargaining Awareness Ad B"}
+        sql, params = rec.calls[1]
+        # Same alias join + regex normalization the router uses, but keyed
+        # by ad_id and pinned to the StackAdapt platform.
+        assert "creative_variant_aliases" in sql
+        assert r"\d{5}" in sql and r"\d+x\d+" in sql
+        assert "ad_agg.ad_id" in sql
+        assert "platform_id = 'stackadapt'" in sql
+        assert ("string", "project_code", "26018") in params
+
+    def test_stackadapt_ad_stills_parses_ads_by_id(self, monkeypatch):
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "key")
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": {"ads": {
+                    "nodes": [{
+                        "id": "14223195", "__typename": "DisplayAd",
+                        "creativesConnection": {"nodes": [
+                            {"__typename": "ImageCreative",
+                             "s3Url": "https://sa/b.jpg"}]},
+                    }],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }}}
+
+        class _Http:
+            def post(self, *a, **k):
+                return _Resp()
+
+        out = list(ca._stackadapt_ad_stills(_Http(), ["14223195"]))
+        assert out == [{"ad_id": "14223195", "url": "https://sa/b.jpg"}]
+
+    def test_stackadapt_ad_stills_raises_on_graphql_errors(self, monkeypatch):
+        # An expired/limited token comes back as HTTP 200 + errors body —
+        # must surface as a failure, never a silent empty (clean) scan.
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "expired")
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"errors": [{"message": "The access token expired"}],
+                        "data": None}
+
+        class _Http:
+            def post(self, *a, **k):
+                return _Resp()
+
+        with pytest.raises(RuntimeError):
+            list(ca._stackadapt_ad_stills(_Http(), ["14223195"]))
+
+    def test_stackadapt_token_error_does_not_record_no_match(self, monkeypatch):
+        # End-to-end: when StackAdapt errors, pending variants stay pending
+        # (source marked failed) rather than being written off as no_match.
+        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
+        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "expired")
+        rec = QueryRecorder()
+        _image_sync_responses(rec, [])
+        rec.responses += [
+            [],  # _stackadapt_adid_map alias-table probe
+            [{"ad_id": "sa-1", "creative_variant": HERO_VARIANT}],
+        ]
+
+        def _boom(*a, **k):
+            raise RuntimeError("StackAdapt GraphQL error: token expired")
+
+        with _Patched(
+            ca, rec,
+            patch.object(ca, "_meta_ad_accounts", return_value=[]),
+            patch.object(ca, "_stackadapt_ad_stills", side_effect=_boom),
+        ):
+            result = ca.sync_creative_images()
+
+        assert result["no_match"] == 0
+        assert result["sources"]["stackadapt"] == "failed"
+        assert result["complete"] is False
+        # No MERGE write at all — nothing was concluded about the variant.
+        assert not any("MERGE" in sql for sql, _ in rec.calls)
 
     def test_unmatched_variant_recorded_as_no_match(self, monkeypatch):
         monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
