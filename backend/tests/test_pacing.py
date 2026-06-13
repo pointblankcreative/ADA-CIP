@@ -88,7 +88,7 @@ class TestFlightDateFiltering:
 
         mock_bq.run_query.side_effect = query_router
 
-        result = run_pacing_for_project("25042")
+        result = run_pacing_for_project("25042", date(2026, 4, 9))
 
         # Verify tracking rows were written
         assert mock_tracking.called
@@ -135,7 +135,7 @@ class TestFlightDateFiltering:
 
         mock_bq.run_query.side_effect = query_router
 
-        result = run_pacing_for_project("25042")
+        result = run_pacing_for_project("25042", date(2026, 4, 15))
 
         tracking_rows = mock_tracking.call_args[0][2]
         by_id = {r["line_id"]: r for r in tracking_rows}
@@ -202,7 +202,7 @@ class TestFlightDateFiltering:
 
         mock_bq.run_query.side_effect = query_router
 
-        result = run_pacing_for_project("TEST")
+        result = run_pacing_for_project("TEST", date(2026, 4, 1))
 
         tracking_rows = mock_tracking.call_args[0][2]
         by_id = {r["line_id"]: r for r in tracking_rows}
@@ -249,7 +249,7 @@ class TestFlightDateFiltering:
 
         mock_bq.run_query.side_effect = query_router
 
-        run_pacing_for_project("TEST")
+        run_pacing_for_project("TEST", date(2026, 4, 1))
 
         # Find the spend queries
         spend_queries = [
@@ -315,11 +315,137 @@ class TestLineCodeWithDateFilter:
 
         mock_bq.run_query.side_effect = query_router
 
-        result = run_pacing_for_project("TEST")
+        result = run_pacing_for_project("TEST", date(2026, 4, 15))
 
         tracking_rows = mock_tracking.call_args[0][2]
         # Should use the line_code spend ($4500), not platform group ($8000)
         assert tracking_rows[0]["actual_spend_to_date"] == 4500.0
+
+
+class TestGracePeriodSpendDetection:
+    """Regression (26023): a spend-bearing in-flight line attributed via the
+    platform group-split fallback (no line_code match yet) must NOT be held in
+    the 'pending' grace state. Staying pending zeroed planned_spend_to_date,
+    dropped the line from the project pacing aggregate, and rendered the whole
+    project 'DARK / no data' on the Summary tab despite real spend.
+    """
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_group_split_spend_in_first_two_days_is_active(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Day 2 of flight, no line_code attribution, but the platform group
+        has real spend → the line is 'active' with planned_spend_to_date > 0."""
+        mock_date.today.return_value = date(2026, 6, 13)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        # line_code=None → no line_code spend query fires; spend lands only via
+        # the platform group-split fallback (the 26023 condition).
+        lines = [
+            _make_line("L1", "meta", 99362.06, date(2026, 6, 11), date(2026, 7, 19)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 794.16}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        run_pacing_for_project("26023", date(2026, 6, 13))
+
+        row = mock_tracking.call_args[0][2][0]
+        assert row["actual_spend_to_date"] == 794.16
+        # The fix: spend present → active (not 'pending'), planned computed.
+        assert row["line_status"] == "active"
+        assert row["planned_spend_to_date"] > 0
+        assert row["pacing_percentage"] > 0
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_zero_spend_in_grace_window_stays_pending(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Grace period preserved: a flight that started within 2 days with NO
+        spend on any attribution path stays 'pending' with zero planned."""
+        mock_date.today.return_value = date(2026, 6, 12)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        lines = [
+            _make_line("L1", "meta", 50000, date(2026, 6, 11), date(2026, 7, 19)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 0.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        run_pacing_for_project("TESTGRACE", date(2026, 6, 12))
+
+        row = mock_tracking.call_args[0][2][0]
+        assert row["actual_spend_to_date"] == 0.0
+        assert row["line_status"] == "pending"
+        assert row["planned_spend_to_date"] == 0.0
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_no_early_alert_for_group_split_line_without_linecode_spend(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """A line now 'active' via group-split in its first 2 days must still
+        suppress pacing alerts (data-lag) when there is no line_code spend —
+        preserving the original grace-period alert behavior so the fix doesn't
+        introduce day-1/2 underpacing noise on every new flight."""
+        mock_date.today.return_value = date(2026, 6, 13)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        # Tiny spend vs large planned → would be a critical underpace if alerted.
+        lines = [
+            _make_line("L1", "meta", 99362.06, date(2026, 6, 11), date(2026, 7, 19)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 10.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        result = run_pacing_for_project("26023", date(2026, 6, 13))
+
+        # Active + low pacing, but inside the 2-day data-lag window with no
+        # line_code spend → no alerts fired.
+        assert result["alerts"] == 0
 
 
 # ── Test: _float helper ──────────────────────────────────────────

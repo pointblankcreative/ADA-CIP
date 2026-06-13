@@ -26,6 +26,7 @@ import { api, type Alert, type Project } from "@/lib/api";
 import { computeFlight, verdict } from "@/lib/flight";
 import { CodeChip } from "@/components/ui";
 import { SyncStatus } from "@/components/sync-status";
+import { useIntro } from "@/components/intro/intro-provider";
 import { cn, formatCurrency, formatFlightDay } from "@/lib/utils";
 import { SummaryTab } from "./summary-tab";
 import { PacingTab } from "./pacing-tab";
@@ -101,6 +102,7 @@ export default function ProjectDetailPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>("summary");
   const [loading, setLoading] = useState(true);
+  const { signalReady } = useIntro();
 
   useEffect(() => {
     setActiveTab("summary");
@@ -109,12 +111,16 @@ export default function ProjectDetailPage() {
       .get(code)
       .then(setProject)
       .catch(() => setProject(null))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        // Deep-link cold load: this project's meta is the splash's readiness.
+        signalReady();
+      });
     api.alerts
       .list({ project_code: code, limit: 50 })
       .then(setAlerts)
       .catch(() => setAlerts([]));
-  }, [code]);
+  }, [code, signalReady]);
 
   /** Acknowledge an alert with an optional action note — the backend
    *  records the IAP user; we mirror its response into local state so the

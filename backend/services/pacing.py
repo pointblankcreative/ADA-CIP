@@ -489,44 +489,10 @@ def run_pacing_for_project(
             elapsed_days_raw = (min(today, flight_end) - flight_start).days + 1
             elapsed_active_days = max(0, min(elapsed_days_raw, total_active_days))
 
-        # Determine line status based on flight timing
-        # Data lag: ad platforms report with ~1-day delay through Funnel,
-        # and the server runs in UTC which can be a day ahead of Eastern.
-        # C1: Grace period is now spend-history-aware: only apply grace if
-        # the line has zero historical spend AND flight_start is within 2 days.
-        if today < flight_start:
-            line_status = "not_started"
-        elif today > flight_end:
-            line_status = "completed"
-        else:
-            # Check if line has any historical spend
-            # Conservative approach: only apply grace period if we can definitively
-            # identify THIS line's spend history via line_code. If no line_code,
-            # don't assume grace period — require historical spend to NOT apply it.
-            has_historical_spend = (
-                (line_code and line_code in first_spend_date_by_line) or
-                (platform_id and any(
-                    lc in first_spend_date_by_line
-                    for lc in spend_by_line_code.keys()
-                ))
-            )
-            # Grace period: no spend yet AND flight started within 2 days
-            in_grace_period = (
-                not has_historical_spend and
-                (today - flight_start).days <= 2
-            )
-            if in_grace_period:
-                line_status = "pending"  # just started — no data expected yet
-            else:
-                line_status = "active"
-
-        # Even pacing calculation
-        if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
-            planned_spend_to_date = (budget / total_active_days) * elapsed_active_days
-        else:
-            planned_spend_to_date = 0.0
-
-        # Match actual spend: bundle > line_code > flight-group split.
+        # Match actual spend FIRST: bundle > line_code > flight-group split.
+        # Computed before line_status because the grace-period check below now
+        # keys off whether the line has ANY attributed spend, not just
+        # line_code-attributed spend.
         group_key = (platform_id, flight_start, flight_end)
         actual_spend = 0.0
         if bundle_role in ("suggested_parent", "confirmed_parent") and bundle_id:
@@ -548,6 +514,37 @@ def run_pacing_for_project(
             if group_total_budget > 0:
                 actual_spend = spend_by_group[group_key] * (budget / group_total_budget)
 
+        # Determine line status based on flight timing.
+        # Data lag: ad platforms report with ~1-day delay through Funnel,
+        # and the server runs in UTC which can be a day ahead of Eastern.
+        # Grace period: a line is held "pending" ONLY while it has no
+        # attributed spend at all AND the flight started within 2 days. As soon
+        # as ANY spend is attributed — line_code, bundle, OR the platform
+        # group-split fallback — the line is "active" so its planned spend is
+        # computed and it counts toward the project pacing aggregate.
+        #
+        # Prior bug (26023): the grace check recognised only line_code-
+        # attributed spend (first_spend_date_by_line). A line delivering under
+        # the group-split fallback — the common case while line_code attribution
+        # is still landing — stayed "pending" with planned_spend_to_date=0 for
+        # its first 2 days, which zeroed overall_pacing_percentage and rendered
+        # the whole project "DARK / no data" on the Summary tab despite real
+        # spend (header showed Spent $988 sourced straight from the fact table).
+        if today < flight_start:
+            line_status = "not_started"
+        elif today > flight_end:
+            line_status = "completed"
+        elif actual_spend <= 0 and (today - flight_start).days <= 2:
+            line_status = "pending"  # just started — no data has landed yet
+        else:
+            line_status = "active"
+
+        # Even pacing calculation
+        if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
+            planned_spend_to_date = (budget / total_active_days) * elapsed_active_days
+        else:
+            planned_spend_to_date = 0.0
+
         remaining_budget = budget - actual_spend
         remaining_days = max(0, (flight_end - today).days)
         pacing_pct = (actual_spend / planned_spend_to_date * 100) if planned_spend_to_date > 0 else 0.0
@@ -556,11 +553,26 @@ def run_pacing_for_project(
         is_over = pacing_pct > PACING_OVER_WARNING
         is_under = 0 < pacing_pct < PACING_UNDER_WARNING
 
-        # Only generate alerts for active or completed flights — not for
-        # flights that haven't started or are still in their data-lag grace period.
+        # Alert generation preserves the original data-lag suppression: during
+        # the first 2 days of a flight, before any line_code-attributed spend
+        # has landed, hold off on pacing alerts (early pacing numbers are
+        # unreliable under reporting lag). This is now decoupled from
+        # line_status so the line still displays real pacing while staying
+        # quiet — previously the suppression rode on line_status="pending",
+        # which also hid the line from the dashboard (the 26023 bug above).
+        has_linecode_spend = (
+            (line_code and line_code in first_spend_date_by_line) or
+            (platform_id and any(
+                lc in first_spend_date_by_line
+                for lc in spend_by_line_code.keys()
+            ))
+        )
+        suppress_early_alerts = (
+            (today - flight_start).days <= 2 and not has_linecode_spend
+        )
         line_label = line_code or platform_id or line_id
         line_alerts = []
-        if line_status in ("active", "completed"):
+        if line_status in ("active", "completed") and not suppress_early_alerts:
             line_alerts = _generate_alerts(
                 project_code, line_id, line_label,
                 pacing_pct, actual_spend, budget,

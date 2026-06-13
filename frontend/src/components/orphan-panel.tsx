@@ -81,10 +81,9 @@ export function OrphanPanel() {
 
       <p className="mt-2 text-xs text-fg-muted">
         Active spend in these project codes hasn&apos;t been configured in ADA
-        yet. Configure to start tracking. To set a code aside, add it to the{" "}
-        <span className="font-mono text-fg-secondary">dismissed_orphans</span>{" "}
-        table in BigQuery (dismissed = hidden here, archived = hidden
-        everywhere).
+        yet. Configure to start tracking. Codes can be set aside by an admin —
+        dismissed codes stay hidden here but remain available under &ldquo;Show
+        dismissed,&rdquo; while archived codes are hidden everywhere.
       </p>
 
       {error && (
@@ -93,7 +92,7 @@ export function OrphanPanel() {
         </div>
       )}
 
-      <div className="mt-3 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-3 grid items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3">
         {loading ? (
           Array.from({ length: 3 }).map((_, i) => (
             <Card key={i} className="animate-pulse">
@@ -126,7 +125,10 @@ function OrphanCard({ orphan: o }: OrphanCardProps) {
 
   return (
     <Card
-      className={cn("transition-colors", o.dismissed && "opacity-60")}
+      className={cn(
+        "flex h-full flex-col transition-colors",
+        o.dismissed && "opacity-60",
+      )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -183,9 +185,9 @@ function OrphanCard({ orphan: o }: OrphanCardProps) {
         </div>
       )}
 
-      {/* The only action is Configure. Suppression is managed in BigQuery. */}
+      {/* The only action is Configure. Suppression is managed by an admin. */}
       {!o.dismissed && (
-        <div className="mt-4 flex items-center gap-2">
+        <div className="mt-auto flex items-center gap-2 pt-4">
           <Link
             href={`/admin/projects/new?code=${o.project_code}`}
             className="flex flex-1 items-center justify-center gap-1.5 rounded-sm border-2 border-tint-ok bg-tint-ok px-3 py-2 text-xs font-bold text-ok transition-colors hover:opacity-80"

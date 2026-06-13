@@ -211,6 +211,30 @@ export function PacingTab({
   const spentAllPlatforms =
     data.total_actual_all_platforms ?? data.total_actual_to_date;
 
+  // Finding #1: an ended flight whose per-line spend never got attributed
+  // reads as "$0 / 0.0% / NOT STARTED / AWAITING DATA" — directly
+  // contradicting the Summary tab's landed total. We can't see the
+  // project-level warehouse total from the pacing payload, so we detect the
+  // contradiction conservatively from the signals we DO have: every line has
+  // finished (completed, or its flight_end is at/behind the as-of date) yet
+  // pacing sees no spend on any platform at all. That combination means the
+  // flight ran to completion but its spend hasn't landed against the lines —
+  // not that nothing ran — so we soften the zeros instead of asserting them.
+  const flightEnded =
+    data.lines.length > 0 &&
+    data.lines.every(
+      (l) =>
+        l.line_status === "completed" ||
+        (l.flight_end != null && l.flight_end <= data.as_of_date)
+    );
+  const noLineSpend =
+    data.lines.reduce((sum, l) => sum + (l.actual_spend_to_date ?? 0), 0) === 0;
+  const unattributedSpend =
+    flightEnded &&
+    noLineSpend &&
+    spentAllPlatforms === 0 &&
+    !data.overall_pacing_percentage;
+
   return (
     <div className="space-y-6">
       {/* Pacing Signal — the campaign's lines in orbit */}
@@ -244,11 +268,24 @@ export function PacingTab({
         />
         <KpiCard
           label="Overall Pacing"
-          value={formatPercent(data.overall_pacing_percentage)}
-          sub={untrackedSpend > 0 ? "tracked media plan lines only" : undefined}
-          accent={pacingColor(overallStatus)}
+          value={unattributedSpend ? "—" : formatPercent(data.overall_pacing_percentage)}
+          sub={
+            unattributedSpend
+              ? "line spend not attributed"
+              : untrackedSpend > 0
+                ? "tracked media plan lines only"
+                : undefined
+          }
+          // Don't paint an alarming red 0.0% when the zero is an attribution
+          // gap rather than a real underspend (Finding #1).
+          accent={unattributedSpend ? "text-fg-faint" : pacingColor(overallStatus)}
         />
       </div>
+
+      {/* Finding #1: calm, explicit notice when an ended flight's line-level
+          spend hasn't been attributed — so the tab never confidently claims
+          "nothing ran" against a flight the Summary tab reports as landed. */}
+      {unattributedSpend && <UnattributedSpendNotice />}
 
       {/* AI-002 / AI-022: spend on platforms with no media plan line. Shown
           so the Pacing tab never silently hides real spend. */}
@@ -264,6 +301,7 @@ export function PacingTab({
         data={data}
         code={code}
         asOfDate={asOfDate}
+        referenceDate={data.as_of_date}
         sigHover={sigHover}
         onNameUpdate={handleNameUpdate}
         onBundleStateChange={handleBundleStateChange}
@@ -284,6 +322,37 @@ export function PacingTab({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Finding #1: a flight that has run its course but whose per-line spend never
+ * landed against the media plan lines. Rather than render the resulting zeros
+ * as a confident "nothing ran" verdict (which contradicts the Summary tab's
+ * landed total), surface a calm, explicit notice. Info-toned — this is a data
+ * lineage gap, not an alarm. Mirrors UntrackedSpendCard's tinted-border
+ * callout pattern.
+ */
+function UnattributedSpendNotice() {
+  return (
+    <Card
+      className="border-tint-info"
+      style={{
+        background: "color-mix(in srgb, var(--info) 6%, var(--surface-card))",
+        borderLeft: "3px solid var(--info)",
+      }}
+    >
+      <div className="eyebrow" style={{ color: "var(--info)" }}>
+        Line spend not attributed
+      </div>
+      <p className="mt-2.5 max-w-[640px] text-[12.5px] text-fg-muted">
+        This flight has ended, but no line-level spend was recorded against the
+        media plan, so the per-line figures below read as $0. If the campaign
+        did spend, its total is on the Summary tab and the spend hasn&apos;t
+        been attributed to lines yet — re-sync the media plan or re-run pacing
+        once attribution lands to populate these rows.
+      </p>
+    </Card>
   );
 }
 
@@ -360,6 +429,7 @@ function PacingLinesSection({
   data,
   code,
   asOfDate,
+  referenceDate,
   sigHover,
   onNameUpdate,
   onBundleStateChange,
@@ -367,6 +437,9 @@ function PacingLinesSection({
   data: PacingResponse;
   code: string;
   asOfDate?: string;
+  /** Pacing as-of date (data.as_of_date) — the reference point for deciding
+   *  whether a line's flight has ended (Finding #2). */
+  referenceDate?: string;
   /** line_id hovered in the Pacing Signal orbit above. */
   sigHover?: string | null;
   onNameUpdate: (lineId: string, newName: string) => void;
@@ -392,6 +465,7 @@ function PacingLinesSection({
               line={line}
               code={code}
               asOfDate={asOfDate}
+              referenceDate={referenceDate}
               glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
@@ -433,6 +507,7 @@ function PacingLinesSection({
             lines={linesBySheet.get(phase.sheet_id) ?? []}
             code={code}
             asOfDate={asOfDate}
+            referenceDate={referenceDate}
             sigHover={sigHover}
             onNameUpdate={onNameUpdate}
             onBundleStateChange={onBundleStateChange}
@@ -455,6 +530,7 @@ function PacingLinesSection({
                   line={line}
                   code={code}
                   asOfDate={asOfDate}
+                  referenceDate={referenceDate}
                   glow={sigHover === line.line_id}
                   onNameUpdate={onNameUpdate}
                   onBundleStateChange={onBundleStateChange}
@@ -474,6 +550,7 @@ function PhaseGroup({
   lines,
   code,
   asOfDate,
+  referenceDate,
   sigHover,
   onNameUpdate,
   onBundleStateChange,
@@ -484,6 +561,8 @@ function PhaseGroup({
   lines: PacingLine[];
   code: string;
   asOfDate?: string;
+  /** Pacing as-of date — reference point for the line-ended check (Finding #2). */
+  referenceDate?: string;
   /** line_id hovered in the Pacing Signal orbit above. */
   sigHover?: string | null;
   onNameUpdate: (lineId: string, newName: string) => void;
@@ -542,6 +621,7 @@ function PhaseGroup({
               line={line}
               code={code}
               asOfDate={asOfDate}
+              referenceDate={referenceDate}
               glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
@@ -558,6 +638,7 @@ function LineRow({
   line,
   code,
   asOfDate,
+  referenceDate,
   glow = false,
   onNameUpdate,
   onBundleStateChange,
@@ -567,6 +648,9 @@ function LineRow({
   code: string;
   /** Set in retrospective mode — disables interactive bundle buttons. */
   asOfDate?: string;
+  /** Pacing as-of date (data.as_of_date). Reference point for deciding
+   *  whether this line's flight has ended; falls back to today. */
+  referenceDate?: string;
   /** This line is hovered in the Pacing Signal orbit — light the row in
    *  its status colour. */
   glow?: boolean;
@@ -580,6 +664,15 @@ function LineRow({
 }) {
   const isCompleted = line.line_status === "completed";
   const status = pacingStatus(line.pacing_percentage);
+  // Finding #2: the API can leave remaining_days / daily_budget_required
+  // populated (e.g. "176d remaining · $238/day needed") on a line whose
+  // flight has already ended, producing impossible countdowns. Derive the
+  // ended state from the line's own end date relative to the pacing as-of
+  // date (or today when the payload lacks one) and trust that over the raw
+  // counters: a finished flight has zero runway and needs no daily pace.
+  const refDate = referenceDate ?? new Date().toISOString().slice(0, 10);
+  const lineEnded =
+    isCompleted || (line.flight_end != null && line.flight_end < refDate);
   const glowColor =
     line.pacing_percentage == null ? "var(--info)" : pacingVar(status);
   const budgetPct =
@@ -834,6 +927,11 @@ function LineRow({
                 <span className="text-fg-secondary">
                   Final: {formatPercent(budgetPct)} utilized
                 </span>
+              ) : lineEnded ? (
+                // Finding #2: flight is past its end date but not flagged
+                // completed — render "ended" and suppress the impossible
+                // countdown / daily-needed a finished flight can't have.
+                <span className="text-fg-secondary">ended</span>
               ) : (
                 <>
                   {line.remaining_days > 0 && (

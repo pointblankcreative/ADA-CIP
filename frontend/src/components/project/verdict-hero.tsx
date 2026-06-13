@@ -62,6 +62,14 @@ export function VerdictHero({
 }) {
   const ActionIcon = v.action ? VERDICT_ICONS[v.action.icon] : null;
 
+  // When pacing % is null/undefined/NaN, the verdict detail composes a
+  // dangling "— — of plan." clause (formatPercent renders an em-dash for a
+  // missing value). Drop that whole clause so a landed flight reads e.g.
+  // "Final spend $186,496 of $186,704." rather than "… — — of plan."
+  // The healthy "— 99.9% of plan." case carries a real number and is left
+  // untouched.
+  const detail = v.detail.replace(/\s*—\s*—\s*of plan\.?/g, ".");
+
   return (
     <Card
       className="overflow-hidden p-0"
@@ -92,7 +100,7 @@ export function VerdictHero({
             {v.headline}
           </h2>
           <p className="mt-2.5 max-w-[520px] text-[14.5px] leading-relaxed text-fg-secondary">
-            {v.detail}
+            {detail}
           </p>
           {v.action && ActionIcon && (
             <div className="mt-[18px] flex flex-wrap gap-2.5">

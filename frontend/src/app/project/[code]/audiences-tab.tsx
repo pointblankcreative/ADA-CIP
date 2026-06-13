@@ -35,6 +35,7 @@ import {
   lensesFor,
   quartileRead,
   rankCreatives,
+  resolveCell,
   type CreativeBenches,
   type CreativeVerdict,
   type LensId,
@@ -502,6 +503,29 @@ export function AudiencesTab({
   const needCount = audiences.filter((a) => reads.get(a.id)?.needsDecision)
     .length;
 
+  /* Unattributed-spend guard: a completed flight whose per-line spend never
+     attributed renders the whole crosstab as "—" under the active lens
+     (e.g. cpa null in every cell). A full grid of dashes reads as broken,
+     so when essentially no cell carries a real number we explain the gap
+     instead of showing the empty matrix. Counted on the cells the contract
+     actually delivered, under the lens the user is reading. */
+  let cellsWithData = 0;
+  let cellsPresent = 0;
+  for (const a of audiences) {
+    const row = audMatrix.cells[a.id];
+    if (!row) continue;
+    for (const variant of columns) {
+      const cell = row[variant];
+      if (!cell) continue; // missing key = creative doesn't run here, not a gap
+      cellsPresent += 1;
+      if (resolveCell(cell, lens, benches).kind === "value") cellsWithData += 1;
+    }
+  }
+  /* Essentially empty = zero readable cells, or a stray handful (≤5% of the
+     cells present). Above that the matrix earns its place — keep it visible. */
+  const matrixEmpty =
+    cellsPresent > 0 && cellsWithData <= Math.max(0, cellsPresent * 0.05);
+
   return (
     <div className="flex flex-col gap-4">
       {/* the call */}
@@ -563,6 +587,20 @@ export function AudiencesTab({
 
       {perf?.high_frequency_warning && (
         <WarnStrip kind="frequency">{perf.high_frequency_warning}</WarnStrip>
+      )}
+
+      {/* Unattributed line spend: the crosstab structure is sound but has no
+          per-cell result cost to show, so explain the wall of dashes rather
+          than letting it read as broken. The matrix stays visible — its row
+          reads (frequency, saturation, dossiers) still hold. */}
+      {matrixEmpty && (
+        <WarnStrip kind="no cell data" severity="info">
+          Line-level spend isn&apos;t attributed for this flight yet, so
+          per-cell {activeLens.label.toLowerCase()} is unavailable and the
+          cells below read &ldquo;—&rdquo;. The row reads (frequency,
+          saturation and each audience&apos;s dossier) still hold; the cells
+          fill in once spend is attributed.
+        </WarnStrip>
       )}
 
       {/* the matrix */}

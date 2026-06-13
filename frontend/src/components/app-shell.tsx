@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { TopBar } from "@/components/top-bar";
 import { CommandPalette } from "@/components/command-palette";
+import { IntroProvider } from "@/components/intro/intro-provider";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -28,10 +29,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <TopBar onOpenPalette={openPalette} />
-      <main className="min-w-0 flex-1">{children}</main>
-      <CommandPalette open={paletteOpen} onClose={closePalette} />
-    </div>
+    <IntroProvider>
+      <div className="flex min-h-screen flex-col">
+        <TopBar onOpenPalette={openPalette} />
+        <main className="min-w-0 flex-1">{children}</main>
+        <CommandPalette open={paletteOpen} onClose={closePalette} />
+      </div>
+    </IntroProvider>
   );
 }

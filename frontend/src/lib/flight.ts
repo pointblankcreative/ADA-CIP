@@ -47,9 +47,24 @@ function dayDiff(a: string, b: string): number {
   );
 }
 
+/** Today as an ISO YYYY-MM-DD string, local-midnight anchored. */
+function todayIso(): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
+}
+
 export function computeFlight(p: Project): FlightMath {
   const flightTotal = Math.max(1, dayDiff(p.start_date, p.end_date) + 1);
-  const remaining = Math.max(0, p.days_remaining ?? 0);
+  // Derive remaining from end_date relative to today rather than trusting a
+  // raw days_remaining the API may leave stale on a finished flight (Finding
+  // #2: a landed campaign surfaced "176d remaining"). When end_date is in the
+  // past, the flight has zero days left no matter what days_remaining says;
+  // when it disagrees with the date, prefer the smaller (never invent runway).
+  const daysToEnd = dayDiff(todayIso(), p.end_date); // <0 once end_date is past
+  const rawRemaining = Math.max(0, p.days_remaining ?? 0);
+  const remaining =
+    daysToEnd <= 0 ? 0 : Math.min(rawRemaining, daysToEnd);
   const elapsed = Math.max(1, Math.min(flightTotal, flightTotal - remaining));
   const budget = p.net_budget ?? 0;
   const spend = p.total_spend ?? 0;

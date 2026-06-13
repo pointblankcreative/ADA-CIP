@@ -114,7 +114,11 @@ export function SummaryTab({
 
           <div className="grid items-start gap-4 lg:grid-cols-2">
             {pacing && pacing.lines.length > 0 && (
-              <PaceDrivers lines={pacing.lines} onTab={onTab} />
+              <PaceDrivers
+                lines={pacing.lines}
+                projectSpend={f.spend}
+                onTab={onTab}
+              />
             )}
             {diagnostics
               .filter((d) => d.health_score != null)
@@ -164,9 +168,13 @@ function lineLabel(l: PacingLine): string {
 
 function PaceDrivers({
   lines,
+  projectSpend,
   onTab,
 }: {
   lines: PacingLine[];
+  /** Project-level spend (FlightMath.spend) — used to detect the case where
+   *  the flight clearly spent money but none of it is attributed to lines. */
+  projectSpend: number;
   onTab: (tab: string) => void;
 }) {
   const top = useMemo(() => {
@@ -179,6 +187,16 @@ function PaceDrivers({
       .slice(0, 4);
   }, [lines]);
 
+  // Unattributed flight: the project clearly spent money, yet every line's
+  // actual spend is zero. Rendering a wall of "$0 of $X · 0.0% · −$0 vs plan"
+  // rows is noise — show a calm one-line notice instead.
+  const unattributed = useMemo(
+    () =>
+      projectSpend > 0 &&
+      lines.every((l) => (l.actual_spend_to_date ?? 0) <= 0),
+    [lines, projectSpend]
+  );
+
   return (
     <Card>
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -190,6 +208,11 @@ function PaceDrivers({
           All lines <ArrowRight className="h-[13px] w-[13px]" />
         </button>
       </div>
+      {unattributed ? (
+        <div className="text-[13px] leading-relaxed text-fg-secondary">
+          Line-level spend isn&apos;t attributed for this flight yet.
+        </div>
+      ) : (
       <div className="flex flex-col gap-2.5">
         {top.map(({ l, delta }) => {
           const status = pacingStatus(l.pacing_percentage);
@@ -257,6 +280,7 @@ function PaceDrivers({
           );
         })}
       </div>
+      )}
     </Card>
   );
 }
