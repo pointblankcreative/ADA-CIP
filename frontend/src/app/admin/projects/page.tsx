@@ -110,7 +110,7 @@ export default function ManageProjectsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1340px]">
+    <div className="mx-auto max-w-[1600px]">
       <div className="flex items-center justify-between">
         <div>
           <Link
@@ -149,7 +149,12 @@ export default function ManageProjectsPage() {
               <th className={cn(TH_CLS, "text-center")}>Sheet</th>
               <th className={TH_CLS}>Tab</th>
               <th className={TH_CLS}>Slack</th>
-              <th className={cn(TH_CLS, "text-center")}>Alerts</th>
+              <th
+                className={cn(TH_CLS, "text-center")}
+                title="Lifetime alert count for this project — includes resolved/historical alerts, not just currently-open ones. See the Alerts page for live alerts."
+              >
+                Alerts (lifetime)
+              </th>
               <th className={TH_CLS}>Actions</th>
             </tr>
           </thead>
@@ -186,7 +191,7 @@ export default function ManageProjectsPage() {
                       {p.project_code}
                     </Link>
                   </td>
-                  <td className="max-w-[200px] truncate px-4 py-3 font-medium text-fg">{p.project_name}</td>
+                  <td className="max-w-[360px] truncate px-4 py-3 font-medium text-fg" title={p.project_name}>{p.project_name}</td>
                   <td className="px-4 py-3 text-fg-muted">{p.client_name ?? "—"}</td>
                   <td className="px-4 py-3">
                     {isEditing ? (
@@ -259,7 +264,7 @@ export default function ManageProjectsPage() {
                       p.slack_channel_id || "—"
                     )}
                   </td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-4 py-3 text-center" title="Lifetime alerts (includes resolved). Check the Alerts page for currently-open alerts.">
                     {p.alert_count > 0 ? (
                       <span className="rounded-pill bg-tint-danger px-2 py-0.5 font-mono text-xs font-medium text-danger">
                         {p.alert_count}

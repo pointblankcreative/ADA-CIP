@@ -100,9 +100,9 @@ export function PortfolioPulse({
           </div>
           <div className="mt-[18px] grid grid-cols-2 gap-x-[18px] gap-y-5 sm:grid-cols-4">
             <PulseStat
-              label="Flights live"
+              label="Delivering now"
               value={String(m.live)}
-              sub={`${active.length} active total`}
+              sub={`of ${active.length} active`}
             />
             <PulseStat
               label="Deployed"
