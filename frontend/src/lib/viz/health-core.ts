@@ -99,6 +99,38 @@ export const STATUS_WORD: Record<Severity, string> = {
   nodata: "No signal",
 };
 
+/**
+ * Map a legacy/back-end status string onto the Claude Design status word.
+ *
+ * The diagnostic engine and the per-tab readers still emit their own
+ * vocabularies (STRONG/WATCH/ACTION, ACT, NO DATA, Healthy/Watch/Critical).
+ * This converges the *displayed* word onto the shared four-token system
+ * without touching any threshold or branching logic — callers keep their
+ * existing status keys for colour/branching and only swap the rendered text.
+ * Unknown/empty inputs read as "No signal".
+ */
+export function statusWord(status: string | null | undefined): string {
+  switch ((status ?? "").trim().toUpperCase()) {
+    case "STRONG":
+    case "HEALTHY":
+    case "OK":
+    case "ON PACE":
+    case "ON TRACK":
+      return STATUS_WORD.ok;
+    case "WATCH":
+    case "WATCHED":
+    case "DRIFTING":
+      return STATUS_WORD.watch;
+    case "ACTION":
+    case "ACT":
+    case "CRITICAL":
+    case "OFF PACE":
+      return STATUS_WORD.critical;
+    default:
+      return STATUS_WORD.nodata;
+  }
+}
+
 export const SOUND_DESC: Record<Severity, string> = {
   ok: "Running steady — a low, even hum. On plan and holding.",
   watch: "Drifting — you can hear it wavering against the rest.",

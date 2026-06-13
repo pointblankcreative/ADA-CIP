@@ -3,7 +3,7 @@
 /**
  * The pacing instrument — the Signal Lab's Orbit, replacing the old
  * oscilloscope: this campaign is the core, and its line items orbit it.
- * Healthy lines hold their shell; drifters wobble; broken lines judder
+ * On-pace lines hold their shell; drifters wobble; broken lines judder
  * off-orbit. Hover a body to read it (and solo its voice when sound is
  * on); click the stage for the 60-day trend + line table.
  */
@@ -221,12 +221,12 @@ export function OscilloscopeCard({
     pacing.lines.length > 0 && pacing.lines.every(isLinePending);
 
   const healthLabel = allPending
-    ? "Awaiting Data"
+    ? "No signal"
     : health > 0.85
-      ? "Healthy"
+      ? "On pace"
       : health > 0.5
-        ? "Watch"
-        : "Critical";
+        ? "Drifting"
+        : "Off pace";
   const healthColor = allPending
     ? "var(--info)"
     : health > 0.85

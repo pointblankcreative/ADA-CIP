@@ -18,6 +18,7 @@ import {
   type Project,
 } from "@/lib/api";
 import { computeFlight, verdict } from "@/lib/flight";
+import { statusWord } from "@/lib/viz/health-core";
 import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
 import { Label } from "@/components/ui";
@@ -349,7 +350,7 @@ function HealthMini({
               border: `1.5px solid color-mix(in srgb, ${color} 40%, transparent)`,
             }}
           >
-            {output.health_status}
+            {statusWord(output.health_status)}
           </span>
           <div className="mt-1.5 font-mono text-[10.5px] text-fg-faint">
             {active}/{total} signals
@@ -358,7 +359,7 @@ function HealthMini({
           </div>
         </div>
       </div>
-      {/* Gauge, not thermometer: the goal is the strong zone, not 100 —
+      {/* Gauge, not thermometer: the goal is the on-pace zone, not 100 —
           see BandScale's rationale comment. */}
       <BandScale
         score={output.health_score}
@@ -381,7 +382,7 @@ function HealthMini({
                   style={{ color: c }}
                 >
                   {pl.score != null ? `${pl.score.toFixed(0)} · ` : ""}
-                  {pl.status ?? "NO DATA"}
+                  {statusWord(pl.status)}
                 </span>
               </div>
               <BandScale score={pl.score} color={c} />

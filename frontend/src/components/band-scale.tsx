@@ -1,7 +1,7 @@
 /**
  * BandScale — a health score drawn against its bands, not against 100.
  *
- * The engine's own definition of success is the STRONG band (70+), but a
+ * The engine's own definition of success is the on-pace band (70+), but a
  * filled progress bar made every score read as distance-from-perfect:
  * an 81 looked like "19 missing" when it's actually a campaign firing on
  * all cylinders. 100 requires every signal perfect at once, which live
@@ -9,7 +9,7 @@
  * creative coming, fixed audience, locked landing page).
  *
  * So: a gauge, not a thermometer. Three quiet band zones, a slightly
- * firmer line where strong begins, and a marker showing where this
+ * firmer line where on-pace begins, and a marker showing where this
  * score sits. Crossing the line is the goal; the right-hand end of the
  * track is just where the scale stops.
  */

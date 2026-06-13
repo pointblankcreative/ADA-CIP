@@ -4,7 +4,7 @@
  * Diagnostics tab v2 — the "Triage Board".
  *
  * Organized by what needs doing, not by pillar:
- *   Act now → Keep an eye on → Healthy (compact) → Not reporting.
+ *   Act now → Keep an eye on → On pace (compact) → Not reporting.
  * Mixed campaigns pool both engines' signals; engine + pillar become tags.
  * Evaluation history renders as ▲/▼ deltas, sparklines, and dot strips
  * (via the history endpoint's include_signals option).
@@ -38,6 +38,7 @@ import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
 import { Btn, Eyebrow, Label } from "@/components/ui";
 import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
+import { statusWord } from "@/lib/viz/health-core";
 
 function statusVar(status: string | null | undefined): string {
   if (status === "STRONG") return "var(--ok)";
@@ -350,7 +351,7 @@ function DgChip({ chip }: { chip: TriageEngineChip }) {
             className="font-mono text-[8.5px] font-bold tracking-[0.12em]"
             style={{ color: statusVar(chip.status) }}
           >
-            {chip.status ?? "NO DATA"}
+            {statusWord(chip.status)}
           </span>
           <DgDelta delta={chip.delta} size={10} />
         </div>
@@ -888,7 +889,7 @@ export function DiagnosticsTab({
         title="Act now"
         meta={
           act.length || critAlerts.length
-            ? `${act.length} signal${act.length === 1 ? "" : "s"} at ACTION${
+            ? `${act.length} signal${act.length === 1 ? "" : "s"} off pace${
                 critAlerts.length
                   ? ` + ${critAlerts.length} critical alert${critAlerts.length === 1 ? "" : "s"}`
                   : ""
@@ -930,7 +931,7 @@ export function DiagnosticsTab({
           >
             <CheckCircle2 className="h-[15px] w-[15px] flex-shrink-0 text-ok" />
             <span className="text-[13px] text-fg-secondary">
-              No signals at ACTION — nothing needs intervention today.
+              No signals off pace — nothing needs intervention today.
             </span>
           </div>
         )
@@ -942,7 +943,7 @@ export function DiagnosticsTab({
           <DgZoneHead
             color="var(--warn)"
             title="Keep an eye on"
-            meta={`${watch.length} signal${watch.length === 1 ? "" : "s"} at WATCH${
+            meta={`${watch.length} signal${watch.length === 1 ? "" : "s"} drifting${
               softAlerts.length
                 ? ` · ${softAlerts.length} alert${softAlerts.length === 1 ? "" : "s"}`
                 : ""
@@ -978,8 +979,8 @@ export function DiagnosticsTab({
         <>
           <DgZoneHead
             color="var(--ok)"
-            title="Healthy"
-            meta={`${strong.length} signals STRONG — compact view`}
+            title="On pace"
+            meta={`${strong.length} signals on pace — compact view`}
           />
           <div className="overflow-hidden rounded-md border-[1.5px] border-line-soft bg-surface-card">
             {/* -1px margins hide the rows' outer borders against the card edge */}

@@ -291,7 +291,21 @@ export default function ProjectDetailPage() {
             onTab={(t) => setActiveTab(normalizeTab(t))}
           />
         )}
-        {activeTab === "pacing" && <PacingTab code={code} />}
+        {activeTab === "pacing" && (
+          <PacingTab
+            code={code}
+            // A1 (pacing resilience): thread the project-level verdict + real
+            // warehouse figures the page already holds so the Pacing tab can
+            // de-alarm an ENDED (LANDED) flight independently of per-line
+            // flight_end dates, and show the true Spent/Budget instead of $0
+            // when line-level spend isn't attributed. `f.ended` is
+            // status !== "active" (see computeFlight) — the same signal that
+            // drives the LANDED verdict in the header.
+            projectEnded={f?.ended ?? false}
+            projectSpend={project?.total_spend}
+            projectBudget={project?.net_budget}
+          />
+        )}
         {activeTab === "creative" && (
           <CreativeTab code={code} onTab={(t) => setActiveTab(normalizeTab(t))} />
         )}
