@@ -648,27 +648,21 @@ class TestImageSync:
             "checked_at": datetime.now(timezone.utc) - timedelta(days=30),
         }]
 
-    def test_force_refreshes_stored_meta_stills(self, monkeypatch):
+    def test_force_leaves_stored_meta_stills_alone(self, monkeypatch):
+        # The 64px heal is done: force must never refetch a stored still
+        # (it only retries no_match / fetch_failed). Re-downloading healthy
+        # images hammered Meta and starved StackAdapt.
         monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
         monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
         rec = QueryRecorder()
         _image_sync_responses(rec, self._stored_meta_state())
-        ads = [{"name": HERO_AD_NAME,
-                "creative": {"thumbnail_url": "https://cdn.meta/thumb_1080.jpg"}}]
-        with _Patched(
-            ca, rec,
-            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
-            patch.object(ca, "_meta_ads", return_value=ads),
-            patch.object(ca, "_download_image",
-                         return_value=(b"BIG", "jpg", "image/jpeg")),
-            patch.object(ca, "_store_bytes", return_value=None),
-        ):
+        with _Patched(ca, rec):
             result = ca.sync_creative_images(force=True)
 
-        assert result["pending"] == 1 and result["stored"] == 1
-        merge_sql, merge_params = rec.calls[-1]
-        assert "MERGE" in merge_sql
-        assert ("string", "status", "stored") in merge_params
+        assert result["pending"] == 0
+        assert result["stored"] == 0 and result["no_match"] == 0
+        assert len(rec.calls) == 4  # state reads only, no MERGE writes
+        assert not any("MERGE" in sql for sql, _ in rec.calls)
 
     def test_force_leaves_stackadapt_stored_alone(self, monkeypatch):
         # StackAdapt serves the original asset — nothing to heal.
@@ -682,41 +676,31 @@ class TestImageSync:
             result = ca.sync_creative_images(force=True)
         assert result["pending"] == 0
 
-    def test_forced_refresh_miss_keeps_stored_row(self, monkeypatch):
-        # A refresh that finds nothing must not flip stored → no_match.
+    def test_force_retries_no_match_attempted_today(self, monkeypatch):
+        # The once-per-day guard would skip a no_match attempted today;
+        # force must retry it anyway — that is what force is for, and it is
+        # how the 7 StackAdapt no_match get a same-day second chance.
         monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
         monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
         rec = QueryRecorder()
-        _image_sync_responses(rec, self._stored_meta_state())
+        _image_sync_responses(rec, [{
+            "variant": HERO_VARIANT, "status": "no_match", "gcs_path": None,
+            "source_platform": None,
+            "checked_at": datetime.now(timezone.utc),
+        }])
         with _Patched(
             ca, rec,
             patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
-            patch.object(ca, "_meta_ads", return_value=[]),
+            patch.object(ca, "_meta_ads",
+                         return_value=[{"name": HERO_AD_NAME,
+                                        "creative": {"image_url": "https://cdn.meta/full.jpg"}}]),
+            patch.object(ca, "_download_image",
+                         return_value=(b"IMG", "jpg", "image/jpeg")),
+            patch.object(ca, "_store_bytes", return_value=None),
         ):
             result = ca.sync_creative_images(force=True)
 
-        assert result["pending"] == 1
-        assert result["no_match"] == 0 and result["fetch_failed"] == 0
-        assert len(rec.calls) == 4  # state reads only, no MERGE writes
-
-    def test_forced_refresh_failed_download_keeps_stored_row(self, monkeypatch):
-        # A refresh whose download fails keeps the working image too.
-        monkeypatch.setattr(ca.settings, "meta_access_token", "tok")
-        monkeypatch.setattr(ca.settings, "stackadapt_api_key", "")
-        rec = QueryRecorder()
-        _image_sync_responses(rec, self._stored_meta_state())
-        ads = [{"name": HERO_AD_NAME,
-                "creative": {"thumbnail_url": "https://cdn.meta/thumb_1080.jpg"}}]
-        with _Patched(
-            ca, rec,
-            patch.object(ca, "_meta_ad_accounts", return_value=["act_1"]),
-            patch.object(ca, "_meta_ads", return_value=ads),
-            patch.object(ca, "_download_image", return_value=None),
-        ):
-            result = ca.sync_creative_images(force=True)
-
-        assert result["fetch_failed"] == 1 and result["stored"] == 0
-        assert len(rec.calls) == 4  # ledger untouched — stored row survives
+        assert result["pending"] == 1 and result["stored"] == 1
 
 
 # ── delivery_estimate parsing ─────────────────────────────────────────

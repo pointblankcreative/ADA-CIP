@@ -855,20 +855,15 @@ def _store_variant_image(
     url: str,
     source: str,
     counts: dict,
-    preserve_on_failure: bool = False,
 ) -> None:
     """Download → GCS → ledger for one matched variant. Inline during the
-    scan so a timed-out run keeps everything it already found.
-
-    preserve_on_failure is set for forced refreshes of already-stored
-    variants: a failed re-download must not downgrade a working image,
-    so the ledger keeps its stored row and only the count records the
-    failure."""
+    scan so a timed-out run keeps everything it already found. Only
+    unresolved variants reach here (stored stills are never refetched), so
+    a failed download simply records fetch_failed for a later retry."""
 
     def _failed() -> None:
         counts["fetch_failed"] += 1
-        if not preserve_on_failure:
-            _record_asset(variant, project_code, source, None, "fetch_failed")
+        _record_asset(variant, project_code, source, None, "fetch_failed")
 
     try:
         downloaded = _download_image(http, url)
@@ -899,12 +894,12 @@ def sync_creative_images(
     sources were fully scanned inside the budget AND neither source
     failed — running out of time or a broken source must not look like
     "this creative doesn't exist on the platforms". `force` retries
-    no_match / fetch_failed variants regardless of the daily guard AND
-    re-downloads Meta-sourced stored stills (Meta thumbnails used to be
-    fetched at 64px; StackAdapt serves the original asset, so those are
-    left alone). A refresh that fails or finds no match keeps the
-    existing image. Counts and per-source status come back for the
-    admin endpoint; failures are logged per item and never raise.
+    no_match / fetch_failed variants regardless of the daily guard;
+    already-stored stills are never refetched (both platforms hold the
+    original asset, and re-downloading healthy images just hammers the
+    APIs and starves the unresolved variants). Counts and per-source
+    status come back for the admin endpoint; failures are logged per
+    item and never raise.
     """
     deadline = deadline or _Deadline.in_secs(SYNC_TIME_BUDGET_SECS)
     sources = {
@@ -937,7 +932,6 @@ def sync_creative_images(
     states = _asset_states()
     now = datetime.now(timezone.utc)
     pending: dict[str, str] = {}  # variant → project_code
-    refreshing: set[str] = set()  # stored variants being re-downloaded
     for variant, project_code in ad_name_to_variant.values():
         if variant in pending:
             continue
@@ -946,12 +940,14 @@ def sync_creative_images(
             state and state.get("status") == "stored" and state.get("gcs_path")
         )
         if force:
+            # Force retries no_match / fetch_failed past the once-per-day
+            # guard, but never refetches a stored still — this matches the
+            # /creative-assets/sync contract. Both Meta (full size since the
+            # one-time 64px heal) and StackAdapt hold the original asset, so
+            # re-downloading healthy images only hammers the platform APIs
+            # and starves the unresolved variants force is actually for.
             if stored:
-                # Only Meta stills can be stuck at the old 64px default;
-                # StackAdapt objects are the original asset.
-                if (state.get("source_platform") or "").lower() != "meta":
-                    continue
-                refreshing.add(variant)
+                continue
             pending[variant] = project_code
         elif _needs_attempt(state, now):
             pending[variant] = project_code
@@ -991,7 +987,6 @@ def sync_creative_images(
                                 _store_variant_image(
                                     http, variant, remaining.pop(variant),
                                     url, "meta", counts,
-                                    preserve_on_failure=variant in refreshing,
                                 )
                     except Exception:
                         logger.warning("Meta ads listing failed for %s", account_id, exc_info=True)
@@ -1025,7 +1020,6 @@ def sync_creative_images(
                         _store_variant_image(
                             http, variant, remaining.pop(variant),
                             sa["url"], "stackadapt", counts,
-                            preserve_on_failure=variant in refreshing,
                         )
                 except Exception:
                     logger.warning("StackAdapt creative listing failed", exc_info=True)
@@ -1035,10 +1029,6 @@ def sync_creative_images(
         # ── no_match — only when the scan actually finished ─────────
         if scanned_all and not deadline.exceeded():
             for variant, project_code in remaining.items():
-                if variant in refreshing:
-                    # A forced refresh that found nothing keeps the
-                    # stored image rather than flipping to no_match.
-                    continue
                 try:
                     _record_asset(variant, project_code, None, None, "no_match")
                     counts["no_match"] += 1
