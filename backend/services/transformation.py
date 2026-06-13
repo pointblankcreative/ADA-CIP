@@ -174,6 +174,99 @@ def _log_run(
     mtl.query(sql, job_config=job_config).result()
 
 
+def _log_run_start(
+    mtl: bigquery.Client,
+    log_id: str,
+    mode: str,
+    started_at: datetime,
+) -> bool:
+    """Insert a 'running' ingestion_log row at the very START of a transform.
+
+    Audit-trail hardening (ADAC-63): the FULL transform reads all history into
+    memory and has been OOM-killed mid-run. A SIGKILL leaves no chance for a
+    finally/except to write a terminal row, so the run vanished from
+    ingestion_log entirely — no record it was even attempted. Writing a
+    'running' row up front means the run is always recorded; ``_log_run_finish``
+    later stamps it success/failed. If the process dies hard, the row simply
+    stays 'running', which is itself the signal that a run started and never
+    reported back.
+
+    Best-effort: a failure here is logged but never blocks the transform — the
+    audit trail must not be able to take down the pipeline. Returns True if the
+    'running' row was written (so the caller knows whether to UPDATE vs INSERT
+    the terminal status).
+    """
+    sql = f"""
+        INSERT INTO {LOG_TABLE}
+            (log_id, source_platform, connector_name, run_started_at, status,
+             rows_fetched, rows_upserted)
+        VALUES
+            (@log_id, 'funnel_io', @connector, @started, 'running', 0, 0)
+    """
+    params = [
+        bigquery.ScalarQueryParameter("log_id", "STRING", log_id),
+        bigquery.ScalarQueryParameter("connector", "STRING", f"transform_{mode}"),
+        bigquery.ScalarQueryParameter("started", "TIMESTAMP", started_at.isoformat()),
+    ]
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    try:
+        mtl.query(sql, job_config=job_config).result()
+        return True
+    except Exception:
+        logger.exception(
+            "  Could not write 'running' ingestion_log row for %s transform "
+            "(log_id=%s) — proceeding without an up-front audit row", mode, log_id,
+        )
+        return False
+
+
+def _log_run_finish(
+    mtl: bigquery.Client,
+    log_id: str,
+    mode: str,
+    started_at: datetime,
+    status: str,
+    has_running_row: bool,
+    rows: int = 0,
+    date_start: date | None = None,
+    date_end: date | None = None,
+    error: str | None = None,
+) -> None:
+    """Record the terminal status of a transform run.
+
+    When ``_log_run_start`` already wrote a 'running' row (``has_running_row``),
+    UPDATE that row in place so each run is exactly one ingestion_log row. If
+    the up-front insert failed, fall back to INSERTing a fresh terminal row via
+    ``_log_run`` so an audit record still lands. Same Montreal region as the
+    target table, so the UPDATE is never a cross-region DML.
+    """
+    if not has_running_row:
+        _log_run(mtl, log_id, mode, started_at, status, rows, date_start, date_end, error)
+        return
+
+    sql = f"""
+        UPDATE {LOG_TABLE}
+        SET run_completed_at = CURRENT_TIMESTAMP(),
+            status = @status,
+            rows_fetched = @rows,
+            rows_upserted = @rows,
+            date_range_start = @ds,
+            date_range_end = @de,
+            error_message = @error
+        WHERE log_id = @log_id
+    """
+    params = [
+        bigquery.ScalarQueryParameter("log_id", "STRING", log_id),
+        bigquery.ScalarQueryParameter("status", "STRING", status),
+        bigquery.ScalarQueryParameter("rows", "INT64", rows),
+        bigquery.ScalarQueryParameter("ds", "DATE", date_start.isoformat() if date_start else None),
+        bigquery.ScalarQueryParameter("de", "DATE", date_end.isoformat() if date_end else None),
+        bigquery.ScalarQueryParameter("error", "STRING", error),
+    ]
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    mtl.query(sql, job_config=job_config).result()
+
+
 def _ensure_vw_fact_digital_daily(mtl: bigquery.Client) -> None:
     """Create or refresh the view `vw_fact_digital_daily`.
 
@@ -249,6 +342,11 @@ def run_transformation(mode: str = "daily") -> dict:
     us = _us_client()
     mtl = _mtl_client()
 
+    # Audit-trail hardening (ADAC-63): record a 'running' row BEFORE any heavy
+    # work so a FULL run that gets OOM-killed mid-flight still leaves a trace in
+    # ingestion_log. The terminal _log_run_finish UPDATEs this same row.
+    has_running_row = _log_run_start(mtl, log_id, mode, started_at)
+
     try:
         # Step 1: SELECT in US
         logger.info("Transformation [%s] started — reading from funnel_data (US)…", mode)
@@ -259,7 +357,7 @@ def run_transformation(mode: str = "daily") -> dict:
         logger.info("  Fetched %d rows from funnel_data", row_count)
 
         if row_count == 0:
-            _log_run(mtl, log_id, mode, started_at, "success", 0)
+            _log_run_finish(mtl, log_id, mode, started_at, "success", has_running_row, 0)
             return {"status": "success", "mode": mode, "rows_loaded": 0, "platforms": {}}
 
         # Determine date range
@@ -312,7 +410,10 @@ def run_transformation(mode: str = "daily") -> dict:
         # exists / is up to date. Cheap DDL; idempotent.
         _ensure_vw_fact_digital_daily(mtl)
 
-        _log_run(mtl, log_id, mode, started_at, "success", loaded, min_date, max_date)
+        _log_run_finish(
+            mtl, log_id, mode, started_at, "success", has_running_row,
+            loaded, min_date, max_date,
+        )
 
         return {
             "status": "success",
@@ -326,7 +427,10 @@ def run_transformation(mode: str = "daily") -> dict:
     except Exception as e:
         logger.exception("Transformation [%s] failed", mode)
         try:
-            _log_run(mtl, log_id, mode, started_at, "failed", error=str(e)[:500])
+            _log_run_finish(
+                mtl, log_id, mode, started_at, "failed", has_running_row,
+                error=str(e)[:500],
+            )
         except Exception:
             logger.exception("Failed to write error to ingestion_log")
         return {
