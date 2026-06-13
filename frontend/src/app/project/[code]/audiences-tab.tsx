@@ -59,6 +59,7 @@ import {
   formatNumberCompact,
   platformLabel,
 } from "@/lib/utils";
+import { statusWord } from "@/lib/viz/health-core";
 
 /* ── Per-audience read: status from the primary-KPI quartile ─────── */
 
@@ -299,7 +300,7 @@ function Dossier({
       <div className="flex flex-col gap-2.5">
         <div>
           <div className="mb-1.5 font-mono text-[7.5px] tracking-[0.12em] text-fg-faint">
-            FREQUENCY · LAST SYNCS
+            FREQUENCY · AVG IMPRESSIONS / PERSON · LAST SYNCS
           </div>
           <div className="flex items-center gap-2.5">
             <Spark
@@ -586,7 +587,14 @@ export function AudiencesTab({
       </Card>
 
       {perf?.high_frequency_warning && (
-        <WarnStrip kind="frequency">{perf.high_frequency_warning}</WarnStrip>
+        <WarnStrip kind="frequency">
+          {perf.high_frequency_warning}{" "}
+          <span className="text-fg-faint">
+            Frequency = avg impressions per person reached; this flags the peak
+            across the campaign&apos;s ad sets (reporting window set by the
+            platform).
+          </span>
+        </WarnStrip>
       )}
 
       {/* Unattributed line spend: the crosstab structure is sound but has no
@@ -688,7 +696,7 @@ export function AudiencesTab({
                           {formatCurrencyCompact(a.spend)}
                           {a.role ? ` · ${a.role}` : ""}
                           {read.freqHot && read.latestFreq != null
-                            ? ` · ${formatTimes(read.latestFreq)} frequency`
+                            ? ` · ${formatTimes(read.latestFreq)} avg impressions/person (latest sync)`
                             : ""}
                           {a.saturation != null
                             ? ` · ${Math.round(a.saturation * 100)}% saturated`
@@ -716,7 +724,7 @@ export function AudiencesTab({
                         className="font-mono text-[8.5px] font-bold tracking-[0.1em]"
                         style={{ color: statusVar(read.status) }}
                       >
-                        {read.status}
+                        {statusWord(read.status)}
                       </span>
                     </div>
                   </div>

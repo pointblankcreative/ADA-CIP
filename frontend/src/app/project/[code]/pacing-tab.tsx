@@ -77,6 +77,9 @@ function isRejectedBundleParent(line: PacingLine): boolean {
 export function PacingTab({
   code,
   asOfDate,
+  projectEnded = false,
+  projectSpend,
+  projectBudget,
 }: {
   code: string;
   /**
@@ -86,6 +89,23 @@ export function PacingTab({
    * are suppressed in retro mode since the view is point-in-time read-only.
    */
   asOfDate?: string;
+  /**
+   * A1 (pacing resilience): the project-level verdict the detail page already
+   * holds (`computeFlight(project).ended` — i.e. status !== "active" / LANDED).
+   * Passed so the tab can de-alarm an ENDED flight independently of per-line
+   * flight_end dates, which can be mis-stored (24058: dates a year ahead read
+   * every line as not-yet-started). Defaults false so the Retrospective page,
+   * which renders <PacingTab> without it, behaves exactly as before.
+   */
+  projectEnded?: boolean;
+  /**
+   * The project's true warehouse spend / budget (project.total_spend /
+   * net_budget). Used as the source of truth for the Spent / Remaining tiles
+   * when line-level spend isn't attributed (so the tab never shows $0 against
+   * a flight the Summary tab reports as landed). Undefined in retro mode.
+   */
+  projectSpend?: number;
+  projectBudget?: number;
 }) {
   const [data, setData] = useState<PacingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -208,32 +228,49 @@ export function PacingTab({
   // fallbacks keep the tab working against a not-yet-redeployed backend.
   const untrackedSpend = data.untracked_spend ?? 0;
   const untrackedPlatforms = data.untracked_platforms ?? [];
-  const spentAllPlatforms =
+  const pacingSpendAllPlatforms =
     data.total_actual_all_platforms ?? data.total_actual_to_date;
 
-  // Finding #1: an ended flight whose per-line spend never got attributed
+  // Finding #1 / A1: an ended flight whose per-line spend never got attributed
   // reads as "$0 / 0.0% / NOT STARTED / AWAITING DATA" — directly
-  // contradicting the Summary tab's landed total. We can't see the
-  // project-level warehouse total from the pacing payload, so we detect the
-  // contradiction conservatively from the signals we DO have: every line has
-  // finished (completed, or its flight_end is at/behind the as-of date) yet
-  // pacing sees no spend on any platform at all. That combination means the
-  // flight ran to completion but its spend hasn't landed against the lines —
-  // not that nothing ran — so we soften the zeros instead of asserting them.
+  // contradicting the Summary tab's landed total. Two ways we know a flight
+  // has finished:
+  //   • projectEnded — the detail page's own verdict (status !== "active" /
+  //     LANDED). This is authoritative and INDEPENDENT of per-line dates, so
+  //     it catches 24058 whose flight_end values are mis-stored a year ahead
+  //     and therefore read as not-yet-started.
+  //   • flightEnded — the line-date fallback for callers that don't pass
+  //     projectEnded (e.g. the Retrospective page): every line is completed,
+  //     or its flight_end is at/behind the as-of date.
+  // We treat the zeros as an attribution gap (not a real "nothing ran") only
+  // when the flight has ended AND pacing genuinely sees no spend anywhere.
   const flightEnded =
-    data.lines.length > 0 &&
-    data.lines.every(
-      (l) =>
-        l.line_status === "completed" ||
-        (l.flight_end != null && l.flight_end <= data.as_of_date)
-    );
+    projectEnded ||
+    (data.lines.length > 0 &&
+      data.lines.every(
+        (l) =>
+          l.line_status === "completed" ||
+          (l.flight_end != null && l.flight_end <= data.as_of_date)
+      ));
   const noLineSpend =
     data.lines.reduce((sum, l) => sum + (l.actual_spend_to_date ?? 0), 0) === 0;
   const unattributedSpend =
     flightEnded &&
     noLineSpend &&
-    spentAllPlatforms === 0 &&
+    pacingSpendAllPlatforms === 0 &&
     !data.overall_pacing_percentage;
+
+  // A1: prefer the project's true warehouse spend/budget (passed from the
+  // detail page) over the pacing payload when line-level spend is unattributed,
+  // so the Spent / Remaining tiles show the real figure the Summary tab reports
+  // instead of $0. Falls back to the pacing payload when those props are absent
+  // (retro mode) or when there's nothing to correct.
+  const spentAllPlatforms =
+    unattributedSpend && projectSpend != null && projectSpend > 0
+      ? projectSpend
+      : pacingSpendAllPlatforms;
+  const totalBudget =
+    projectBudget != null && projectBudget > 0 ? projectBudget : data.net_budget;
 
   return (
     <div className="space-y-6">
@@ -251,20 +288,25 @@ export function PacingTab({
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           label="Total Budget"
-          value={formatCurrency(data.net_budget)}
+          value={formatCurrency(totalBudget)}
         />
         <KpiCard
           label="Spent to Date"
           value={formatCurrency(spentAllPlatforms)}
           sub={
-            untrackedSpend > 0
-              ? `${formatCurrency(data.total_actual_to_date)} tracked + ${formatCurrency(untrackedSpend)} untracked`
-              : `of ${formatCurrency(data.total_planned_to_date)} planned`
+            // A1: when the figure is the project's real warehouse total (line
+            // spend unattributed), the tracked/planned breakdown no longer
+            // reconciles — say so plainly instead of "of $0 planned".
+            unattributedSpend && spentAllPlatforms > 0
+              ? "campaign total (not yet attributed to lines)"
+              : untrackedSpend > 0
+                ? `${formatCurrency(data.total_actual_to_date)} tracked + ${formatCurrency(untrackedSpend)} untracked`
+                : `of ${formatCurrency(data.total_planned_to_date)} planned`
           }
         />
         <KpiCard
           label="Remaining"
-          value={formatCurrency(data.net_budget - spentAllPlatforms)}
+          value={formatCurrency(totalBudget - spentAllPlatforms)}
         />
         <KpiCard
           label="Overall Pacing"
@@ -302,6 +344,7 @@ export function PacingTab({
         code={code}
         asOfDate={asOfDate}
         referenceDate={data.as_of_date}
+        projectEnded={projectEnded}
         sigHover={sigHover}
         onNameUpdate={handleNameUpdate}
         onBundleStateChange={handleBundleStateChange}
@@ -430,6 +473,7 @@ function PacingLinesSection({
   code,
   asOfDate,
   referenceDate,
+  projectEnded = false,
   sigHover,
   onNameUpdate,
   onBundleStateChange,
@@ -440,6 +484,9 @@ function PacingLinesSection({
   /** Pacing as-of date (data.as_of_date) — the reference point for deciding
    *  whether a line's flight has ended (Finding #2). */
   referenceDate?: string;
+  /** A1: the project-level ended verdict — forces every line to "ended"
+   *  regardless of its own (possibly mis-stored) flight_end date. */
+  projectEnded?: boolean;
   /** line_id hovered in the Pacing Signal orbit above. */
   sigHover?: string | null;
   onNameUpdate: (lineId: string, newName: string) => void;
@@ -466,6 +513,7 @@ function PacingLinesSection({
               code={code}
               asOfDate={asOfDate}
               referenceDate={referenceDate}
+              projectEnded={projectEnded}
               glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
@@ -508,6 +556,7 @@ function PacingLinesSection({
             code={code}
             asOfDate={asOfDate}
             referenceDate={referenceDate}
+            projectEnded={projectEnded}
             sigHover={sigHover}
             onNameUpdate={onNameUpdate}
             onBundleStateChange={onBundleStateChange}
@@ -531,6 +580,7 @@ function PacingLinesSection({
                   code={code}
                   asOfDate={asOfDate}
                   referenceDate={referenceDate}
+                  projectEnded={projectEnded}
                   glow={sigHover === line.line_id}
                   onNameUpdate={onNameUpdate}
                   onBundleStateChange={onBundleStateChange}
@@ -551,6 +601,7 @@ function PhaseGroup({
   code,
   asOfDate,
   referenceDate,
+  projectEnded = false,
   sigHover,
   onNameUpdate,
   onBundleStateChange,
@@ -563,6 +614,8 @@ function PhaseGroup({
   asOfDate?: string;
   /** Pacing as-of date — reference point for the line-ended check (Finding #2). */
   referenceDate?: string;
+  /** A1: project-level ended verdict — forces line rows to "ended". */
+  projectEnded?: boolean;
   /** line_id hovered in the Pacing Signal orbit above. */
   sigHover?: string | null;
   onNameUpdate: (lineId: string, newName: string) => void;
@@ -622,6 +675,7 @@ function PhaseGroup({
               code={code}
               asOfDate={asOfDate}
               referenceDate={referenceDate}
+              projectEnded={projectEnded}
               glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
@@ -639,6 +693,7 @@ function LineRow({
   code,
   asOfDate,
   referenceDate,
+  projectEnded = false,
   glow = false,
   onNameUpdate,
   onBundleStateChange,
@@ -651,6 +706,11 @@ function LineRow({
   /** Pacing as-of date (data.as_of_date). Reference point for deciding
    *  whether this line's flight has ended; falls back to today. */
   referenceDate?: string;
+  /** A1: project-level ended verdict (LANDED). When true the line is treated
+   *  as ended regardless of its own flight_end — 24058's per-line dates are
+   *  mis-stored a year ahead, so the date-based check alone wrongly leaves
+   *  the line "active" with a phantom "Nd remaining" countdown. */
+  projectEnded?: boolean;
   /** This line is hovered in the Pacing Signal orbit — light the row in
    *  its status colour. */
   glow?: boolean;
@@ -672,7 +732,17 @@ function LineRow({
   // counters: a finished flight has zero runway and needs no daily pace.
   const refDate = referenceDate ?? new Date().toISOString().slice(0, 10);
   const lineEnded =
-    isCompleted || (line.flight_end != null && line.flight_end < refDate);
+    projectEnded ||
+    isCompleted ||
+    (line.flight_end != null && line.flight_end < refDate);
+  // A1: when the whole project has LANDED, a line the backend still tags
+  // "not_started"/"pending" (because its flight_end is mis-stored ahead) would
+  // otherwise render an alarming "NOT STARTED" pill. Present the badge as the
+  // existing "Completed" state instead — no new vocabulary — and suppress the
+  // misleading percentage. The line-date and `completed` paths are unchanged.
+  const badgeLineStatus: PacingLine["line_status"] =
+    projectEnded && !isCompleted ? "completed" : line.line_status;
+  const badgePercentage = projectEnded && !isCompleted ? null : line.pacing_percentage;
   const glowColor =
     line.pacing_percentage == null ? "var(--info)" : pacingVar(status);
   const budgetPct =
@@ -955,7 +1025,7 @@ function LineRow({
           </div>
         </div>
         <div className="flex-shrink-0 self-end sm:self-auto">
-          <PacingBadge percentage={line.pacing_percentage} lineStatus={line.line_status} />
+          <PacingBadge percentage={badgePercentage} lineStatus={badgeLineStatus} />
         </div>
       </div>
 

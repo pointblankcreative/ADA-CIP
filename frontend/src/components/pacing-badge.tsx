@@ -38,13 +38,16 @@ export function PacingBadge({
     (lineStatus != null && percentage == null && totalSpend > 0);
   const isCompleted = lineStatus === "completed";
 
+  // Status words converge on the Claude Design four-token system
+  // (On pace / Drifting / Off pace / No signal); over vs under is kept as a
+  // direction qualifier. Keys are unchanged — only the displayed text differs.
   const labels: Record<string, string> = {
-    "critical-over": "Critical Over",
-    "warning-over": "Over",
-    "on-track": "On Track",
-    "warning-under": "Under",
-    "critical-under": "Critical Under",
-    unknown: "No Data",
+    "critical-over": "Off pace · over",
+    "warning-over": "Drifting · over",
+    "on-track": "On pace",
+    "warning-under": "Drifting · under",
+    "critical-under": "Off pace · under",
+    unknown: "No signal",
   };
 
   const label = isCompleted
