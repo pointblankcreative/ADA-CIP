@@ -30,10 +30,12 @@ import {
 import { OrphanPanel } from "@/components/orphan-panel";
 import { SignalsPanel } from "@/components/signals/signals-panel";
 import { SyncStatus } from "@/components/sync-status";
+import { useIntro } from "@/components/intro/intro-provider";
 import { cn } from "@/lib/utils";
 
 export default function FlightdeckPage() {
   const router = useRouter();
+  const { signalReady } = useIntro();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +54,8 @@ export default function FlightdeckPage() {
       setError(e instanceof Error ? e.message : "Failed to load campaigns");
     } finally {
       setLoading(false);
+      // Cold-load splash: the project list is the Flightdeck's readiness.
+      signalReady();
     }
   };
 
