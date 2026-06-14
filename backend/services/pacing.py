@@ -280,10 +280,22 @@ def run_pacing_for_project(
     line_ids = [r["line_id"] for r in lines]
 
     # ── 2. Fetch blocking chart weeks for all lines at once ─────────
+    # Finding 6: dedup by latest sync_version per (line_id, week_start), mirroring
+    # the media_plan_lines read above. blocking_chart_weeks carries a sync_version
+    # (added by migration; written by _write_records_with_version). If
+    # _delete_old_versions ever fails to clear a prior sync's rows, duplicate
+    # weeks would otherwise inflate _count_active_days while the (deduped) budget
+    # stays correct, desyncing the two inputs to the even-pacing arithmetic.
     blocking_sql = f"""
-        SELECT line_id, week_start, is_active
-        FROM {bq.table('blocking_chart_weeks')}
-        WHERE project_code = @project_code
+        SELECT line_id, week_start, is_active FROM (
+            SELECT line_id, week_start, is_active,
+                ROW_NUMBER() OVER (
+                    PARTITION BY line_id, week_start ORDER BY sync_version DESC
+                ) AS _rn
+            FROM {bq.table('blocking_chart_weeks')}
+            WHERE project_code = @project_code
+        )
+        WHERE _rn = 1
         ORDER BY line_id, week_start
     """
     blocking_rows = bq.run_query(blocking_sql, [bq.string_param("project_code", project_code)])
@@ -401,6 +413,11 @@ def run_pacing_for_project(
     bundle_spend: dict[str, float] = {}
     bundle_member_codes: dict[str, list[str]] = {}
     bundle_parent_line: dict[str, dict] = {}
+    # Finding 7: a bundle's spend window must span ALL members, not just the
+    # parent's flight. A child can run earlier/longer than the parent; clamping
+    # to the parent's window would drop that out-of-window delivery from the
+    # bundle total and under-report the bundle's spend.
+    bundle_member_flights: dict[str, list[tuple]] = {}
     for line in lines:
         bid = line.get("bundle_id")
         if not bid:
@@ -410,6 +427,13 @@ def run_pacing_for_project(
             bundle_member_codes.setdefault(bid, []).append(lc)
         if line.get("bundle_role") in ("suggested_parent", "confirmed_parent"):
             bundle_parent_line[bid] = line
+        m_fs = line.get("flight_start")
+        m_fe = line.get("flight_end")
+        if isinstance(m_fs, str):
+            m_fs = date.fromisoformat(m_fs)
+        if isinstance(m_fe, str):
+            m_fe = date.fromisoformat(m_fe)
+        bundle_member_flights.setdefault(bid, []).append((m_fs, m_fe))
 
     for bid, member_codes in bundle_member_codes.items():
         if not member_codes:
@@ -421,8 +445,13 @@ def run_pacing_for_project(
                 "bundle spend aggregation", bid,
             )
             continue
-        pfs = parent.get("flight_start")
-        pfe = parent.get("flight_end")
+        # Span the bundle window across all members (Finding 7), falling back to
+        # the parent's flight when a member carries no dates.
+        member_flights = bundle_member_flights.get(bid, [])
+        starts = [f[0] for f in member_flights if f[0] is not None]
+        ends = [f[1] for f in member_flights if f[1] is not None]
+        pfs = min(starts) if starts else parent.get("flight_start")
+        pfe = max(ends) if ends else parent.get("flight_end")
         if isinstance(pfs, str):
             pfs = date.fromisoformat(pfs)
         if isinstance(pfe, str):
@@ -465,6 +494,42 @@ def run_pacing_for_project(
         bundle_spend[bid] = (
             _float(bundle_rows[0]["total_spend"]) if bundle_rows else 0.0
         )
+
+    # Finding 5: residual group-split pool. The platform group-split fallback
+    # apportions spend_by_group across lines that have no bundle/line_code spend.
+    # But spend_by_group is the FULL platform total, so it already includes spend
+    # claimed by line_code-matched siblings and by bundle parents. Splitting the
+    # full total double-counts that claimed spend. Precompute, per flight group,
+    # the spend already claimed (split only the residual) and the budget of the
+    # still-unattributed lines (split only across them).
+    group_residual_spend: dict[tuple, float] = {}
+    group_residual_pool_budget: dict[tuple, float] = {}
+    for gkey, glines in flight_groups.items():
+        claimed = 0.0
+        pool_budget = 0.0
+        seen_bundles: set = set()
+        for gl in glines:
+            role = gl.get("bundle_role")
+            if role in ("suggested_child", "confirmed_child"):
+                continue
+            gbid = gl.get("bundle_id")
+            glc = gl.get("line_code")
+            glc_spend = spend_by_line_code.get(glc, 0.0) if glc else 0.0
+            gb_spend = (
+                bundle_spend.get(gbid, 0.0)
+                if gbid and role in ("suggested_parent", "confirmed_parent")
+                else 0.0
+            )
+            if gb_spend > 0:
+                if gbid not in seen_bundles:
+                    claimed += gb_spend
+                    seen_bundles.add(gbid)
+            elif glc_spend > 0:
+                claimed += glc_spend
+            else:
+                pool_budget += _float(gl.get("budget"))
+        group_residual_spend[gkey] = max(0.0, spend_by_group.get(gkey, 0.0) - claimed)
+        group_residual_pool_budget[gkey] = pool_budget
 
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
@@ -531,14 +596,14 @@ def run_pacing_for_project(
         elif line_code and line_code in spend_by_line_code:
             actual_spend = spend_by_line_code[line_code]
         if actual_spend == 0.0 and platform_id and group_key in spend_by_group:
-            # Split proportionally by budget among lines in the same flight group
-            group_total_budget = sum(
-                _float(l.get("budget"))
-                for l in flight_groups.get(group_key, [])
-                if l.get("bundle_role") not in ("suggested_child", "confirmed_child")
-            )
-            if group_total_budget > 0:
-                actual_spend = spend_by_group[group_key] * (budget / group_total_budget)
+            # Split only the RESIDUAL (unclaimed) group spend across only the
+            # still-unattributed lines, so spend already claimed by line_code or
+            # bundle siblings is not double-counted (Finding 5; see precompute).
+            pool_budget = group_residual_pool_budget.get(group_key, 0.0)
+            if pool_budget > 0:
+                actual_spend = group_residual_spend.get(group_key, 0.0) * (
+                    budget / pool_budget
+                )
 
         # Determine line status based on flight timing.
         # Data lag: ad platforms report with ~1-day delay through Funnel,

@@ -688,3 +688,138 @@ class TestGridOutsideWindowFallback:
         assert row["actual_spend_to_date"] == 0.0
         # 14 of 30 flight days elapsed → 3000 / 30 * 14 = 1400 (NOT 0)
         assert row["planned_spend_to_date"] == pytest.approx(3000 / 30 * 14)
+
+
+# ── Test: pacing spend correctness (Findings 5, 6, 7) ─────────────
+
+
+class TestPacingSpendCorrectness:
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_group_split_excludes_line_code_claimed_spend(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Finding 5: line A claims $600 by line_code; line B (no line_code) must
+        get only the RESIDUAL ($1000 group total - $600 = $400), not a budget
+        share of the full $1000 (which would double-count A's spend)."""
+        mock_date.today.return_value = date(2026, 4, 15)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        lines = [
+            _make_line("A", "meta", 5000, date(2026, 4, 1), date(2026, 4, 30),
+                       line_code="MA"),
+            _make_line("B", "meta", 5000, date(2026, 4, 1), date(2026, 4, 30)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "SUM(spend)" in sql and "line_code" in sql:
+                return [{"total_spend": 600.0, "first_spend_date": date(2026, 4, 10)}]
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 1000.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+        run_pacing_for_project("TEST", date(2026, 4, 15))
+
+        by_id = {r["line_id"]: r for r in mock_tracking.call_args[0][2]}
+        assert by_id["A"]["actual_spend_to_date"] == 600.0
+        assert by_id["B"]["actual_spend_to_date"] == pytest.approx(400.0)
+        # No double-count: attributed total equals the real platform spend.
+        assert (by_id["A"]["actual_spend_to_date"]
+                + by_id["B"]["actual_spend_to_date"]) == pytest.approx(1000.0)
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_blocking_weeks_query_dedups_by_sync_version(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Finding 6: the blocking_chart_weeks read dedups by latest sync_version
+        (mirroring the media_plan_lines read), so a failed old-version cleanup
+        can't double the active-day count."""
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        captured = {}
+
+        def query_router(sql, params=None):
+            if "blocking_chart_weeks" in sql:
+                captured["sql"] = sql
+                return []
+            if "media_plan_lines" in sql:
+                return [_make_line("L1", "meta", 1000,
+                                   date(2026, 6, 1), date(2026, 6, 30))]
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 0.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+        run_pacing_for_project("TEST", date(2026, 6, 14))
+
+        sql = captured.get("sql", "")
+        assert "ROW_NUMBER" in sql
+        assert "sync_version" in sql
+        assert "_rn = 1" in sql
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_bundle_window_spans_all_members(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Finding 7: the bundle spend window spans min(member start) to
+        max(member end), not just the parent's flight, so a child running past
+        the parent's end still has its delivery counted."""
+        mock_date.today.return_value = date(2026, 6, 20)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+        mock_bq.array_param.side_effect = lambda n, t, v: (n, v)
+
+        parent = _make_line("P", "meta", 5000, date(2026, 6, 1),
+                            date(2026, 6, 30), line_code="#01")
+        parent["bundle_id"] = "B1"
+        parent["bundle_role"] = "suggested_parent"
+        child = _make_line("C", "meta", None, date(2026, 6, 1),
+                           date(2026, 7, 7), line_code="#02")
+        child["bundle_id"] = "B1"
+        child["bundle_role"] = "suggested_child"
+        lines = [parent, child]
+
+        captured = {}
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "member_codes" in sql:  # the bundle aggregation query
+                pd = {p[0]: p[1] for p in (params or [])}
+                captured["fs"] = pd.get("flight_start")
+                captured["fe"] = pd.get("flight_end")
+                return [{"total_spend": 900.0}]
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 0.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+        run_pacing_for_project("TEST", date(2026, 6, 20))
+
+        # Window spans the child's later end (Jul 7), not the parent's Jun 30.
+        assert captured.get("fs") == date(2026, 6, 1)
+        assert captured.get("fe") == date(2026, 7, 7)
