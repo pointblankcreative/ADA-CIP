@@ -1752,10 +1752,19 @@ class TestDetailTabAuthoritative:
         assert all(w["line_index"] == 0 for w in bc["weeks"])
         _ = chart_lines_before  # snapshot retained for clarity
 
-    def test_detail_tab_with_only_unrecognised_platforms_keeps_chart(self):
-        """FALLBACK guard: a detail tab whose lines are ALL unrecognised
-        platforms (e.g. pure traditional media) yields no usable detail lines,
-        so the chart's recognised lines + weeks survive rather than vanishing."""
+    def test_detail_tab_budgeted_unrecognised_line_captured_as_direct(self):
+        """bcdirect BEHAVIOUR CHANGE (was: keep_chart). A detail tab whose only
+        line is a BUDGETED unrecognised platform (LED Truck $17,000 — a direct
+        buy with no self-serve feed) is now CAPTURED as is_direct rather than
+        dropped, so the detail tab becomes authoritative and the chart's merged
+        plan-total line is replaced.
+
+        Pre-bcdirect this row was dropped (no PLATFORM_MAP feed), which left the
+        chart authoritative — the $17,000 direct buy vanished from the data and
+        the plan couldn't reconcile. The whole point of item 2 is that budgeted
+        direct buys are retained (tagged is_direct, excluded from pacing) so
+        reconciliation sees them. See media_plan_sync._synthesise_lines_from_mp.
+        """
         bc = self._merged_chart()
         unrecognised = _parse_media_plan_tab(
             None,
@@ -1767,7 +1776,41 @@ class TestDetailTabAuthoritative:
             ref_year=2026,
         )
         _apply_source_selection(bc, unrecognised)
-        # Chart line survives (detail had nothing recognised to replace it).
+        # Detail tab is now authoritative: the single LED Truck direct buy
+        # replaces the merged-total chart line.
+        assert len(bc["lines"]) == 1
+        ln = bc["lines"][0]
+        assert ln["platform_id"] == "led_truck"
+        assert ln["budget"] == pytest.approx(17000.0)
+        # Tagged is_direct so the line-record builder writes is_direct=TRUE and
+        # pacing excludes it.
+        assert ln["is_direct"] is True
+        # The chart's weekly flighting is re-keyed; LED Truck had no chart weeks
+        # (chart only drew Meta) so weeks for it come from flight-date synthesis
+        # downstream — here the re-keyed set is empty (no matching platform).
+        # Either way the chart's merged-total line is gone.
+        assert all(l["platform_id"] != "meta" for l in bc["lines"])
+
+    def test_detail_tab_with_only_no_budget_unrecognised_keeps_chart(self):
+        """FALLBACK guard (UNCHANGED path): a detail tab whose only line is an
+        unrecognised platform with NO budget yields no usable detail lines
+        (no-budget rows still drop), so the chart's recognised lines + weeks
+        survive rather than vanishing. This is the genuinely-unchanged half of
+        the old keep_chart behaviour — only BUDGETED unrecognised lines are
+        now captured."""
+        bc = self._merged_chart()
+        no_budget = _parse_media_plan_tab(
+            None,
+            prefetched_data=_osstf_data(
+                # Blank Budget cell → dropped as no_budget, not captured.
+                ["LED Truck", "1", "Awareness", "Jun 13", "Jul 19", "5",
+                 "LEDX", "Vancouver residents", "Vancouver", "", "", "", "Fixed", "", ""],
+            ),
+            prefetched_merges=[],
+            ref_year=2026,
+        )
+        _apply_source_selection(bc, no_budget)
+        # Chart line survives (detail had nothing usable to replace it).
         assert len(bc["lines"]) == 1
         assert bc["lines"][0]["platform_id"] == "meta"
         assert len(bc["weeks"]) == 16

@@ -244,6 +244,14 @@ def run_pacing_for_project(
              AND pmp.is_active = TRUE
             WHERE l.project_code = @project_code
                 AND l.is_traditional = FALSE
+                -- bcdirect: exclude direct buys (no self-serve spend feed) from
+                -- pacing, exactly like is_traditional — they can never produce
+                -- budget_tracking rows or pacing alarms. COALESCE guards the
+                -- window between the ADD COLUMN migration and the first re-sync,
+                -- when pre-existing rows carry is_direct = NULL: a NULL line is
+                -- treated as not-direct (still paced), so legitimate self-serve
+                -- lines are never dropped. A real direct line is explicitly TRUE.
+                AND COALESCE(l.is_direct, FALSE) = FALSE
         )
         WHERE _rn = 1
     """
