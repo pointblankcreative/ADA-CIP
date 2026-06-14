@@ -30,6 +30,10 @@ PLATFORM_MAP = {
     # dropped such rows (26018: two StackAdapt lines, $3,750 — AI-002/AI-022
     # root cause, fixed 2026-06-04).
     "programmatic": "stackadapt",
+    # Open Web (Video/Display/Native) buys also run on StackAdapt at PB; without
+    # this alias the row was silently dropped (26023 "Open Web Video", $2,000).
+    # Substring-matched, so "Open Web Video" resolves here too.
+    "open web": "stackadapt",
     "meta": "meta",
     "meta (facebook, instagram, threads)": "meta",
     "meta (facebook, instagram)": "meta",
@@ -45,6 +49,8 @@ PLATFORM_MAP = {
     "perion": "perion",
     "hivestack": "perion",
     "dooh": "perion",
+    # PB plans often spell DOOH out in full (26023 "Digital Out Of Home", $3,500).
+    "digital out of home": "perion",
     "pinterest": "pinterest",
     "reddit": "reddit",
 }
@@ -1393,11 +1399,15 @@ def _list_active_plans(project_code: str) -> list[dict]:
         _ensure_schema_migrations(mtl)
         prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
         sql = f"""
-            SELECT sheet_id, phase_label, display_order
-            FROM {prefix}.project_media_plans`
-            WHERE project_code = @pc
-              AND is_active = TRUE
-            ORDER BY display_order NULLS LAST, created_at ASC
+            SELECT pmp.sheet_id, pmp.phase_label, pmp.display_order,
+                   IF(pmp.sheet_id = dp.media_plan_sheet_id,
+                      dp.media_plan_tab_name, NULL) AS tab_name
+            FROM {prefix}.project_media_plans` pmp
+            LEFT JOIN {prefix}.dim_projects` dp
+              ON dp.project_code = pmp.project_code
+            WHERE pmp.project_code = @pc
+              AND pmp.is_active = TRUE
+            ORDER BY pmp.display_order NULLS LAST, pmp.created_at ASC
         """
         try:
             rows = list(
@@ -1418,6 +1428,11 @@ def _list_active_plans(project_code: str) -> list[dict]:
             "sheet_id": r["sheet_id"],
             "phase_label": r.get("phase_label"),
             "display_order": r.get("display_order"),
+            # Threaded from dim_projects so sync_media_plan can resolve a
+            # configured tab whose title doesn't contain "media plan" — e.g.
+            # the typo'd "Boosted Impact Media Pan" on 26023. NULL unless this
+            # sheet is the project's canonical media_plan_sheet_id.
+            "tab_name": r.get("tab_name"),
         }
         for r in rows
     ]
