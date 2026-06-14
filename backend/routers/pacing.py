@@ -510,6 +510,25 @@ async def get_pacing(
         if _float(r.get("planned_spend_to_date")) > 0
     )
 
+    # (c) Surface, rather than silently drop, lines that are SPENDING with no
+    # planned baseline (active, actual>0, planned<=0). The guard above correctly
+    # keeps them out of the % (a zero baseline can't pace), but their spend would
+    # then vanish from the headline. Expose the count + amount so the UI can say
+    # "$X spending with no baseline (data settling)" instead of reading near
+    # zero. In a healthy state the baseline floor prevents this; a nonzero count
+    # flags a transient/bad snapshot (e.g. a pace that ran mid-sync).
+    spend_without_baseline = sum(
+        _float(r.get("actual_spend_to_date"))
+        for r in active_rows
+        if _float(r.get("planned_spend_to_date")) <= 0
+        and _float(r.get("actual_spend_to_date")) > 0
+    )
+    lines_without_baseline = sum(
+        1 for r in active_rows
+        if _float(r.get("planned_spend_to_date")) <= 0
+        and _float(r.get("actual_spend_to_date")) > 0
+    )
+
     # Multi-plan: aggregate per (sheet_id, phase_label, display_order). Lines
     # with no sheet (legacy projects whose plan never landed in
     # project_media_plans) are dropped from the phases list — the response
@@ -585,6 +604,8 @@ async def get_pacing(
         # than read from a stored budget_tracking snapshot.
         replayed=replayed,
         pending_line_count=pending_count,
+        spend_without_baseline=spend_without_baseline,
+        lines_without_baseline=lines_without_baseline,
         lines=[
             LinePacing(
                 line_id=r["line_id"],

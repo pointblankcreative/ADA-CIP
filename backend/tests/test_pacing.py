@@ -823,3 +823,138 @@ class TestPacingSpendCorrectness:
         # Window spans the child's later end (Jul 7), not the parent's Jun 30.
         assert captured.get("fs") == date(2026, 6, 1)
         assert captured.get("fe") == date(2026, 7, 7)
+
+
+# ── Test: race fixes (sync-lock skip + spend-without-baseline) ─────
+
+
+class TestRaceFixes:
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_pacing_skips_when_sync_lock_held(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """(a) A pace skips a project whose media-plan sync lock is held, leaving
+        the prior budget_tracking snapshot untouched (no write, no alerts)."""
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        def qr(sql, params=None):
+            if "pacing_sync_locks" in sql:
+                return [{"lock": 1}]  # a live lock → sync in progress
+            return []
+
+        mock_bq.run_query.side_effect = qr
+        result = run_pacing_for_project("26023", date(2026, 6, 14))
+
+        assert result.get("skipped") == "sync_in_progress"
+        assert result["lines_processed"] == 0
+        assert not mock_tracking.called
+        assert not mock_alerts.called
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_no_lock_proceeds(self, mock_alerts, mock_tracking, mock_bq, mock_date):
+        """No lock → pacing proceeds (here to the clean no-lines early return)."""
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+        mock_bq.run_query.side_effect = lambda sql, params=None: []
+        result = run_pacing_for_project("26023", date(2026, 6, 14))
+        assert result.get("skipped") != "sync_in_progress"
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_replay_ignores_lock(self, mock_alerts, mock_tracking, mock_bq, mock_date):
+        """Retrospective replay (skip_writes=True) is read-only and must not be
+        blocked by a sync lock — the lock is never even checked."""
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+        seen = {"lock_query": False}
+
+        def qr(sql, params=None):
+            if "pacing_sync_locks" in sql:
+                seen["lock_query"] = True
+                return [{"lock": 1}]
+            return []
+
+        mock_bq.run_query.side_effect = qr
+        result = run_pacing_for_project("26023", date(2026, 6, 14), skip_writes=True)
+        assert result.get("skipped") != "sync_in_progress"
+        assert seen["lock_query"] is False
+
+    # ── (c) spend-without-baseline surfaced in get_pacing ───────────
+    def _brow(self, **over):
+        base = {
+            "date": date(2026, 6, 14),
+            "line_id": "L", "line_code": "#01", "platform_id": "meta",
+            "channel_category": "Digital", "line_status": "active",
+            "planned_budget": 1000.0, "planned_spend_to_date": 1000.0,
+            "actual_spend_to_date": 1000.0, "remaining_budget": 0.0,
+            "remaining_days": 10, "pacing_percentage": 100.0,
+            "daily_budget_required": 0.0, "is_over_pacing": False,
+            "is_under_pacing": False, "bundle_id": None, "bundle_role": None,
+            "audience_name": "A", "flight_start": date(2026, 6, 1),
+            "flight_end": date(2026, 6, 30), "sheet_id": None,
+            "phase_label": None, "phase_display_order": None,
+        }
+        base.update(over)
+        return base
+
+    def _bq(self, rows):
+        class _BQ:
+            @staticmethod
+            def table(name):
+                return f"`proj.ds.{name}`"
+
+            @staticmethod
+            def string_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def date_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def array_param(n, t, v):
+                return (n, v)
+
+            @staticmethod
+            def run_query(sql, params=None):
+                if "dim_projects" in sql:
+                    return [{"project_code": "TEST", "net_budget": 100000.0}]
+                if "budget_tracking" in sql:
+                    return rows
+                return []
+        return _BQ
+
+    def test_zero_baseline_spend_is_surfaced(self):
+        rows = [
+            self._brow(line_id="healthy",
+                       planned_spend_to_date=1000.0, actual_spend_to_date=1000.0),
+            self._brow(line_id="zerobase",
+                       planned_spend_to_date=0.0, actual_spend_to_date=500.0),
+        ]
+        with patch.object(pacing_router, "bq", self._bq(rows)), \
+                patch.object(pacing_router, "_query_untracked_platform_spend",
+                             return_value=[]):
+            resp = asyncio.run(pacing_router.get_pacing("TEST"))
+        # surfaced, not hidden
+        assert resp.lines_without_baseline == 1
+        assert resp.spend_without_baseline == 500.0
+        # still excluded from the % (1000/1000 = 100, not 1500/1000 = 150)
+        assert resp.overall_pacing_percentage == 100.0

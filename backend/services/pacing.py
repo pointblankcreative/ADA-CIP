@@ -185,6 +185,33 @@ def _generate_alerts(
     return alerts
 
 
+def _sync_in_progress(project_code: str) -> bool:
+    """True when a media-plan sync is currently rewriting this project's lines.
+
+    Set by media_plan_sync._acquire_sync_lock at the start of a sync, cleared
+    at the end. Pacing skips a locked project so it never reads a half-written
+    media_plan_lines state (the 26023 zero-spend incident: a pace ran mid-sync,
+    saw the direct buys momentarily is_direct=NULL + no Meta baseline, and wrote
+    a snapshot that read as zero). The 10-minute bound auto-expires a stale lock
+    if a sync crashed without releasing. Fail-open: if the lock table is
+    unavailable, pacing proceeds (best-effort guard, never a hard block).
+    """
+    try:
+        rows = bq.run_query(
+            f"""
+            SELECT 1 FROM {bq.table('pacing_sync_locks')}
+            WHERE project_code = @pc
+              AND locked_at > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE)
+            LIMIT 1
+            """,
+            [bq.string_param("pc", project_code)],
+        )
+        return bool(rows)
+    except Exception as e:
+        logger.warning("Sync-lock check failed for %s (proceeding): %s", project_code, e)
+        return False
+
+
 def run_pacing_for_project(
     project_code: str,
     as_of_date: date,
@@ -206,6 +233,23 @@ def run_pacing_for_project(
     Returns a summary dict with line-level results and any alerts generated.
     """
     today = as_of_date
+
+    # Race guard: skip if a media-plan sync is mid-flight for this project, so
+    # we never pace against a half-written media_plan_lines state. Only on the
+    # live write path — retrospective replay (skip_writes) is read-only and
+    # never persists a snapshot, so it can compute regardless.
+    if not skip_writes and _sync_in_progress(project_code):
+        logger.warning(
+            "Pacing skipped for %s: media-plan sync in progress; "
+            "preserving the prior budget_tracking snapshot", project_code,
+        )
+        return {
+            "project_code": project_code,
+            "lines_processed": 0,
+            "alerts": 0,
+            "lines": [],
+            "skipped": "sync_in_progress",
+        }
 
     # ── 1. Fetch media plan lines for this project ──────────────────
     # Deduplicate: if old sync versions weren't cleaned up, multiple rows
@@ -255,14 +299,15 @@ def run_pacing_for_project(
                 -- line exists (26023 DOOH), so dropping the filter changes only
                 -- that intended line.
                 --
-                -- is_direct buys (no self-serve feed) are still excluded — they
-                -- can never produce budget_tracking rows or pacing alarms. The
-                -- COALESCE guards the window between the ADD COLUMN migration and
-                -- the first re-sync, when pre-existing rows carry is_direct=NULL:
-                -- a NULL line is treated as not-direct (still paced), so
-                -- legitimate self-serve lines are never dropped. A real direct
-                -- line is explicitly TRUE.
-                AND COALESCE(l.is_direct, FALSE) = FALSE
+                -- is_direct buys (no self-serve feed) are excluded — they can
+                -- never produce budget_tracking rows or pacing alarms. NULL is
+                -- ALSO excluded (not paced): a NULL means the line is either
+                -- unclassified or mid-sync, and pacing a transiently-NULL line
+                -- is exactly what wrote the 26023 zero-spend snapshot (a pace
+                -- ran while a sync had the direct buys momentarily is_direct=NULL
+                -- and paced them). Every active project has been re-synced, so no
+                -- legitimate NULL remains; only an explicit is_direct = FALSE paces.
+                AND l.is_direct = FALSE
         )
         WHERE _rn = 1
     """

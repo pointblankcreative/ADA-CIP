@@ -655,6 +655,13 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
             is_active BOOL,
             created_at TIMESTAMP
         )""",
+        # Pacing race guard: a media-plan sync writes a lock row here while it
+        # rewrites media_plan_lines; a concurrent pacing run skips a locked
+        # project so it never reads a half-written state (26023 zero-spend).
+        f"""CREATE TABLE IF NOT EXISTS {prefix}.pacing_sync_locks` (
+            project_code STRING NOT NULL,
+            locked_at TIMESTAMP
+        )""",
     ]
     for sql in stmts:
         try:
@@ -1680,7 +1687,64 @@ def _list_active_plans(project_code: str) -> list[dict]:
     ]
 
 
+def _acquire_sync_lock(project_code: str) -> None:
+    """Mark a media-plan sync in progress so a concurrent pacing run skips this
+    project instead of reading half-written media_plan_lines (the 26023
+    zero-spend incident). Best-effort: failures are logged, never raised, so a
+    lock hiccup can't block a sync. Self-heals the table if it's missing."""
+    mtl = _mtl_client()
+    try:
+        prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+        mtl.query(
+            f"""CREATE TABLE IF NOT EXISTS {prefix}.pacing_sync_locks` (
+                project_code STRING NOT NULL, locked_at TIMESTAMP
+            )"""
+        ).result()
+        mtl.query(
+            f"""MERGE {prefix}.pacing_sync_locks` t
+            USING (SELECT @pc AS project_code) s ON t.project_code = s.project_code
+            WHEN MATCHED THEN UPDATE SET locked_at = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT (project_code, locked_at)
+                VALUES (@pc, CURRENT_TIMESTAMP())""",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            ]),
+        ).result()
+    except Exception as e:
+        logger.warning("Could not acquire pacing sync lock for %s: %s", project_code, e)
+    finally:
+        mtl.close()
+
+
+def _release_sync_lock(project_code: str) -> None:
+    """Clear the sync lock so pacing can resume for this project."""
+    mtl = _mtl_client()
+    try:
+        prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+        mtl.query(
+            f"DELETE FROM {prefix}.pacing_sync_locks` WHERE project_code = @pc",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+            ]),
+        ).result()
+    except Exception as e:
+        logger.warning("Could not release pacing sync lock for %s: %s", project_code, e)
+    finally:
+        mtl.close()
+
+
 def sync_all_for_project(project_code: str) -> dict:
+    """Sync every active media plan for a project, holding a sync lock so a
+    concurrent pacing run skips the project until the rewrite is committed
+    (see _acquire_sync_lock / pacing._sync_in_progress)."""
+    _acquire_sync_lock(project_code)
+    try:
+        return _sync_all_for_project_impl(project_code)
+    finally:
+        _release_sync_lock(project_code)
+
+
+def _sync_all_for_project_impl(project_code: str) -> dict:
     """Sync every active media plan registered against ``project_code``.
 
     Iterates ``project_media_plans`` rows in display order and calls
