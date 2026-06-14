@@ -8,7 +8,7 @@ Tests cover:
   - Bundled-optimization PR 1a: header widening + line_code extraction
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -16,11 +16,13 @@ from backend.services.media_plan_sync import (
     _assign_bundle_groups,
     _build_line_records_for_bc_line,
     _compute_bundle_id,
+    _detail_tab_lines_usable,
     _extract_line_code,
     _filter_canonical_tabs,
     _match_all_mp_lines,
     _mp_lines_have_audience_data,
     _parse_media_plan_tab,
+    _reattach_bc_weeks_to_lines,
     _synthesise_lines_from_mp,
     extract_line_codes_from_adset_name,
 )
@@ -1478,3 +1480,303 @@ class TestBuildLineRecordsForBcLine:
         assert len(out) == 1
         assert out[0]["bundle_id"] is None
         assert out[0]["bundle_role"] is None
+
+
+# ── 26023 fix: media-plan DETAIL tab is the authoritative source ──────
+#
+# Background: a Blocking Chart's Budget column is frequently a SINGLE MERGED
+# cell holding the plan TOTAL across all platform rows (verified on 26023:
+# W12:W17 = $99,362.06 across 6 rows). gspread returns that value only in the
+# top row, so _parse_blocking_chart emits ONE line carrying the whole budget
+# and drops the rest. The detail tab ("Boosted Impact Media Pan") has a real
+# per-line Budget column instead, so it must win for line identity/budgets/
+# platforms; the blocking chart contributes only weekly flighting + metadata.
+#
+# These tests exercise the source-selection logic from sync_media_plan
+# (the block guarded by _detail_tab_lines_usable) through the same public
+# helpers the orchestrator calls, plus the two new helpers directly.
+
+
+def _apply_source_selection(bc: dict, mp_lines: list[dict]) -> dict[int, dict]:
+    """Mirror of sync_media_plan's source-of-truth block (post-fix).
+
+    Mutates ``bc`` in place exactly as the orchestrator does and returns the
+    mp_matches mapping. Kept faithful to the production code so these tests
+    guard the real decision, not a paraphrase. See media_plan_sync.py
+    "Source of truth: the media-plan DETAIL tab".
+    """
+    mp_matches: dict[int, dict] = {}
+    detail_lines = (
+        _synthesise_lines_from_mp(mp_lines, bc["metadata"]) if mp_lines else []
+    )
+    if _detail_tab_lines_usable(detail_lines):
+        new_weeks = _reattach_bc_weeks_to_lines(
+            bc["lines"], bc["weeks"], detail_lines
+        )
+        bc["lines"] = detail_lines
+        bc["weeks"] = new_weeks
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+    elif not bc["lines"] and mp_lines:
+        bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+    elif bc["lines"] and mp_lines and _mp_lines_have_audience_data(mp_lines):
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+        for bc_idx, mp_detail in mp_matches.items():
+            bc_line = bc["lines"][bc_idx]
+            if not bc_line.get("audience_name") and mp_detail.get("audience_name"):
+                bc_line["audience_name"] = mp_detail["audience_name"]
+            if mp_detail.get("flight_start"):
+                bc_line["flight_start"] = mp_detail["flight_start"]
+            if mp_detail.get("flight_end"):
+                bc_line["flight_end"] = mp_detail["flight_end"]
+    return mp_matches
+
+
+class TestDetailTabLinesUsable:
+    """The gate that decides whether the detail tab supersedes the chart."""
+
+    def test_empty_is_not_usable(self):
+        assert _detail_tab_lines_usable([]) is False
+
+    def test_any_line_is_usable(self):
+        # detail_lines here are post-_synthesise (recognised platform, >0 budget)
+        assert _detail_tab_lines_usable(
+            [{"platform_id": "meta", "budget": 4090.0}]
+        ) is True
+
+
+class TestReattachBcWeeksToLines:
+    """The blocking chart's weekly flighting must survive the line swap,
+    re-keyed onto the new (detail-tab) lines by platform."""
+
+    def test_no_weeks_returns_empty(self):
+        old_lines = [{"platform_id": "meta"}]
+        new_lines = [{"platform_id": "meta"}]
+        assert _reattach_bc_weeks_to_lines(old_lines, [], new_lines) == []
+
+    def test_no_new_lines_returns_empty(self):
+        old_weeks = [{"line_index": 0, "week_start": date(2026, 6, 1), "is_active": True}]
+        assert _reattach_bc_weeks_to_lines([{"platform_id": "meta"}], old_weeks, []) == []
+
+    def test_single_platform_pattern_transfers(self):
+        old_lines = [{"platform_id": "meta"}]
+        old_weeks = [
+            {"line_index": 0, "week_start": date(2026, 6, 1), "is_active": True},
+            {"line_index": 0, "week_start": date(2026, 6, 8), "is_active": False},
+        ]
+        new_lines = [{"platform_id": "meta"}]
+        out = _reattach_bc_weeks_to_lines(old_lines, old_weeks, new_lines)
+        assert len(out) == 2
+        assert {w["is_active"] for w in out} == {True, False}
+        assert all(w["line_index"] == 0 for w in out)
+
+    def test_two_new_lines_same_platform_each_inherit_copy(self):
+        """26023 shape: two Meta detail lines both inherit the chart's single
+        Meta activation pattern (the chart only ever drew one Meta row)."""
+        old_lines = [{"platform_id": "meta"}]
+        old_weeks = [
+            {"line_index": 0, "week_start": date(2026, 6, 15), "is_active": True},
+            {"line_index": 0, "week_start": date(2026, 6, 22), "is_active": True},
+        ]
+        new_lines = [{"platform_id": "meta"}, {"platform_id": "meta"}]
+        out = _reattach_bc_weeks_to_lines(old_lines, old_weeks, new_lines)
+        # Each of the two new lines gets a 2-week copy.
+        assert sum(1 for w in out if w["line_index"] == 0) == 2
+        assert sum(1 for w in out if w["line_index"] == 1) == 2
+
+    def test_platform_without_chart_weeks_is_absent(self):
+        """A detail line whose platform had no chart weeks is omitted here so
+        the caller's flight-date synthesis fills it in (weeks never zeroed)."""
+        old_lines = [{"platform_id": "meta"}]
+        old_weeks = [{"line_index": 0, "week_start": date(2026, 6, 1), "is_active": True}]
+        new_lines = [{"platform_id": "meta"}, {"platform_id": "perion"}]
+        out = _reattach_bc_weeks_to_lines(old_lines, old_weeks, new_lines)
+        assert all(w["line_index"] == 0 for w in out)  # only meta (idx 0)
+        assert not any(w["line_index"] == 1 for w in out)  # perion absent
+
+    def test_matches_by_platform_not_position(self):
+        """Re-keying follows platform_id even when line order differs."""
+        old_lines = [{"platform_id": "meta"}, {"platform_id": "stackadapt"}]
+        old_weeks = [
+            {"line_index": 0, "week_start": date(2026, 6, 1), "is_active": True},
+            {"line_index": 1, "week_start": date(2026, 6, 1), "is_active": False},
+        ]
+        # New lines: stackadapt first, meta second.
+        new_lines = [{"platform_id": "stackadapt"}, {"platform_id": "meta"}]
+        out = _reattach_bc_weeks_to_lines(old_lines, old_weeks, new_lines)
+        by_idx = {w["line_index"]: w["is_active"] for w in out}
+        assert by_idx[0] is False  # stackadapt pattern (was inactive)
+        assert by_idx[1] is True   # meta pattern (was active)
+
+
+class TestDetailTabAuthoritative:
+    """End-to-end source selection: the 26023 merged-total bug and fallbacks.
+
+    The blocking chart is modelled the way _parse_blocking_chart actually
+    emits it for 26023: a SINGLE line carrying the merged plan TOTAL, with all
+    16 week rows keyed to that one line (5 active — the burst window).
+    """
+
+    # 26023 detail-tab rows (OSSTF-shaped: bare Start/End/Budget headers),
+    # restricted to recognised digital platforms so the assertions match what
+    # _synthesise_lines_from_mp keeps. Real per-line budgets in the Budget col.
+    def _detail_mp_lines(self) -> list[dict]:
+        rows = [
+            # Meta #01 — $19,500
+            ["Meta", "1", "Conversion", "Jun 11", "Jul 19", "39",
+             "#01", "List Lookalikes", "BC", "", "", "", "CPM", "", "$19,500.00"],
+            # Meta #03 — $4,090 (THE line that wrongly showed the $99,362 total)
+            ["Meta", "1", "Reach & Frequency", "Jun 11", "Jul 19", "39",
+             "#03", "Member List Match", "BC", "", "", "", "CPM", "", "$4,090.00"],
+            # DOOH (Digital Out Of Home → perion) — $3,500, never appeared before
+            ["Digital Out Of Home", "1", "Awareness", "Jun 13", "Jul 19", "5",
+             "", "Bars on game day", "Vancouver", "", "", "", "CPM", "", "$3,500.00"],
+            # Open Web Video (→ stackadapt) — $2,000, never appeared before
+            ["Open Web Video", "1", "Reach & Frequency", "Jun 11", "Jul 19", "39",
+             "", "Decisionmakers", "BC", "", "", "", "CPM", "", "$2,000.00"],
+        ]
+        return _parse_media_plan_tab(
+            None, prefetched_data=_osstf_data(*rows), prefetched_merges=[], ref_year=2026
+        )
+
+    def _merged_chart(self) -> dict:
+        """Blocking chart as parsed for 26023: ONE line = merged plan total,
+        16 weeks (5 active) all keyed to it."""
+        weeks = []
+        # 16 contiguous weeks; the 5 inside the active window are is_active.
+        active_starts = {
+            date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29),
+            date(2026, 7, 6), date(2026, 7, 13),
+        }
+        cursor = date(2026, 6, 1)
+        for _ in range(16):
+            weeks.append({
+                "line_index": 0,
+                "week_start": cursor,
+                "is_active": cursor in active_starts,
+            })
+            cursor = cursor + timedelta(days=7)
+        return {
+            "metadata": {
+                "client_name": "Sierra Club of BC",
+                "project_name": "FIFA Old Growth Campaign",
+                "start_date": date(2026, 6, 11),
+                "end_date": date(2026, 7, 19),
+                "net_budget": 99365.0,
+            },
+            "lines": [{
+                "platform": "Meta",
+                "platform_id": "meta",
+                "objective_format": "Conversion Static Ads",
+                "budget": 99362.06,  # the MERGED total — the bug
+                "objective_pct": 0.9999,
+                "flight_start": date(2026, 6, 15),
+                "flight_end": date(2026, 7, 19),
+            }],
+            "weeks": weeks,
+        }
+
+    def test_detail_per_line_budgets_win_over_merged_total(self):
+        """(a) The merged $99,362 chart total must NOT survive; each detail
+        line carries its own real budget instead (Meta #03 = $4,090)."""
+        bc = self._merged_chart()
+        mp_lines = self._detail_mp_lines()
+        assert len(bc["lines"]) == 1
+        assert bc["lines"][0]["budget"] == pytest.approx(99362.06)
+
+        _apply_source_selection(bc, mp_lines)
+
+        budgets = sorted(l["budget"] for l in bc["lines"])
+        # The 4 recognised digital lines, each with its OWN budget.
+        assert budgets == pytest.approx([2000.0, 3500.0, 4090.0, 19500.0])
+        # The merged total is gone entirely.
+        assert all(l["budget"] != pytest.approx(99362.06) for l in bc["lines"])
+        # Specifically: a Meta R&F line now carries $4,090, not the total.
+        meta_rf = [
+            l for l in bc["lines"]
+            if l["platform_id"] == "meta" and l["budget"] == pytest.approx(4090.0)
+        ]
+        assert len(meta_rf) == 1
+
+    def test_detail_platforms_win(self):
+        """(b) Platforms come from the detail tab — DOOH (perion) and Open Web
+        (stackadapt) now appear; they were absent when the chart was the
+        source (its merged rows collapsed to a single Meta line)."""
+        bc = self._merged_chart()
+        assert {l["platform_id"] for l in bc["lines"]} == {"meta"}
+
+        _apply_source_selection(bc, self._detail_mp_lines())
+
+        platforms = {l["platform_id"] for l in bc["lines"]}
+        assert platforms == {"meta", "perion", "stackadapt"}
+
+    def test_blocking_chart_weeks_still_attached(self):
+        """(c) The chart's weekly flighting is preserved, re-keyed onto the new
+        Meta lines by platform (burst pattern intact: 5 active weeks)."""
+        bc = self._merged_chart()
+        chart_active = sum(1 for w in bc["weeks"] if w["is_active"])
+        assert chart_active == 5
+
+        _apply_source_selection(bc, self._detail_mp_lines())
+
+        # Meta lines are at the indices whose platform_id == 'meta'.
+        meta_indices = {
+            i for i, l in enumerate(bc["lines"]) if l["platform_id"] == "meta"
+        }
+        assert meta_indices, "expected at least one Meta line"
+        # Every Meta line inherited the chart's full 16-week pattern with 5 active.
+        for idx in meta_indices:
+            wk = [w for w in bc["weeks"] if w["line_index"] == idx]
+            assert len(wk) == 16
+            assert sum(1 for w in wk if w["is_active"]) == 5
+        # Weeks were not dropped to zero.
+        assert len(bc["weeks"]) > 0
+
+    def test_no_detail_tab_falls_back_to_chart_lines(self):
+        """(d) FALLBACK: with no detail tab (mp_lines empty), the blocking
+        chart stays authoritative and its weeks are untouched — existing
+        projects must not regress."""
+        bc = self._merged_chart()
+        chart_lines_before = [dict(l) for l in bc["lines"]]
+        chart_weeks_before = len(bc["weeks"])
+
+        mp_matches = _apply_source_selection(bc, [])
+
+        assert mp_matches == {}
+        # Lines unchanged — still the single chart line.
+        assert len(bc["lines"]) == 1
+        assert bc["lines"][0]["budget"] == pytest.approx(99362.06)
+        assert bc["lines"][0]["platform_id"] == "meta"
+        # Weeks untouched (still all 16 keyed to line 0).
+        assert len(bc["weeks"]) == chart_weeks_before
+        assert all(w["line_index"] == 0 for w in bc["weeks"])
+        _ = chart_lines_before  # snapshot retained for clarity
+
+    def test_detail_tab_with_only_unrecognised_platforms_keeps_chart(self):
+        """FALLBACK guard: a detail tab whose lines are ALL unrecognised
+        platforms (e.g. pure traditional media) yields no usable detail lines,
+        so the chart's recognised lines + weeks survive rather than vanishing."""
+        bc = self._merged_chart()
+        unrecognised = _parse_media_plan_tab(
+            None,
+            prefetched_data=_osstf_data(
+                ["LED Truck", "1", "Awareness", "Jun 13", "Jul 19", "5",
+                 "", "Vancouver residents", "Vancouver", "", "", "", "Fixed", "", "$17,000.00"],
+            ),
+            prefetched_merges=[],
+            ref_year=2026,
+        )
+        _apply_source_selection(bc, unrecognised)
+        # Chart line survives (detail had nothing recognised to replace it).
+        assert len(bc["lines"]) == 1
+        assert bc["lines"][0]["platform_id"] == "meta"
+        assert len(bc["weeks"]) == 16
+
+    def test_detail_authoritative_preserves_audience_via_match(self):
+        """The authoritative detail lines still carry their audiences (so the
+        Meta R&F line is labelled, not anonymous)."""
+        bc = self._merged_chart()
+        _apply_source_selection(bc, self._detail_mp_lines())
+        auds = {l.get("audience_name") for l in bc["lines"]}
+        assert "Member List Match" in auds
+        assert "List Lookalikes" in auds
