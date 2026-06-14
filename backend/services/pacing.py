@@ -503,7 +503,14 @@ def run_pacing_for_project(
                 weeks, flight_start, flight_end, today
             )
         else:
-            # No blocking chart — fall back to full flight as active
+            total_active_days, elapsed_active_days = 0, 0
+
+        if total_active_days <= 0:
+            # No usable grid coverage in the flight window: either no blocking
+            # chart for this line, or the grid's active weeks fall entirely
+            # outside the authoritative (detail-tab) flight dates, a detail-tab
+            # vs blocking-chart disagreement. Fall back to an even flight-span
+            # split rather than letting the planned baseline collapse to 0.
             total_active_days = (flight_end - flight_start).days + 1
             elapsed_days_raw = (min(today, flight_end) - flight_start).days + 1
             elapsed_active_days = max(0, min(elapsed_days_raw, total_active_days))

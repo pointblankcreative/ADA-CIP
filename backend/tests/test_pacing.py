@@ -638,3 +638,53 @@ class TestRollupDenominatorGuard:
         # the zero-baseline line's spend is still surfaced in the total
         assert resp.total_actual_to_date == 1500.0
         assert resp.total_planned_to_date == 1000.0
+
+
+# ── Test: grid-outside-window fallback (Finding 1, consumer) ──────
+
+
+class TestGridOutsideWindowFallback:
+    """Finding 1 (consumer side): when a line's blocking-chart weeks fall
+    entirely outside its flight window (0 active days), pacing falls back to the
+    flight-span split instead of collapsing the baseline to 0 — even with no
+    spend yet (which is what distinguishes this from the spend-only floor)."""
+
+    _WEEKS_IN_MAY = [
+        {"line_id": "L1", "week_start": date(2026, 5, 4), "is_active": True},
+        {"line_id": "L1", "week_start": date(2026, 5, 11), "is_active": True},
+    ]
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_grid_outside_window_uses_flight_span(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        lines = [
+            _make_line("L1", "meta", 3000, date(2026, 6, 1), date(2026, 6, 30)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return self._WEEKS_IN_MAY
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 0.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+        run_pacing_for_project("TEST", date(2026, 6, 14))
+
+        row = mock_tracking.call_args[0][2][0]
+        assert row["line_status"] == "active"
+        assert row["actual_spend_to_date"] == 0.0
+        # 14 of 30 flight days elapsed → 3000 / 30 * 14 = 1400 (NOT 0)
+        assert row["planned_spend_to_date"] == pytest.approx(3000 / 30 * 14)
