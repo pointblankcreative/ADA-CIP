@@ -128,7 +128,7 @@ def _query_direct_lines(project_code: str) -> list[DirectLine]:
                 ) AS _rn
             FROM {bq.table('media_plan_lines')} l
             WHERE l.project_code = @project_code
-              AND COALESCE(l.is_direct, FALSE) = TRUE
+              AND COALESCE(l.is_direct_override, l.is_direct, FALSE) = TRUE
               -- Plan-id-aware + multi-plan dedup guard (see top of this router
               -- for the canonical comment).
               AND l.plan_id IN (

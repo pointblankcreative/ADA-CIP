@@ -64,6 +64,13 @@ class MediaPlanLineUpdate(BaseModel):
             raise ValueError("audience_name must be 500 characters or fewer")
         return v
 
+
+class IsDirectOverrideUpdate(BaseModel):
+    """Request body for overriding a line's is_direct classification.
+    None resets to the auto (PLATFORM_MAP-derived) classification."""
+    is_direct_override: bool | None = None
+
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -723,6 +730,76 @@ async def update_media_plan_line(line_id: str, body: MediaPlanLineUpdate):
         ])
 
     return {"status": "updated", "line_id": line_id, "audience_name": body.audience_name}
+
+
+@router.put("/media-plan-lines/{line_id}/is-direct")
+async def update_line_is_direct(line_id: str, body: IsDirectOverrideUpdate):
+    """Manually override (or reset) a line's is_direct classification.
+
+    Sets is_direct_override on the live media_plan_lines row, persists it to
+    media_plan_line_overrides so it survives re-syncs (auto-classification keeps
+    running; the override is re-applied on top), then re-paces the project so the
+    line moves in/out of pacing immediately. is_direct_override = null resets to
+    auto.
+    """
+    line_row = bq.run_query(f"""
+        SELECT project_code, platform_id, budget
+        FROM {bq.table('media_plan_lines')}
+        WHERE line_id = @line_id
+    """, [bq.string_param("line_id", line_id)])
+    if not line_row:
+        raise HTTPException(404, f"Media plan line {line_id} not found")
+    row = line_row[0]
+
+    # Live row — effective is_direct = COALESCE(is_direct_override, is_direct).
+    bq.run_query(f"""
+        UPDATE {bq.table('media_plan_lines')}
+        SET is_direct_override = @v
+        WHERE line_id = @line_id
+    """, [
+        bq.scalar_param("v", "BOOL", body.is_direct_override),
+        bq.string_param("line_id", line_id),
+    ])
+
+    # Durable override (keyed on project_code + platform_id + budget +/-1%, same
+    # key as the audience_name override) so it survives re-syncs.
+    bq.run_query(f"""
+        MERGE {bq.table('media_plan_line_overrides')} t
+        USING (SELECT @pc AS project_code, @pid AS platform_id, @budget AS budget) s
+        ON t.project_code = s.project_code
+           AND t.platform_id = s.platform_id
+           AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01
+        WHEN MATCHED THEN UPDATE SET
+            is_direct_override = @v, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT
+            (project_code, platform_id, budget, is_direct_override, updated_at)
+            VALUES (@pc, @pid, @budget, @v, CURRENT_TIMESTAMP())
+    """, [
+        bq.string_param("pc", row["project_code"]),
+        bq.string_param("pid", row.get("platform_id") or ""),
+        bq.scalar_param("budget", "FLOAT64", float(row.get("budget") or 0)),
+        bq.scalar_param("v", "BOOL", body.is_direct_override),
+    ])
+
+    # Re-pace so the line moves in/out of pacing right away.
+    repaced = False
+    try:
+        from datetime import date as _date
+        from backend.services.pacing import run_pacing_for_project
+        run_pacing_for_project(row["project_code"], _date.today())
+        repaced = True
+    except Exception as e:
+        logger.warning(
+            "Re-pace after is_direct override failed for %s: %s",
+            row.get("project_code"), e,
+        )
+
+    return {
+        "status": "updated",
+        "line_id": line_id,
+        "is_direct_override": body.is_direct_override,
+        "repaced": repaced,
+    }
 
 
 # ── Bundle override endpoints (ADAC-54 follow-up) ────────────────────

@@ -620,6 +620,12 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         # a line can be both. Mirrors the is_traditional / flight_start ADD COLUMN
         # IF NOT EXISTS pattern so it self-heals on the prod table.
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS is_direct BOOLEAN",
+        # is_direct_override: the user's manual override of the auto is_direct
+        # classification. NULL = no override (use auto). Re-applied after each
+        # sync from media_plan_line_overrides, so it survives re-syncs while
+        # auto-classification still runs underneath. Effective is_direct =
+        # COALESCE(is_direct_override, is_direct).
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS is_direct_override BOOLEAN",
         # Versioned-write pattern: sync_version tracking for all tables
         f"ALTER TABLE {prefix}.media_plans` ADD COLUMN IF NOT EXISTS sync_version STRING",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS sync_version STRING",
@@ -640,8 +646,12 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
             platform_id STRING,
             budget FLOAT64,
             audience_name STRING,
+            is_direct_override BOOLEAN,
             updated_at TIMESTAMP
         )""",
+        # is_direct_override added via ALTER too, so existing prod override
+        # tables gain the column (CREATE IF NOT EXISTS is a no-op once it exists).
+        f"ALTER TABLE {prefix}.media_plan_line_overrides` ADD COLUMN IF NOT EXISTS is_direct_override BOOLEAN",
         # Multi-plan support (2026-04-25): join table mapping projects to one or
         # more media plan sheets. Backfill from dim_projects.media_plan_sheet_id
         # is handled by the live migration script
@@ -2627,6 +2637,29 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
         logger.debug("  Overrides table not found yet (first run)")
     except Exception as e:
         logger.warning("  Could not apply audience overrides: %s", e)
+
+    # Re-apply is_direct overrides (the manual direct/tracked classification).
+    # Auto-classification already set l.is_direct this sync; this layers the
+    # user's choice on top, preserved across re-syncs.
+    sql_apply_isdirect = f"""
+        UPDATE {prefix}.media_plan_lines` l
+        SET l.is_direct_override = o.is_direct_override
+        FROM {prefix}.media_plan_line_overrides` o
+        WHERE l.project_code = o.project_code
+          AND l.platform_id = o.platform_id
+          AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
+          AND o.is_direct_override IS NOT NULL
+          AND l.project_code = @pc
+    """
+    try:
+        result = mtl.query(sql_apply_isdirect, job_config=param_config).result()
+        affected = result.num_dml_affected_rows or 0
+        if affected:
+            logger.info("    Applied %d is_direct overrides for %s", affected, project_code)
+    except google.cloud.exceptions.NotFound:
+        logger.debug("  Overrides table not found yet (first run)")
+    except Exception as e:
+        logger.warning("  Could not apply is_direct overrides: %s", e)
 
     try:
         result = mtl.query(sql_cleanup, job_config=param_config).result()
