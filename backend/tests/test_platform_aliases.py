@@ -41,3 +41,13 @@ def test_direct_booking_labels_stay_unrecognised():
     assert _normalise_platform("Connected TV") == "connected_tv"
     assert _normalise_platform("LED Truck") == "led_truck"
     assert _normalise_platform("Building Projection") == "building_projection"
+
+
+def test_most_specific_alias_wins():
+    # Finding 8: "google ads" contains both the "google ads" alias and the bare
+    # "google" substring; most-specific-match-wins keeps the result stable (both
+    # map to google_ads). "snapchat" contains the "snap" alias too.
+    assert _normalise_platform("Google Ads") == "google_ads"
+    assert _normalise_platform("Google") == "google_ads"
+    assert _normalise_platform("YouTube") == "google_ads"
+    assert _normalise_platform("Snapchat") == "snapchat"

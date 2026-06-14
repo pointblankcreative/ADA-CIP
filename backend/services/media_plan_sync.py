@@ -219,9 +219,16 @@ def _normalise_platform(raw: str | None) -> str | None:
     if not raw:
         return None
     key = raw.strip().lower()
-    for pattern, platform_id in PLATFORM_MAP.items():
+    # Most-specific-match-wins: try longer patterns before their substrings, so a
+    # label containing several aliases binds to the most specific one (e.g.
+    # "google ads" before bare "google"). The match stays substring-based, which
+    # is load-bearing for verbose labels like "Facebook, Instagram & Threads\nMeta".
+    # (The keep-vs-drop asymmetry the audit flagged is already resolved by the
+    # is_direct model: budgeted unrecognised lines are captured, not dropped, on
+    # both the blocking-chart and synthesis paths.)
+    for pattern in sorted(PLATFORM_MAP, key=len, reverse=True):
         if pattern in key:
-            return platform_id
+            return PLATFORM_MAP[pattern]
     return raw.strip().lower().replace(" ", "_")
 
 
@@ -2149,6 +2156,7 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
 
     absorbed_bc_indices: set[int] = set()
     bundle_groups_absorbed_by: dict[int, list[int]] = {}  # bc_idx -> [bundle_groups]
+    already_absorbed_groups: set[int] = set()  # each group absorbs once (Finding 9)
 
     for _bc_idx, _bc_line in enumerate(bc["lines"]):
         _bc_plat = _bc_line.get("platform_id")
@@ -2174,6 +2182,15 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
                 if not (_mp_fs >= _bc_fs and _mp_fe <= _bc_fe):
                     continue
             _candidates.append((_bg, _parent_budget))
+        # Finding 9: a bundle group can be absorbed by at most ONE bc_line.
+        # Without this, two same-platform bc_lines with near-equal budgets can
+        # both absorb the same sub-bundle set (when per-line dates are missing so
+        # the containment guard above is skipped), dropping both bc rollups while
+        # the sub-bundles represent only one and vanishing the other's budget.
+        _candidates = [
+            (_bg, _b) for _bg, _b in _candidates
+            if _bg not in already_absorbed_groups
+        ]
         if len(_candidates) < 2:
             continue  # need ≥ 2 sub-bundles to justify absorption
         _sum_bundles = sum(b for _, b in _candidates)
@@ -2181,6 +2198,7 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         if _diff < 0.02:
             absorbed_bc_indices.add(_bc_idx)
             bundle_groups_absorbed_by[_bc_idx] = [bg for bg, _ in _candidates]
+            already_absorbed_groups.update(bg for bg, _ in _candidates)
             logger.info(
                 "  bc_line %d ($%.2f, %s) absorbed by %d mp sub-bundles "
                 "summing to $%.2f (diff %.2f%%)",
