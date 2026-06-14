@@ -422,10 +422,12 @@ class TestPacingExcludesIsDirect:
         assert "AND l.is_traditional" not in sql, (
             "no is_traditional filter clause may gate pacing inclusion"
         )
-        # The trackability exclusion remains (COALESCE guards the NULL window
-        # between the ADD COLUMN migration and the first re-sync).
+        # The trackability exclusion remains, and NULL is now excluded too (race
+        # fix b): only an explicit is_direct = FALSE paces, so a transiently-NULL
+        # (mid-sync) line is never paced.
         assert "is_direct" in sql
-        assert "COALESCE(l.is_direct, FALSE) = FALSE" in sql
+        assert "l.is_direct = FALSE" in sql
+        assert "COALESCE(l.is_direct, FALSE) = FALSE" not in sql
 
     @patch("backend.services.pacing.date")
     @patch("backend.services.pacing.bq")
@@ -481,7 +483,7 @@ class TestPacingExcludesIsDirect:
                 assert "AND l.is_traditional" not in sql, (
                     "the is_traditional pacing filter must be gone"
                 )
-                if "COALESCE(l.is_direct, FALSE) = FALSE" in sql:
+                if "l.is_direct = FALSE" in sql:
                     return [dooh_line]
                 return [dooh_line, direct_line]
             if "blocking_chart_weeks" in sql:
@@ -537,7 +539,7 @@ class TestPacingExcludesIsDirect:
             if "media_plan_lines" in sql and "ROW_NUMBER" in sql:
                 # Real BQ would apply the is_direct filter and exclude the
                 # direct line. Mirror that: guard present → no rows.
-                if "COALESCE(l.is_direct, FALSE) = FALSE" in sql:
+                if "l.is_direct = FALSE" in sql:
                     return []
                 return [direct_line]
             if "blocking_chart_weeks" in sql:

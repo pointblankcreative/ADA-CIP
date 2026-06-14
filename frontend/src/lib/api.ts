@@ -143,6 +143,12 @@ export interface PacingResponse {
   /** True when rows were computed on demand (replay) rather than read from
    *  a stored budget_tracking snapshot. Mirrors diagnostics' `cached`. */
   replayed?: boolean;
+  /** (c) Active lines spending with no planned baseline (planned<=0, actual>0).
+   *  Their spend is in total_actual_to_date but excluded from the pacing %;
+   *  surfaced so the tab can warn rather than appear to read zero. Optional for
+   *  back-compat with a not-yet-redeployed backend. */
+  spend_without_baseline?: number;
+  lines_without_baseline?: number;
   lines: PacingLine[];
   /** Empty for legacy projects that haven't landed in project_media_plans. */
   phases: PhaseSummary[];

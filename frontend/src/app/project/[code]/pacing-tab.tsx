@@ -295,6 +295,28 @@ export function PacingTab({
         />
       )}
 
+      {/* (c) Spending-without-baseline warning: spend is present but the line
+          has no pacing baseline (usually a data refresh settling). Surfaced
+          here rather than silently dropped from the pacing %. */}
+      {(data.lines_without_baseline ?? 0) > 0 && (
+        <div
+          className="rounded-md px-4 py-2.5 text-[13px]"
+          style={{
+            borderLeft: "3px solid var(--warn)",
+            background: "var(--surface-card)",
+            color: "var(--fg)",
+          }}
+        >
+          <span className="font-semibold">
+            {data.lines_without_baseline} line
+            {(data.lines_without_baseline ?? 0) === 1 ? "" : "s"}
+          </span>{" "}
+          spending {formatCurrency(data.spend_without_baseline ?? 0)} with no
+          pacing baseline, likely a data refresh settling. This spend counts in
+          the totals but is excluded from the pacing %. Re-pace to refresh.
+        </div>
+      )}
+
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard

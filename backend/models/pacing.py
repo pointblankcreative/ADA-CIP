@@ -97,6 +97,11 @@ class PacingResponse(BaseModel):
     total_actual_to_date: float = 0
     overall_pacing_percentage: float = 0
     pending_line_count: int = 0  # C2: count of lines excluded from overall pacing
+    # (c) Active lines spending with no planned baseline (planned<=0, actual>0).
+    # Their spend is in total_actual_to_date but excluded from
+    # overall_pacing_percentage; surfaced so the UI can warn rather than hide it.
+    spend_without_baseline: float = 0
+    lines_without_baseline: int = 0
     # AI-002: spend on platforms with no media plan line. Included in the
     # spent/remaining math (conservative — never overstate remaining budget)
     # but EXCLUDED from overall_pacing_percentage (no planned baseline).
