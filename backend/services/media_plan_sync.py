@@ -1775,6 +1775,74 @@ def sync_all_for_project(project_code: str) -> dict:
     }
 
 
+def _emit_line_weeks(
+    line_weeks: list[dict],
+    line_id: str,
+    project_code: str,
+    flight_start: "date | None",
+    flight_end: "date | None",
+) -> list[dict]:
+    """Build budget-grid week records for one line, reconciling the
+    blocking-chart grid against the (authoritative, possibly detail-tab-enriched)
+    flight window.
+
+    The grid (which weeks are on/off) comes from the blocking chart while a
+    line's flight dates can come from the media-plan detail tab. If the grid's
+    ACTIVE weeks fall entirely outside the flight window, emitting the stale grid
+    would starve pacing's active-day count and collapse the planned baseline to 0
+    (a silent detail-tab vs blocking-chart conflict). When flight dates are
+    available to fall back on, regenerate an even flight-window grid (and warn)
+    instead. Otherwise the grid is emitted as-is (the common path), and a line
+    with no grid at all gets the even flight-window grid exactly as before.
+    """
+    have_flight = bool(flight_start and flight_end)
+    grid_overlaps_flight = have_flight and any(
+        w["is_active"]
+        and w["week_start"] <= flight_end
+        and w["week_start"] + timedelta(days=6) >= flight_start
+        for w in line_weeks
+    )
+    # Regenerate only when we CAN (flight dates present) and the existing grid is
+    # unusable (no weeks at all, or no active week overlaps the flight window).
+    regenerate = have_flight and not grid_overlaps_flight
+
+    records: list[dict] = []
+    if line_weeks and not regenerate:
+        for w in line_weeks:
+            records.append({
+                "id": f"{line_id}-w-{w['week_start'].isoformat()}",
+                "line_id": line_id,
+                "project_code": project_code,
+                "week_start": w["week_start"].isoformat(),
+                "is_active": w["is_active"],
+            })
+        return records
+
+    if regenerate:
+        if line_weeks:
+            logger.warning(
+                "  Line %s: blocking-chart active weeks do not overlap the "
+                "flight window %s..%s (detail-tab vs grid date conflict); "
+                "regenerating an even flight-window grid",
+                line_id, flight_start, flight_end,
+            )
+        week_cursor = flight_start - timedelta(days=flight_start.weekday())  # Monday
+        while week_cursor <= flight_end:
+            is_active = (
+                flight_start <= week_cursor + timedelta(days=6)
+                and week_cursor <= flight_end
+            )
+            records.append({
+                "id": f"{line_id}-w-{week_cursor.isoformat()}",
+                "line_id": line_id,
+                "project_code": project_code,
+                "week_start": week_cursor.isoformat(),
+                "is_active": is_active,
+            })
+            week_cursor += timedelta(days=7)
+    return records
+
+
 def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = None) -> dict:
     """Sync a Google Sheets media plan into BigQuery.
 
@@ -2145,32 +2213,15 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         flight_start = bc_line.get("flight_start") or meta.get("start_date")
         flight_end = bc_line.get("flight_end") or meta.get("end_date")
 
-        line_has_weeks = False
-        for w in bc["weeks"]:
-            if w["line_index"] == i:
-                line_has_weeks = True
-                week_records.append({
-                    "id": f"{line_id}-w-{w['week_start'].isoformat()}",
-                    "line_id": line_id,
-                    "project_code": project_code,
-                    "week_start": w["week_start"].isoformat(),
-                    "is_active": w["is_active"],
-                })
-
-        # If no blocking chart weeks exist for this line (e.g. fallback
-        # from media plan tabs), generate weekly entries from flight dates
-        if not line_has_weeks and flight_start and flight_end:
-            week_cursor = flight_start - timedelta(days=flight_start.weekday())  # Monday
-            while week_cursor <= flight_end:
-                is_active = flight_start <= week_cursor + timedelta(days=6) and week_cursor <= flight_end
-                week_records.append({
-                    "id": f"{line_id}-w-{week_cursor.isoformat()}",
-                    "line_id": line_id,
-                    "project_code": project_code,
-                    "week_start": week_cursor.isoformat(),
-                    "is_active": is_active,
-                })
-                week_cursor += timedelta(days=7)
+        # Reconcile the blocking-chart grid against the (enriched) flight window
+        # before emitting, and synthesise an even grid for lines with no usable
+        # grid. See _emit_line_weeks.
+        line_weeks = [w for w in bc["weeks"] if w["line_index"] == i]
+        week_records.extend(
+            _emit_line_weeks(
+                line_weeks, line_id, project_code, flight_start, flight_end
+            )
+        )
 
     # ── Synthesize bundles for mp-bundles not consumed by any bc_line ─
     # Two reasons a mp_bundle might not have been consumed:

@@ -17,6 +17,7 @@ from backend.services.media_plan_sync import (
     _build_line_records_for_bc_line,
     _compute_bundle_id,
     _detail_tab_lines_usable,
+    _emit_line_weeks,
     _extract_line_code,
     _filter_canonical_tabs,
     _match_all_mp_lines,
@@ -27,6 +28,74 @@ from backend.services.media_plan_sync import (
     extract_line_codes_from_adset_name,
 )
 from backend.routers.admin import MediaPlanLineUpdate
+
+
+# ── Finding 1: flight-date vs blocking-grid reconciliation ────────
+
+
+class TestEmitLineWeeks:
+    """Reconcile the blocking-chart grid against the (detail-tab-enriched)
+    flight window. A grid whose active weeks fall outside the flight dates is
+    regenerated as an even flight-window grid; a legitimately lagging grid that
+    still overlaps the window is left untouched."""
+
+    def _wk(self, ws, is_active):
+        return {"line_index": 0, "week_start": ws, "is_active": is_active}
+
+    def test_overlapping_grid_emitted_as_is(self):
+        weeks = [
+            self._wk(date(2026, 6, 8), True),
+            self._wk(date(2026, 6, 15), True),
+            self._wk(date(2026, 6, 22), False),
+        ]
+        out = _emit_line_weeks(weeks, "L1", "26023",
+                               date(2026, 6, 11), date(2026, 6, 30))
+        assert len(out) == 3
+        assert [w["is_active"] for w in out] == [True, True, False]
+        assert out[0]["week_start"] == "2026-06-08"
+
+    def test_lagging_grid_within_window_not_regenerated(self):
+        """26023 Meta case: first active week (Jun 15) starts after flight_start
+        (Jun 11) but still inside the window — a real schedule, left untouched
+        (the pacing baseline floor handles the lag)."""
+        weeks = [
+            self._wk(date(2026, 6, 1), False),
+            self._wk(date(2026, 6, 8), False),
+            self._wk(date(2026, 6, 15), True),
+            self._wk(date(2026, 6, 22), True),
+        ]
+        out = _emit_line_weeks(weeks, "L1", "26023",
+                               date(2026, 6, 11), date(2026, 7, 19))
+        assert len(out) == 4
+        assert [w["is_active"] for w in out] == [False, False, True, True]
+
+    def test_grid_outside_window_is_regenerated(self):
+        """Active weeks all in May, flight in June: the stale grid would yield 0
+        active days, so regenerate an even flight-window grid."""
+        weeks = [
+            self._wk(date(2026, 5, 4), True),
+            self._wk(date(2026, 5, 11), True),
+        ]
+        out = _emit_line_weeks(weeks, "L1", "26023",
+                               date(2026, 6, 1), date(2026, 6, 28))
+        starts = [w["week_start"] for w in out]
+        # stale May weeks discarded; a regenerated grid with active weeks emitted
+        assert "2026-05-04" not in starts
+        assert "2026-05-11" not in starts
+        assert len(out) >= 4
+        assert any(w["is_active"] for w in out)
+
+    def test_no_weeks_generates_even_grid(self):
+        out = _emit_line_weeks([], "L1", "26023",
+                               date(2026, 6, 1), date(2026, 6, 14))
+        assert out, "a line with no grid still gets an even flight-window grid"
+        assert all(w["line_id"] == "L1" for w in out)
+
+    def test_no_flight_dates_emits_grid_as_is(self):
+        weeks = [self._wk(date(2026, 5, 4), True)]
+        out = _emit_line_weeks(weeks, "L1", "26023", None, None)
+        assert len(out) == 1
+        assert out[0]["week_start"] == "2026-05-04"
 
 
 # ── ADAC-50: Tab disambiguation ──────────────────────────────────
