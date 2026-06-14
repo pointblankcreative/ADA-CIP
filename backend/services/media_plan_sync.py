@@ -1260,6 +1260,90 @@ def _mp_lines_have_audience_data(mp_lines: list[dict]) -> bool:
     )
 
 
+def _detail_tab_lines_usable(detail_lines: list[dict]) -> bool:
+    """True if detail-tab-derived lines are good enough to be authoritative.
+
+    ``detail_lines`` here is the output of ``_synthesise_lines_from_mp`` — it
+    has already been through the recognised-platform filter and the >0-budget
+    gate, so each surviving line carries a real per-line budget and a known
+    platform. We only require that at least one such line exists. When the
+    detail tab is missing, malformed, or yields nothing recognisable, this
+    returns False and the caller keeps the blocking chart as the source
+    (legacy fallback — protects existing projects).
+    """
+    return bool(detail_lines)
+
+
+def _reattach_bc_weeks_to_lines(
+    old_bc_lines: list[dict],
+    old_bc_weeks: list[dict],
+    new_lines: list[dict],
+) -> list[dict]:
+    """Re-key the blocking chart's weekly flighting onto a new line set.
+
+    The blocking chart is the legitimate source of weekly *activation*
+    patterns (which weeks a platform is live / paused — the burst-pause
+    grid). But when the media-plan DETAIL tab becomes the authoritative
+    source for line identity/budgets/platforms, the original
+    ``blocking_chart_weeks`` are keyed by ``line_index`` into the OLD
+    blocking-chart line list, which no longer corresponds 1:1 to the new
+    lines. This helper transfers each old line's week pattern onto the new
+    line(s) on the SAME ``platform_id`` so the activation grid is preserved
+    rather than dropped.
+
+    Matching is by ``platform_id`` because that's the only field both the
+    blocking chart and the detail tab reliably share (the blocking chart's
+    merged-budget rows can't be matched by budget, and line_codes don't
+    exist on the chart). When several new lines share a platform that had a
+    single blocking-chart pattern, each inherits a copy of that pattern —
+    the activation calendar is identical for co-platform lines, which is the
+    correct default (the blocking chart only ever drew one row per platform).
+
+    Returns a fresh ``weeks`` list shaped exactly like the parser's output
+    (``{"line_index", "week_start", "is_active"}``) but indexed into
+    ``new_lines``. Lines whose platform had no blocking-chart weeks are
+    simply absent here; the caller's existing flight-date fallback then
+    synthesises their weeks from flight_start/flight_end (so weeks are never
+    zeroed — only re-sourced).
+    """
+    if not old_bc_weeks or not new_lines:
+        return []
+
+    # Group the old week patterns by the platform_id of the old line they
+    # belonged to. Preserve order so a platform that legitimately had two
+    # blocking-chart rows (rare) keeps both patterns available round-robin.
+    weeks_by_old_idx: dict[int, list[dict]] = {}
+    for w in old_bc_weeks:
+        weeks_by_old_idx.setdefault(w["line_index"], []).append(w)
+
+    patterns_by_platform: dict[str | None, list[list[dict]]] = {}
+    for old_idx, wk_list in weeks_by_old_idx.items():
+        if old_idx >= len(old_bc_lines):
+            continue
+        pid = old_bc_lines[old_idx].get("platform_id")
+        patterns_by_platform.setdefault(pid, []).append(wk_list)
+
+    # Round-robin cursor per platform so multiple old rows on one platform
+    # are spread across multiple new lines on that platform if present.
+    cursor: dict[str | None, int] = {}
+    new_weeks: list[dict] = []
+    for new_idx, line in enumerate(new_lines):
+        pid = line.get("platform_id")
+        patterns = patterns_by_platform.get(pid)
+        if not patterns:
+            continue
+        i = cursor.get(pid, 0)
+        chosen = patterns[i % len(patterns)]
+        cursor[pid] = i + 1
+        for w in chosen:
+            new_weeks.append({
+                "line_index": new_idx,
+                "week_start": w["week_start"],
+                "is_active": w["is_active"],
+            })
+    return new_weeks
+
+
 # ── Line-record builder (extracted from sync_media_plan for testability) ──
 
 
@@ -1714,39 +1798,81 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         logger.info("  Row-level project filter: %d → %d lines (removed %d from other projects)",
                      before_count, len(mp_lines), before_count - len(mp_lines))
 
-    # ── Prefer media plan tab lines when they have audience-level detail.
-    #    The blocking chart often has more granular budget rows that don't
-    #    match the intended line structure. Media plan tabs with audience
-    #    names are the authoritative source.
-    #    IMPORTANT: Never replace bc["lines"] or clear bc["weeks"] when they
-    #    already exist — that destroys weekly activation patterns (burst/pause).
+    # ── Source of truth: the media-plan DETAIL tab ──────────────────
+    #   The DETAIL tab carries one row per line with a REAL per-line Budget
+    #   column, the platform, the line_code, the audience, and the bundle
+    #   structure. The Blocking Chart's Budget column is frequently a SINGLE
+    #   MERGED cell holding the plan TOTAL across every platform row (verified
+    #   on 26023: W12:W17 = $99,362.06 across all 6 rows), so the chart can
+    #   only ever emit ONE line carrying the whole budget — the other platform
+    #   rows read empty and are dropped. Treating the chart as authoritative
+    #   therefore mis-assigns the plan total to one line and silently loses
+    #   the rest (26023: Meta #03 showed $99,362 instead of its real $4,090;
+    #   DOOH / Open Web / CTV never appeared).
+    #
+    #   So: when the detail tab yields usable lines (recognised platform +
+    #   real >0 budget, post-filter), those LINES — their budgets, platforms,
+    #   line_codes, audiences and bundle grouping — become authoritative. The
+    #   blocking chart then contributes ONLY (a) weekly flighting (activation /
+    #   burst-pause grid, re-keyed onto the detail lines by platform) and
+    #   (b) metadata (flight window / net_budget / ref_year), both of which
+    #   it parses reliably.
+    #
+    #   FALLBACK (unchanged legacy behaviour, protects existing projects):
+    #   when there is no detail tab, or it yields no usable lines, the
+    #   blocking chart provides the lines exactly as before. Its weeks stay
+    #   keyed to those lines untouched.
     mp_matches: dict[int, dict] = {}
 
-    if mp_lines and _mp_lines_have_audience_data(mp_lines):
-        if bc["lines"]:
-            # Enrich blocking chart lines with audience data from media plan tabs
-            # rather than replacing them — preserves weekly activation patterns
-            mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
-            logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines "
-                        "(%d matched)", len(bc["lines"]), len(mp_matches))
-            for bc_idx, mp_detail in mp_matches.items():
-                bc_line = bc["lines"][bc_idx]
-                if not bc_line.get("audience_name") and mp_detail.get("audience_name"):
-                    bc_line["audience_name"] = mp_detail["audience_name"]
-                # Use media plan tab's explicit per-line dates when available
-                if mp_detail.get("flight_start"):
-                    bc_line["flight_start"] = mp_detail["flight_start"]
-                if mp_detail.get("flight_end"):
-                    bc_line["flight_end"] = mp_detail["flight_end"]
-        else:
-            # Blocking chart had no line items — use media plan tabs as primary source
-            logger.warning("  Blocking chart produced 0 lines but mp tabs have audience data — synthesising")
-            bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
-            mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+    detail_lines = (
+        _synthesise_lines_from_mp(mp_lines, bc["metadata"]) if mp_lines else []
+    )
+
+    if _detail_tab_lines_usable(detail_lines):
+        # DETAIL TAB AUTHORITATIVE. Swap the chart's merged-budget lines for
+        # the detail tab's real per-line set, but re-key the chart's weekly
+        # flighting onto the new lines by platform so the burst-pause grid is
+        # preserved (never zeroed). Lines whose platform had no chart weeks
+        # fall through to the flight-date week synthesis below.
+        new_weeks = _reattach_bc_weeks_to_lines(
+            bc["lines"], bc["weeks"], detail_lines
+        )
+        logger.info(
+            "  Detail tab authoritative: %d detail line(s) replace %d "
+            "blocking-chart line(s); re-keyed %d/%d chart week rows by platform",
+            len(detail_lines), len(bc["lines"]), len(new_weeks), len(bc["weeks"]),
+        )
+        bc["lines"] = detail_lines
+        bc["weeks"] = new_weeks
+        # Match the (now authoritative) detail lines back to the raw mp_lines
+        # so bundle structure, targeting, and line_code enrichment still flow
+        # through _build_line_records_for_bc_line exactly as before.
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
     elif not bc["lines"] and mp_lines:
+        # No usable detail lines AND the chart is empty — last-resort
+        # synthesis (e.g. chart had only flight/section headers). Unchanged.
         logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
         bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
         mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+    elif bc["lines"] and mp_lines and _mp_lines_have_audience_data(mp_lines):
+        # FALLBACK ENRICHMENT: detail tab had no usable (recognised-platform,
+        # budgeted) lines, but the raw mp_lines still carry audience/date
+        # detail. Keep the blocking chart authoritative (and its weeks intact)
+        # and enrich in place — the pre-existing behaviour for plans whose
+        # detail tab is present but doesn't survive the recognised-platform
+        # filter on its own.
+        mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
+        logger.info("  Media plan tabs have audience data — enriching %d blocking chart lines "
+                    "(%d matched)", len(bc["lines"]), len(mp_matches))
+        for bc_idx, mp_detail in mp_matches.items():
+            bc_line = bc["lines"][bc_idx]
+            if not bc_line.get("audience_name") and mp_detail.get("audience_name"):
+                bc_line["audience_name"] = mp_detail["audience_name"]
+            # Use media plan tab's explicit per-line dates when available
+            if mp_detail.get("flight_start"):
+                bc_line["flight_start"] = mp_detail["flight_start"]
+            if mp_detail.get("flight_end"):
+                bc_line["flight_end"] = mp_detail["flight_end"]
 
     meta = bc["metadata"]
     plan_id = f"plan-{project_code}-{uuid.uuid4().hex[:8]}"
