@@ -306,8 +306,11 @@ def run_pacing_for_project(
                 -- is exactly what wrote the 26023 zero-spend snapshot (a pace
                 -- ran while a sync had the direct buys momentarily is_direct=NULL
                 -- and paced them). Every active project has been re-synced, so no
-                -- legitimate NULL remains; only an explicit is_direct = FALSE paces.
-                AND l.is_direct = FALSE
+                -- legitimate NULL remains. The effective value is
+                -- COALESCE(is_direct_override, is_direct): a user's manual
+                -- override wins over auto-classification, so only an effective
+                -- FALSE paces (and NULL/NULL stays excluded).
+                AND COALESCE(l.is_direct_override, l.is_direct) = FALSE
         )
         WHERE _rn = 1
     """

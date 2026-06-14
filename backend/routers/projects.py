@@ -81,7 +81,7 @@ async def list_projects(
             SELECT project_code, SUM(budget) AS direct_budget
             FROM (
                 SELECT
-                    mpl.project_code, mpl.budget, mpl.is_direct,
+                    mpl.project_code, mpl.budget, mpl.is_direct, mpl.is_direct_override,
                     ROW_NUMBER() OVER (
                         PARTITION BY mpl.line_id ORDER BY mpl.sync_version DESC
                     ) AS _rn
@@ -93,7 +93,7 @@ async def list_projects(
                  AND mp.sheet_id     = pmp.sheet_id
                  AND pmp.is_active    = TRUE
             )
-            WHERE _rn = 1 AND COALESCE(is_direct, FALSE) = TRUE
+            WHERE _rn = 1 AND COALESCE(is_direct_override, is_direct, FALSE) = TRUE
             GROUP BY project_code
         ) dir USING (project_code)
         WHERE 1=1
@@ -193,7 +193,7 @@ async def get_project(project_code: str):
             SELECT project_code, SUM(budget) AS direct_budget
             FROM (
                 SELECT
-                    mpl.project_code, mpl.budget, mpl.is_direct,
+                    mpl.project_code, mpl.budget, mpl.is_direct, mpl.is_direct_override,
                     ROW_NUMBER() OVER (
                         PARTITION BY mpl.line_id ORDER BY mpl.sync_version DESC
                     ) AS _rn
@@ -206,7 +206,7 @@ async def get_project(project_code: str):
                  AND pmp.is_active    = TRUE
                 WHERE mpl.project_code = @project_code
             )
-            WHERE _rn = 1 AND COALESCE(is_direct, FALSE) = TRUE
+            WHERE _rn = 1 AND COALESCE(is_direct_override, is_direct, FALSE) = TRUE
             GROUP BY project_code
         ) dir USING (project_code)
         WHERE p.project_code = @project_code

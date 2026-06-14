@@ -31,6 +31,8 @@ from backend.services.media_plan_sync import (
 from backend.services import pacing as pacing_mod
 from backend.services.pacing import run_pacing_for_project
 from backend.routers import pacing as pacing_router
+from backend.routers import admin as admin_mod
+import asyncio
 
 
 _META = {
@@ -426,7 +428,9 @@ class TestPacingExcludesIsDirect:
         # fix b): only an explicit is_direct = FALSE paces, so a transiently-NULL
         # (mid-sync) line is never paced.
         assert "is_direct" in sql
-        assert "l.is_direct = FALSE" in sql
+        # Effective is_direct = COALESCE(is_direct_override, is_direct): the
+        # manual override wins over auto, and NULL/NULL stays excluded.
+        assert "COALESCE(l.is_direct_override, l.is_direct) = FALSE" in sql
         assert "COALESCE(l.is_direct, FALSE) = FALSE" not in sql
 
     @patch("backend.services.pacing.date")
@@ -483,7 +487,7 @@ class TestPacingExcludesIsDirect:
                 assert "AND l.is_traditional" not in sql, (
                     "the is_traditional pacing filter must be gone"
                 )
-                if "l.is_direct = FALSE" in sql:
+                if "COALESCE(l.is_direct_override, l.is_direct) = FALSE" in sql:
                     return [dooh_line]
                 return [dooh_line, direct_line]
             if "blocking_chart_weeks" in sql:
@@ -539,7 +543,7 @@ class TestPacingExcludesIsDirect:
             if "media_plan_lines" in sql and "ROW_NUMBER" in sql:
                 # Real BQ would apply the is_direct filter and exclude the
                 # direct line. Mirror that: guard present → no rows.
-                if "l.is_direct = FALSE" in sql:
+                if "COALESCE(l.is_direct_override, l.is_direct) = FALSE" in sql:
                     return []
                 return [direct_line]
             if "blocking_chart_weeks" in sql:
@@ -594,7 +598,7 @@ class TestDirectLinesRouter:
         assert out == []
         sql = captured["sql"]
         # Selects only is_direct lines (COALESCE guards the NULL migration window).
-        assert "COALESCE(l.is_direct, FALSE) = TRUE" in sql
+        assert "COALESCE(l.is_direct_override, l.is_direct, FALSE) = TRUE" in sql
         # Standard ROW_NUMBER dedup + plan_id-in-current-plans guard (mpl_dedup).
         assert "ROW_NUMBER" in sql
         assert "_rn = 1" in sql
@@ -631,3 +635,76 @@ class TestDirectLinesRouter:
         assert out[1].label == "LED Truck"
         assert out[1].budget == pytest.approx(17000.0)
         assert out[1].audience is None
+
+
+# ── is_direct manual override endpoint ────────────────────────────
+
+
+class TestIsDirectOverrideEndpoint:
+    def _patched_bq(self, captured):
+        class _BQ:
+            @staticmethod
+            def table(name):
+                return f"`proj.ds.{name}`"
+
+            @staticmethod
+            def string_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def scalar_param(n, t, v):
+                return (n, v)
+
+            @staticmethod
+            def run_query(sql, params=None):
+                captured.append(sql)
+                if "SELECT project_code" in sql:
+                    return [{"project_code": "26023",
+                             "platform_id": "building_projection",
+                             "budget": 17647.06}]
+                return []
+        return _BQ
+
+    def test_override_persists_to_row_and_table_and_repaces(self):
+        captured: list = []
+        with patch.object(admin_mod, "bq", self._patched_bq(captured)), \
+                patch("backend.services.pacing.run_pacing_for_project") as mock_pace:
+            result = asyncio.run(admin_mod.update_line_is_direct(
+                "plan-26023-line-006",
+                admin_mod.IsDirectOverrideUpdate(is_direct_override=False),
+            ))
+        assert result["status"] == "updated"
+        assert result["is_direct_override"] is False
+        assert result["repaced"] is True
+        # live row update + durable override upsert
+        assert any("UPDATE" in s and "is_direct_override" in s for s in captured)
+        assert any("MERGE" in s and "media_plan_line_overrides" in s for s in captured)
+        # re-paced the owning project so the line moves immediately
+        mock_pace.assert_called_once()
+        assert mock_pace.call_args[0][0] == "26023"
+
+    def test_override_404_when_line_missing(self):
+        class _BQ:
+            @staticmethod
+            def table(name):
+                return f"`proj.ds.{name}`"
+
+            @staticmethod
+            def string_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def scalar_param(n, t, v):
+                return (n, v)
+
+            @staticmethod
+            def run_query(sql, params=None):
+                return []  # line not found
+
+        from fastapi import HTTPException
+        with patch.object(admin_mod, "bq", _BQ):
+            with pytest.raises(HTTPException):
+                asyncio.run(admin_mod.update_line_is_direct(
+                    "missing",
+                    admin_mod.IsDirectOverrideUpdate(is_direct_override=True),
+                ))
