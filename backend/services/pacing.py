@@ -243,14 +243,25 @@ def run_pacing_for_project(
              AND p.sheet_id   = pmp.sheet_id
              AND pmp.is_active = TRUE
             WHERE l.project_code = @project_code
-                AND l.is_traditional = FALSE
-                -- bcdirect: exclude direct buys (no self-serve spend feed) from
-                -- pacing, exactly like is_traditional — they can never produce
-                -- budget_tracking rows or pacing alarms. COALESCE guards the
-                -- window between the ADD COLUMN migration and the first re-sync,
-                -- when pre-existing rows carry is_direct = NULL: a NULL line is
-                -- treated as not-direct (still paced), so legitimate self-serve
-                -- lines are never dropped. A real direct line is explicitly TRUE.
+                -- Pacing inclusion is governed by TRACKABILITY, not media type.
+                -- A line paces iff it has a self-serve spend feed, i.e. is NOT a
+                -- direct buy (is_direct). The old `is_traditional = FALSE` clause
+                -- was removed: is_traditional is a keyword-based MEDIA-TYPE label
+                -- (kept as an informational column) and was wrongly excluding a
+                -- recognised-platform line whose label merely reads "traditional"
+                -- — e.g. 26023's DOOH, now StackAdapt-backed (is_direct=FALSE),
+                -- which must pace once StackAdapt DOOH spend flows. Verified safe:
+                -- across all media_plan_lines exactly ONE recognised traditional
+                -- line exists (26023 DOOH), so dropping the filter changes only
+                -- that intended line.
+                --
+                -- is_direct buys (no self-serve feed) are still excluded — they
+                -- can never produce budget_tracking rows or pacing alarms. The
+                -- COALESCE guards the window between the ADD COLUMN migration and
+                -- the first re-sync, when pre-existing rows carry is_direct=NULL:
+                -- a NULL line is treated as not-direct (still paced), so
+                -- legitimate self-serve lines are never dropped. A real direct
+                -- line is explicitly TRUE.
                 AND COALESCE(l.is_direct, FALSE) = FALSE
         )
         WHERE _rn = 1

@@ -48,9 +48,14 @@ PLATFORM_MAP = {
     "snap": "snapchat",
     "perion": "perion",
     "hivestack": "perion",
-    "dooh": "perion",
-    # PB plans often spell DOOH out in full (26023 "Digital Out Of Home", $3,500).
-    "digital out of home": "perion",
+    # DOOH is now bought through StackAdapt (Perion's DOOH supply was retired at
+    # PB). Both the short "DOOH" tag and the spelled-out "Digital Out Of Home"
+    # label (26023, $3,500) therefore route to StackAdapt — a recognised
+    # self-serve feed — so DOOH lines stay is_direct=FALSE and (post the pacing
+    # trackability swap) pace once StackAdapt DOOH spend flows. The literal
+    # "perion"/"hivestack" aliases above are left intact for any legacy label.
+    "dooh": "stackadapt",
+    "digital out of home": "stackadapt",
     "pinterest": "pinterest",
     "reddit": "reddit",
 }
@@ -1258,9 +1263,22 @@ def _synthesise_lines_from_mp(
         is_direct = pid not in PLATFORM_MAP.values()
         budget = mp.get("budget")
 
-        # No spend pool → drop, but surface it (don't vanish silently).
+        # Bundle children carry budget=NULL BY DESIGN — the merged-cell pool
+        # lives on the bundle PARENT, and the child IS written to BigQuery (with
+        # budget=NULL) under that parent via _build_line_records_for_bc_line. So
+        # a no-budget bundle child is NOT a lost line and must never surface as a
+        # "dropped" cry-wolf (24058 reported dropped=23 — exactly its 23 pooled
+        # bundle children). A row is a bundle child when the parser flagged its
+        # Budget cell as a merge continuation (merged_with_previous) and/or it
+        # was grouped into a multi-row bundle (bundle_group is not None).
+        is_bundle_child = bool(
+            mp.get("merged_with_previous") or mp.get("bundle_group") is not None
+        )
+
+        # No spend pool → drop, but surface it (don't vanish silently) UNLESS it
+        # is a pooled bundle child, which is written under its parent (above).
         if not budget or budget <= 0:
-            if dropped is not None:
+            if dropped is not None and not is_bundle_child:
                 dropped.append({
                     "label": mp.get("platform", "") or mp.get("audience_name", ""),
                     "platform_id": pid,

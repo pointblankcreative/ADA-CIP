@@ -56,6 +56,19 @@ class UntrackedPlatformSpend(BaseModel):
     last_date: str | None = None
 
 
+class DirectLine(BaseModel):
+    """A direct-buy media plan line (``media_plan_lines.is_direct = TRUE``):
+    a budgeted line with NO self-serve spend feed (CTV, DOOH direct, building
+    projection, LED truck, transit, …). These are excluded from pacing — they
+    can never produce budget_tracking rows or alarms — so they're surfaced
+    here purely as budget CONTEXT (managed directly, not tracked in ADA)."""
+
+    label: str
+    platform: str | None = None
+    budget: float = 0
+    audience: str | None = None
+
+
 class PhaseSummary(BaseModel):
     """Aggregate roll-up for one phase (one project_media_plans row).
 
@@ -92,6 +105,12 @@ class PacingResponse(BaseModel):
     # total_actual_to_date + untracked_spend. The number the header's
     # fact-table total should reconcile against.
     total_actual_all_platforms: float = 0
+    # Direct buys (media_plan_lines.is_direct = TRUE): budgeted lines with no
+    # self-serve feed, EXCLUDED from pacing. Surfaced as budget context only —
+    # no pacing %, no over/under alarms. Additive + optional (same back-compat
+    # pattern as untracked_spend) so a not-yet-redeployed frontend keeps working.
+    direct_budget: float = 0
+    direct_lines: list[DirectLine] = []
     # AI-070/071: explicit empty-state signalling for retrospective requests.
     # True when no stored budget_tracking row exists for the requested date
     # AND a compute-on-miss replay was impossible (no plan / no data). The
