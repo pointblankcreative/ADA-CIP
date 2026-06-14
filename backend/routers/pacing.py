@@ -115,13 +115,15 @@ def _query_direct_lines(project_code: str) -> list[DirectLine]:
     (treated as not-direct, i.e. excluded here — they pace instead).
     """
     sql = f"""
-        SELECT site_network, platform_id, budget, audience_name
+        SELECT line_id, site_network, platform_id, budget, audience_name, is_direct_override
         FROM (
             SELECT
+                l.line_id,
                 l.site_network,
                 l.platform_id,
                 l.budget,
                 l.audience_name,
+                l.is_direct_override,
                 ROW_NUMBER() OVER (
                     PARTITION BY l.line_id
                     ORDER BY l.sync_version DESC
@@ -148,6 +150,7 @@ def _query_direct_lines(project_code: str) -> list[DirectLine]:
     rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
     return [
         DirectLine(
+            line_id=r.get("line_id"),
             label=(
                 r.get("audience_name")
                 or r.get("site_network")
@@ -157,6 +160,7 @@ def _query_direct_lines(project_code: str) -> list[DirectLine]:
             platform=r.get("site_network") or r.get("platform_id"),
             budget=_float(r.get("budget")),
             audience=r.get("audience_name"),
+            is_direct_override=r.get("is_direct_override"),
         )
         for r in rows
     ]
@@ -300,6 +304,7 @@ async def get_pacing(
                 SELECT
                     l.line_id,
                     l.audience_name,
+                    l.is_direct_override,
                     l.flight_start,
                     l.flight_end,
                     -- Multi-plan: phase metadata flows from media_plans.sheet_id
@@ -346,7 +351,8 @@ async def get_pacing(
             mpl.flight_end,
             mpl.sheet_id,
             mpl.phase_label,
-            mpl.phase_display_order
+            mpl.phase_display_order,
+            mpl.is_direct_override
         FROM {bq.table('budget_tracking')} bt
         LEFT JOIN mpl_dedup mpl ON bt.line_id = mpl.line_id
         WHERE bt.project_code = @project_code
@@ -631,6 +637,7 @@ async def get_pacing(
                 sheet_id=r.get("sheet_id"),
                 phase_label=r.get("phase_label"),
                 phase_display_order=r.get("phase_display_order"),
+                is_direct_override=r.get("is_direct_override"),
             )
             for r in rows
         ],

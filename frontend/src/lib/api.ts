@@ -53,6 +53,8 @@ export interface BundleMember {
 
 export interface PacingLine {
   line_id: string;
+  /** is_direct override state: null = auto-classified, true/false = manual. */
+  is_direct_override?: boolean | null;
   line_code: string | null;
   platform_id: string;
   channel_category: string;
@@ -110,10 +112,13 @@ export interface UntrackedPlatformSpend {
  *  line with no self-serve feed (CTV, DOOH direct, LED truck, …), excluded from
  *  pacing and surfaced as budget context only (no pacing %, no alarms). */
 export interface DirectLine {
+  line_id?: string | null;
   label: string;
   platform?: string | null;
   budget: number;
   audience?: string | null;
+  /** null = auto-classified direct; true = manual override to direct. */
+  is_direct_override?: boolean | null;
 }
 
 export interface PacingResponse {
@@ -1139,6 +1144,14 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+    setLineIsDirect: (lineId: string, isDirectOverride: boolean | null) =>
+      apiFetch<Record<string, unknown>>(
+        `/api/admin/media-plan-lines/${encodeURIComponent(lineId)}/is-direct`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ is_direct_override: isDirectOverride }),
+        },
+      ),
     createCreativeAlias: (data: {
       project_code: string;
       ad_name_pattern: string;

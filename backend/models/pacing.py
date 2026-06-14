@@ -42,6 +42,9 @@ class LinePacing(BaseModel):
     sheet_id: str | None = None
     phase_label: str | None = None
     phase_display_order: int | None = None
+    # is_direct override state: None = auto-classified, True/False = a manual
+    # override (the user flipped this line's direct/tracked classification).
+    is_direct_override: bool | None = None
 
 
 class UntrackedPlatformSpend(BaseModel):
@@ -63,10 +66,13 @@ class DirectLine(BaseModel):
     can never produce budget_tracking rows or alarms — so they're surfaced
     here purely as budget CONTEXT (managed directly, not tracked in ADA)."""
 
+    line_id: str | None = None
     label: str
     platform: str | None = None
     budget: float = 0
     audience: str | None = None
+    # None = auto-classified direct; True = manual override to direct.
+    is_direct_override: bool | None = None
 
 
 class PhaseSummary(BaseModel):
