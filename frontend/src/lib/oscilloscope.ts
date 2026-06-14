@@ -23,11 +23,28 @@ export function isLinePending(line: PacingLine): boolean {
   );
 }
 
+/**
+ * True when a line has a usable pacing signal for the health viz. Excludes
+ * pending/not_started lines AND lines whose pacing_percentage is missing or 0
+ * (no planned baseline / no signal). A 0 from a collapsed denominator would
+ * otherwise read as maximal deviation (|0 - 100|) and falsely drag the health
+ * score to "critical", or NaN-break it if the value is null at runtime.
+ */
+function hasUsablePacing(line: PacingLine): boolean {
+  return (
+    !isLinePending(line) &&
+    Number.isFinite(line.pacing_percentage) &&
+    line.pacing_percentage > 0
+  );
+}
+
 // ── Health Score ────────────────────────────────────────────────────
 
 export function computeHealthScore(lines: PacingLine[]): number {
-  // Exclude pending/not_started lines — they have 0% pacing but aren't unhealthy
-  const active = lines.filter((l) => !isLinePending(l));
+  // Exclude pending/not_started lines (0% pacing but not unhealthy) AND lines
+  // with no usable signal (null/0 pacing), so a collapsed denominator can't
+  // falsely read as "critical".
+  const active = lines.filter(hasUsablePacing);
   if (active.length === 0) return 0.5;
   const devs = active.map((l) => Math.abs(l.pacing_percentage - 100) / 100);
   const avg = devs.reduce((a, b) => a + b, 0) / devs.length;
@@ -46,8 +63,9 @@ export function extractChannels(
   lines: PacingLine[],
   overallPct: number
 ): [ChannelInfo, ChannelInfo, ChannelInfo] {
-  // Only consider active/completed lines for high/low channels
-  const active = lines.filter((l) => !isLinePending(l));
+  // Only consider lines with a usable signal for high/low channels (excludes
+  // pending/not_started and null/0-pacing no-signal lines).
+  const active = lines.filter(hasUsablePacing);
   if (active.length === 0) {
     return [
       { pct: overallPct, label: "High" },

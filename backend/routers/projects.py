@@ -38,6 +38,7 @@ async def list_projects(
             p.start_date,
             p.end_date,
             p.net_budget,
+            COALESCE(dir.direct_budget, 0) AS direct_budget,
             COALESCE(s.total_spend, 0) AS total_spend,
             CASE
                 WHEN bt.bt_planned > 0
@@ -76,6 +77,25 @@ async def list_projects(
              AND bt_inner.date         = latest.max_date
             GROUP BY bt_inner.project_code
         ) bt USING (project_code)
+        LEFT JOIN (
+            SELECT project_code, SUM(budget) AS direct_budget
+            FROM (
+                SELECT
+                    mpl.project_code, mpl.budget, mpl.is_direct,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY mpl.line_id ORDER BY mpl.sync_version DESC
+                    ) AS _rn
+                FROM {bq.table('media_plan_lines')} mpl
+                JOIN {bq.table('media_plans')} mp
+                  ON mpl.plan_id = mp.plan_id AND mp.is_current = TRUE
+                JOIN {bq.table('project_media_plans')} pmp
+                  ON mp.project_code = pmp.project_code
+                 AND mp.sheet_id     = pmp.sheet_id
+                 AND pmp.is_active    = TRUE
+            )
+            WHERE _rn = 1 AND COALESCE(is_direct, FALSE) = TRUE
+            GROUP BY project_code
+        ) dir USING (project_code)
         WHERE 1=1
         {status_clause}
         ORDER BY p.start_date DESC
@@ -92,6 +112,7 @@ async def list_projects(
             start_date=r.get("start_date"),
             end_date=r.get("end_date"),
             net_budget=float(r["net_budget"]) if r.get("net_budget") else None,
+            direct_budget=float(r.get("direct_budget") or 0),
             total_spend=float(r.get("total_spend", 0)),
             pacing_percentage=(
                 float(r["pacing_percentage"])
@@ -123,6 +144,7 @@ async def get_project(project_code: str):
             p.start_date,
             p.end_date,
             p.net_budget,
+            COALESCE(dir.direct_budget, 0) AS direct_budget,
             p.currency,
             p.media_plan_sheet_id,
             p.slack_channel_id,
@@ -167,6 +189,26 @@ async def get_project(project_code: str):
               )
             GROUP BY project_code
         ) bt USING (project_code)
+        LEFT JOIN (
+            SELECT project_code, SUM(budget) AS direct_budget
+            FROM (
+                SELECT
+                    mpl.project_code, mpl.budget, mpl.is_direct,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY mpl.line_id ORDER BY mpl.sync_version DESC
+                    ) AS _rn
+                FROM {bq.table('media_plan_lines')} mpl
+                JOIN {bq.table('media_plans')} mp
+                  ON mpl.plan_id = mp.plan_id AND mp.is_current = TRUE
+                JOIN {bq.table('project_media_plans')} pmp
+                  ON mp.project_code = pmp.project_code
+                 AND mp.sheet_id     = pmp.sheet_id
+                 AND pmp.is_active    = TRUE
+                WHERE mpl.project_code = @project_code
+            )
+            WHERE _rn = 1 AND COALESCE(is_direct, FALSE) = TRUE
+            GROUP BY project_code
+        ) dir USING (project_code)
         WHERE p.project_code = @project_code
     """
     rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
@@ -184,6 +226,7 @@ async def get_project(project_code: str):
         start_date=r.get("start_date"),
         end_date=r.get("end_date"),
         net_budget=float(r["net_budget"]) if r.get("net_budget") else None,
+        direct_budget=float(r.get("direct_budget") or 0),
         currency=r.get("currency", "CAD"),
         total_spend=float(r.get("total_spend", 0)),
         pacing_percentage=(

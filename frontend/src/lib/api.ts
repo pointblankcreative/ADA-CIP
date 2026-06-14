@@ -26,6 +26,10 @@ export interface Project {
   start_date: string;
   end_date: string;
   net_budget: number;
+  /** Sum of is_direct (offline / no self-serve feed) line budgets. Optional:
+   * absent on older payloads, treated as 0. Used to net direct buys out of
+   * trackable pacing math (see lib/flight.ts). */
+  direct_budget?: number;
   total_spend: number;
   pacing_percentage: number | null;
   days_remaining: number;
