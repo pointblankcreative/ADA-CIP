@@ -131,6 +131,21 @@ export function PacingTab({
     });
   };
 
+  // Silent refetch so a line moves between the pacing list and the direct-buys
+  // card right after its is_direct classification is flipped (the backend
+  // re-paces on the override write).
+  const reloadPacing = () => {
+    api.pacing.get(code, asOfDate).then(setData).catch(() => {});
+  };
+
+  const handleIsDirectChange = async (lineId: string, value: boolean | null) => {
+    try {
+      await api.admin.setLineIsDirect(lineId, value);
+    } finally {
+      reloadPacing();
+    }
+  };
+
   /**
    * Update local pacing state after a bundle Confirm / Reject / Clear so
    * the UI reflects the change without refetching. Mirrors the backend's
@@ -378,6 +393,7 @@ export function PacingTab({
           lines={data.direct_lines ?? []}
           directBudget={data.direct_budget ?? 0}
           netBudget={data.net_budget}
+          onIsDirectChange={handleIsDirectChange}
         />
       )}
 
@@ -391,6 +407,7 @@ export function PacingTab({
         sigHover={sigHover}
         onNameUpdate={handleNameUpdate}
         onBundleStateChange={handleBundleStateChange}
+        onIsDirectChange={handleIsDirectChange}
       />
 
       {/* As-of stamp */}
@@ -512,14 +529,68 @@ function UntrackedSpendCard({
  * calm tinted-border treatment rather than UntrackedSpendCard's warn tone,
  * because a planned direct buy is expected, not a problem to flag.
  */
+/**
+ * Inline control to flip a line's is_direct classification (and reset to auto).
+ * Rendered on each pacing line (currentlyDirect=false → "Mark direct") and each
+ * direct-buys line (currentlyDirect=true → "Mark tracked"). The parent handler
+ * persists the override and re-paces, so the line moves between the lists.
+ */
+function IsDirectControl({
+  lineId,
+  currentlyDirect,
+  isOverridden,
+  onIsDirectChange,
+}: {
+  lineId?: string | null;
+  currentlyDirect: boolean;
+  isOverridden: boolean;
+  onIsDirectChange?: (lineId: string, value: boolean | null) => void;
+}) {
+  if (!lineId || !onIsDirectChange) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.06em]">
+      {isOverridden && (
+        <span className="text-fg-faint" title="Manually overridden">
+          manual
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => onIsDirectChange(lineId, currentlyDirect ? false : true)}
+        className="rounded-xs border border-line-soft px-1.5 py-0.5 text-fg-muted transition-colors hover:text-fg"
+        title={
+          currentlyDirect
+            ? "Move into pacing (treat as self-serve)"
+            : "Move to direct buys (exclude from pacing)"
+        }
+      >
+        {currentlyDirect ? "Mark tracked" : "Mark direct"}
+      </button>
+      {isOverridden && (
+        <button
+          type="button"
+          onClick={() => onIsDirectChange(lineId, null)}
+          className="text-fg-faint underline transition-colors hover:text-fg"
+          title="Reset to auto-classification"
+        >
+          reset
+        </button>
+      )}
+    </span>
+  );
+}
+
+
 function DirectBuysCard({
   lines,
   directBudget,
   netBudget,
+  onIsDirectChange,
 }: {
   lines: DirectLine[];
   directBudget: number;
   netBudget: number;
+  onIsDirectChange?: (lineId: string, value: boolean | null) => void;
 }) {
   // Reconciliation identity surfaced on the strip: net = self-serve + direct.
   // Self-serve is the paced remainder (net minus the direct context), so the
@@ -554,9 +625,17 @@ function DirectBuysCard({
                 )}
                 {d.label}
               </span>
-              <span className="font-mono text-[13px] text-fg-muted">
-                {formatCurrency(d.budget)}
-              </span>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="font-mono text-[13px] text-fg-muted">
+                  {formatCurrency(d.budget)}
+                </span>
+                <IsDirectControl
+                  lineId={d.line_id}
+                  currentlyDirect={true}
+                  isOverridden={d.is_direct_override != null}
+                  onIsDirectChange={onIsDirectChange}
+                />
+              </div>
             </div>
           ))}
         </div>
@@ -589,6 +668,7 @@ function PacingLinesSection({
   sigHover,
   onNameUpdate,
   onBundleStateChange,
+  onIsDirectChange,
 }: {
   data: PacingResponse;
   code: string;
@@ -606,6 +686,7 @@ function PacingLinesSection({
     bundleId: string,
     newState: "confirmed" | "suggested" | "rejected"
   ) => void;
+  onIsDirectChange: (lineId: string, value: boolean | null) => void;
 }) {
   const phases = data.phases ?? [];
   const hasMultiplePhases = phases.length > 1;
@@ -629,6 +710,7 @@ function PacingLinesSection({
               glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
+              onIsDirectChange={onIsDirectChange}
             />
           ))}
         </div>
@@ -672,6 +754,7 @@ function PacingLinesSection({
             sigHover={sigHover}
             onNameUpdate={onNameUpdate}
             onBundleStateChange={onBundleStateChange}
+            onIsDirectChange={onIsDirectChange}
           />
         ))}
         {unassigned.length > 0 && (
@@ -696,6 +779,7 @@ function PacingLinesSection({
                   glow={sigHover === line.line_id}
                   onNameUpdate={onNameUpdate}
                   onBundleStateChange={onBundleStateChange}
+              onIsDirectChange={onIsDirectChange}
                 />
               ))}
             </div>
@@ -717,6 +801,7 @@ function PhaseGroup({
   sigHover,
   onNameUpdate,
   onBundleStateChange,
+  onIsDirectChange,
 }: {
   phase: PhaseSummary;
   /** 1-based index used as a fallback label when phase_label is null. */
@@ -735,6 +820,7 @@ function PhaseGroup({
     bundleId: string,
     newState: "confirmed" | "suggested" | "rejected"
   ) => void;
+  onIsDirectChange: (lineId: string, value: boolean | null) => void;
 }) {
   const status = pacingStatus(phase.pacing_percentage);
   const heading = phase.phase_label ?? `Phase ${phase.display_order ?? phaseNumber}`;
@@ -791,6 +877,7 @@ function PhaseGroup({
               glow={sigHover === line.line_id}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
+              onIsDirectChange={onIsDirectChange}
             />
           ))
         )}
@@ -809,6 +896,7 @@ function LineRow({
   glow = false,
   onNameUpdate,
   onBundleStateChange,
+  onIsDirectChange,
 }: {
   line: PacingLine;
   /** Project code, needed for bundle Confirm/Clear API calls. */
@@ -833,6 +921,7 @@ function LineRow({
     bundleId: string,
     newState: "confirmed" | "suggested" | "rejected"
   ) => void;
+  onIsDirectChange: (lineId: string, value: boolean | null) => void;
 }) {
   const isCompleted = line.line_status === "completed";
   const status = pacingStatus(line.pacing_percentage);
@@ -1031,6 +1120,12 @@ function LineRow({
                 </>
               )}
               {line.line_code && <CodeChip>{line.line_code}</CodeChip>}
+              <IsDirectControl
+                lineId={line.line_id}
+                currentlyDirect={false}
+                isOverridden={line.is_direct_override != null}
+                onIsDirectChange={onIsDirectChange}
+              />
               {(bundleParent || bundleRejected) && bundleMemberCount > 0 && (
                 <>
                   <span
