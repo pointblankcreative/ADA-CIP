@@ -600,6 +600,14 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
         # Bug 5 (ADAC-26): per-line flight dates
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_start DATE",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS flight_end DATE",
+        # bcdirect: is_direct marks a line with a real budget but NO self-serve
+        # spend feed (platform not in PLATFORM_MAP) — a "direct buy" (CTV, DOOH
+        # direct, building projection, LED truck, transit, …). Pacing excludes
+        # these exactly like is_traditional so they never produce budget_tracking
+        # rows / alarms. Orthogonal to is_traditional (media type, keyword-based);
+        # a line can be both. Mirrors the is_traditional / flight_start ADD COLUMN
+        # IF NOT EXISTS pattern so it self-heals on the prod table.
+        f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS is_direct BOOLEAN",
         # Versioned-write pattern: sync_version tracking for all tables
         f"ALTER TABLE {prefix}.media_plans` ADD COLUMN IF NOT EXISTS sync_version STRING",
         f"ALTER TABLE {prefix}.media_plan_lines` ADD COLUMN IF NOT EXISTS sync_version STRING",
@@ -1206,12 +1214,39 @@ def _parse_media_plan_tab(
 
 
 def _synthesise_lines_from_mp(
-    mp_lines: list[dict], metadata: dict
+    mp_lines: list[dict],
+    metadata: dict,
+    dropped: list[dict] | None = None,
 ) -> list[dict]:
     """Create blocking-chart-style line dicts from media plan tab lines.
 
-    Used as a fallback when the blocking chart only had section/flight headers
-    and no actual platform rows.
+    Used as the authoritative detail-tab line source (and as a fallback when
+    the blocking chart only had section/flight headers and no actual platform
+    rows).
+
+    Two axes decide a row's fate:
+
+      * BUDGET. A row with no budget or budget<=0 is DROPPED. It carries no
+        spend pool, so it can't pace or reconcile. When ``dropped`` is passed,
+        a structured ``{label, platform_id, budget, reason: "no_budget"}``
+        record is appended for surfacing upstream (item 1 of the bcdirect
+        build) instead of vanishing into a log line.
+
+      * TRACKABILITY (``is_direct``). A row with a real budget (>0) but a
+        platform that isn't in ``PLATFORM_MAP.values()`` has NO self-serve
+        spend feed (StackAdapt / Meta / etc.) — it's a "direct buy" (CTV,
+        DOOH-as-a-direct-line, building projection, LED truck, transit, …).
+        Such a row is NO LONGER dropped: it's retained and tagged
+        ``is_direct=True`` so the line-record builder writes it through to
+        BigQuery and pacing can exclude it (like ``is_traditional``). A row
+        whose platform IS recognised stays ``is_direct=False`` — unchanged
+        behaviour for every existing project, all of whose lines are on
+        recognised platforms.
+
+    ``is_direct`` is the trackability axis (PLATFORM_MAP membership). It is
+    ORTHOGONAL to ``is_traditional`` (media type, keyword-based, set later in
+    ``_build_line_records_for_bc_line``); a line can be both, and this function
+    never touches ``is_traditional``.
     """
     lines = []
     seen: set[tuple] = set()
@@ -1219,19 +1254,35 @@ def _synthesise_lines_from_mp(
         pid = mp.get("platform_id")
         if not pid:
             continue
-        # Only include lines with recognised platforms — skip flight headers
-        # that slipped through or unknown platform names
-        if pid not in PLATFORM_MAP.values():
-            logger.warning(
-                "Media plan sync: skipping row with unrecognised platform %r "
-                "(platform_id=%r, budget=%s) — add an alias to PLATFORM_MAP "
-                "if this is a real buy",
-                mp.get("platform"), pid, mp.get("budget"),
-            )
-            continue
+
+        is_direct = pid not in PLATFORM_MAP.values()
         budget = mp.get("budget")
+
+        # No spend pool → drop, but surface it (don't vanish silently).
         if not budget or budget <= 0:
+            if dropped is not None:
+                dropped.append({
+                    "label": mp.get("platform", "") or mp.get("audience_name", ""),
+                    "platform_id": pid,
+                    "budget": budget,
+                    # An unrecognised platform that ALSO has no budget is
+                    # reported as no_budget — without a budget we can't capture
+                    # it as a direct line anyway, and no_budget is the more
+                    # actionable signal (a real direct buy would carry a budget).
+                    "reason": "no_budget",
+                })
             continue
+
+        if is_direct:
+            # Budgeted but no self-serve feed: capture instead of drop, tagged
+            # is_direct so it's retained, written, and excluded from pacing.
+            logger.warning(
+                "Media plan sync: capturing direct-buy row (no self-serve feed) "
+                "platform=%r (platform_id=%r, budget=%s) as is_direct — excluded "
+                "from pacing, counted in reconciliation",
+                mp.get("platform"), pid, budget,
+            )
+
         # Deduplicate across multiple flight tabs with identical content
         fs = mp.get("flight_start") or metadata.get("start_date")
         fe = mp.get("flight_end") or metadata.get("end_date")
@@ -1248,6 +1299,9 @@ def _synthesise_lines_from_mp(
             "flight_start": fs,
             "flight_end": fe,
             "audience_name": mp.get("audience_name", ""),
+            # Trackability axis: TRUE = no self-serve feed (direct buy).
+            # Threaded into _build_line_records_for_bc_line via the bc_line.
+            "is_direct": is_direct,
         })
     return lines
 
@@ -1392,6 +1446,12 @@ def _build_line_records_for_bc_line(
     is_traditional = _is_traditional_media(
         bc_line.get("platform"), bc_line.get("platform_id")
     )
+    # Trackability axis (bcdirect): TRUE when the line has a budget but no
+    # self-serve feed. Carried on the bc_line by _synthesise_lines_from_mp.
+    # Defaults to False, so blocking-chart-sourced lines and synthetic bundle
+    # parents (legacy paths) stay is_direct=False — recognised-platform lines
+    # for all existing projects are unaffected. Independent of is_traditional.
+    is_direct = bool(bc_line.get("is_direct", False))
 
     records: list[dict] = [{
         "line_id": line_id,
@@ -1419,6 +1479,7 @@ def _build_line_records_for_bc_line(
         "frequency_cap": mp_detail.get("frequency_cap") if mp_detail else None,
         "geo_targeting": mp_detail.get("geo_targeting") if mp_detail else None,
         "is_traditional": is_traditional,
+        "is_direct": is_direct,
         "bundle_id": bundle_id,
         "bundle_role": bundle_role,
     }]
@@ -1457,11 +1518,83 @@ def _build_line_records_for_bc_line(
             "frequency_cap": sib.get("frequency_cap"),
             "geo_targeting": sib.get("geo_targeting"),
             "is_traditional": is_traditional,
+            # A bundle's children share the parent's trackability: a direct-buy
+            # parent's children are direct too (and vice-versa). In practice
+            # direct lines aren't merged-budget bundles, so this is almost
+            # always False; carried for completeness/consistency.
+            "is_direct": is_direct,
             "bundle_id": bundle_id,
             "bundle_role": "suggested_child",
         })
 
     return records
+
+
+def _build_reconciliation(
+    line_records: list[dict],
+    dropped_lines: list[dict],
+    net_budget: float | None,
+) -> dict:
+    """Compute the bcdirect capture-vs-net reconciliation (item 3).
+
+    Pure function over the FINAL ``line_records`` (what actually gets written
+    to BigQuery) plus the surfaced ``dropped_lines`` and the plan's
+    ``net_budget`` (from bc metadata). Buckets:
+
+      * ``captured_self_serve`` — sum of budget on lines that WILL be paced:
+        NOT is_direct AND NOT is_traditional. Bundle children carry NULL budget
+        (the parent holds the pool), so ``SUM(budget)`` doesn't double-count.
+      * ``captured_direct`` — sum of budget on is_direct lines (direct buys with
+        no self-serve feed). These are written but excluded from pacing.
+      * ``dropped_budget`` — sum of budget on dropped rows that HAD a budget.
+        Should be ~0 now that budgeted unrecognised lines are captured as
+        is_direct rather than dropped (only no_budget rows drop, budget None).
+      * ``delta`` — ``net_budget - (captured_self_serve + captured_direct)``.
+
+    This is a SOFT signal: ``delta`` can be legitimately non-zero (rounding,
+    fee lines, a plan total that intentionally exceeds the sum of buyable
+    lines). Callers must never raise/fail on it — it's surfaced for human eyes.
+    """
+    def _b(v) -> float:
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    captured_self_serve = sum(
+        _b(r.get("budget"))
+        for r in line_records
+        if not r.get("is_direct") and not r.get("is_traditional")
+    )
+    captured_direct = sum(
+        _b(r.get("budget")) for r in line_records if r.get("is_direct")
+    )
+    # Also surface traditional capture so the breakdown sums cleanly to the
+    # written total (traditional lines are written but, like is_direct, excluded
+    # from pacing). Kept separate so captured_self_serve stays "what paces".
+    captured_traditional = sum(
+        _b(r.get("budget"))
+        for r in line_records
+        if r.get("is_traditional") and not r.get("is_direct")
+    )
+    dropped_budget = sum(
+        _b(d.get("budget")) for d in dropped_lines if d.get("budget")
+    )
+
+    captured_total = captured_self_serve + captured_direct
+    net = _b(net_budget) if net_budget is not None else None
+    delta = (net - captured_total) if net is not None else None
+
+    return {
+        "net_budget": net,
+        "captured_self_serve": round(captured_self_serve, 2),
+        "captured_direct": round(captured_direct, 2),
+        "captured_traditional": round(captured_traditional, 2),
+        "captured_total": round(captured_total, 2),
+        "dropped_budget": round(dropped_budget, 2),
+        "dropped_count": len(dropped_lines),
+        "delta": round(delta, 2) if delta is not None else None,
+    }
 
 
 # ── Sync Orchestrator ───────────────────────────────────────────────
@@ -1824,8 +1957,16 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
     #   keyed to those lines untouched.
     mp_matches: dict[int, dict] = {}
 
+    # bcdirect (item 1): collect structured drop/redirect records from the
+    # detail→line path so they surface in logs AND the sync response instead of
+    # vanishing into a warning. Each record is
+    # {label, platform_id, budget, reason} where reason is "no_budget" or
+    # "unrecognised_platform". Populated by _synthesise_lines_from_mp below.
+    dropped_lines: list[dict] = []
+
     detail_lines = (
-        _synthesise_lines_from_mp(mp_lines, bc["metadata"]) if mp_lines else []
+        _synthesise_lines_from_mp(mp_lines, bc["metadata"], dropped=dropped_lines)
+        if mp_lines else []
     )
 
     if _detail_tab_lines_usable(detail_lines):
@@ -1852,7 +1993,11 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         # No usable detail lines AND the chart is empty — last-resort
         # synthesis (e.g. chart had only flight/section headers). Unchanged.
         logger.warning("  Blocking chart produced 0 lines — falling back to media plan tab lines")
-        bc["lines"] = _synthesise_lines_from_mp(mp_lines, bc["metadata"])
+        # Reuse the already-synthesised detail_lines (drops were captured on the
+        # first call above; pass dropped=None here so they aren't double-counted).
+        bc["lines"] = detail_lines or _synthesise_lines_from_mp(
+            mp_lines, bc["metadata"], dropped=None
+        )
         mp_matches = _match_all_mp_lines(bc["lines"], mp_lines)
     elif bc["lines"] and mp_lines and _mp_lines_have_audience_data(mp_lines):
         # FALLBACK ENRICHMENT: detail tab had no usable (recognised-platform,
@@ -2079,6 +2224,32 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
                 })
                 week_cursor += timedelta(days=7)
 
+    # ── Surfaced drops (item 1) + reconciliation (item 3) ───────────
+    # Both are computed against the FINAL line_records (what's about to be
+    # written) and emitted as structured logs AND returned in the response so
+    # they're visible without grepping logs. Neither raises — reconciliation in
+    # particular is a SOFT signal (delta can be legitimately non-zero).
+    if dropped_lines:
+        logger.warning(
+            "  Media plan sync for %s (sheet %s): %d line(s) dropped from the "
+            "detail→line path: %s",
+            project_code, sheet_id, len(dropped_lines), dropped_lines,
+        )
+
+    reconciliation = _build_reconciliation(
+        line_records, dropped_lines, meta.get("net_budget")
+    )
+    logger.info(
+        "  Reconciliation for %s: net=$%s captured_self_serve=$%s "
+        "captured_direct=$%s captured_traditional=$%s captured_total=$%s "
+        "dropped_budget=$%s delta=$%s (soft signal; non-zero is allowed)",
+        project_code,
+        reconciliation["net_budget"], reconciliation["captured_self_serve"],
+        reconciliation["captured_direct"], reconciliation["captured_traditional"],
+        reconciliation["captured_total"], reconciliation["dropped_budget"],
+        reconciliation["delta"],
+    )
+
     # ── Write to BigQuery ───────────────────────────────────────────
     mtl = _mtl_client()
     try:
@@ -2129,6 +2300,16 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         # with NULL budget rather than dropped; surfaced so the admin layer can
         # flag a malformed plan instead of it failing silently.
         "rows_skipped_unparseable_budget": rows_skipped_unparseable_budget,
+        # bcdirect item 1: structured records for every line dropped/redirected
+        # in the detail→line path. Each is {label, platform_id, budget, reason}
+        # with reason ∈ {"no_budget", "unrecognised_platform"}. Empty list when
+        # nothing was dropped. Drops are visible here, not just in logs.
+        "dropped_lines": dropped_lines,
+        "dropped_lines_count": len(dropped_lines),
+        # bcdirect item 3: capture-vs-net reconciliation. SOFT signal — delta
+        # can be legitimately non-zero; never an error. Shape documented in
+        # _build_reconciliation.
+        "reconciliation": reconciliation,
     }
     logger.info("  Sync complete: %s", result)
     return result

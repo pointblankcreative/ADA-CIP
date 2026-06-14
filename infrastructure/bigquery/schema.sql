@@ -137,6 +137,13 @@ CREATE TABLE IF NOT EXISTS `point-blank-ada.cip.media_plan_lines` (
   frequency_cap STRING,
   geo_targeting STRING,
   is_traditional BOOL DEFAULT FALSE,
+  -- bcdirect: TRUE = direct buy with a real budget but NO self-serve spend feed
+  -- (platform not in PLATFORM_MAP — CTV, DOOH direct, building projection, LED
+  -- truck, transit, …). Pacing excludes these like is_traditional so they never
+  -- produce budget_tracking rows / alarms. Orthogonal to is_traditional (media
+  -- type, keyword-based); a line can be both. Derived from PLATFORM_MAP
+  -- membership in _synthesise_lines_from_mp.
+  is_direct BOOL DEFAULT FALSE,
   -- Form Friction Score (FFS) — collected via dashboard wizard, used by diagnostic engine
   -- Cached projection of a linked ffs_entries row. Written by the FFS wizard service.
   ffs_score FLOAT64,                           -- Computed Form Friction Score (0-100)
