@@ -448,6 +448,105 @@ class TestGracePeriodSpendDetection:
         assert result["alerts"] == 0
 
 
+class TestBlockingGridLagFloor:
+    """Regression (26023 Meta): a live line whose blocking-chart active weeks
+    start AFTER the as-of date (the grid lags the flight) must not collapse to a
+    0 planned baseline when real spend is already attributed. Without the floor
+    it renders 'active, 0% paced' and, because its baseline is 0, drops out of
+    the project pacing denominator and inflates overall pacing.
+    """
+
+    # Blocking grid whose first ACTIVE week (Jun 15) starts the day AFTER the
+    # as-of date (Jun 14), while the flight itself started Jun 11.
+    _WEEKS = [
+        {"line_id": "L1", "week_start": date(2026, 6, 1), "is_active": False},
+        {"line_id": "L1", "week_start": date(2026, 6, 8), "is_active": False},
+        {"line_id": "L1", "week_start": date(2026, 6, 15), "is_active": True},
+        {"line_id": "L1", "week_start": date(2026, 6, 22), "is_active": True},
+        {"line_id": "L1", "week_start": date(2026, 6, 29), "is_active": True},
+        {"line_id": "L1", "week_start": date(2026, 7, 6), "is_active": True},
+        {"line_id": "L1", "week_start": date(2026, 7, 13), "is_active": True},
+    ]
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_grid_lag_with_spend_floors_to_flight_proration(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Grid yields 0 elapsed active days, but real spend is attributed →
+        planned_spend_to_date floors to the flight-date proration (4 of 39 days),
+        so the line paces >0% instead of a false 0%."""
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        lines = [
+            _make_line("L1", "meta", 19500, date(2026, 6, 11), date(2026, 7, 19)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return self._WEEKS
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 802.39}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        run_pacing_for_project("26023", date(2026, 6, 14))
+
+        row = mock_tracking.call_args[0][2][0]
+        assert row["line_status"] == "active"
+        assert row["actual_spend_to_date"] == 802.39
+        # 4 of 39 flight days elapsed → 19500 / 39 * 4 = 2000.0
+        assert row["planned_spend_to_date"] == pytest.approx(19500 / 39 * 4)
+        assert row["pacing_percentage"] > 0
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_grid_lag_without_spend_stays_zero(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Surgical: the floor only fires when spend is attributed. Same lagging
+        grid, NO spend → keep the grid's verdict (0 planned, honestly awaiting
+        delivery) so a legitimately-dark week is never faked into a baseline."""
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        lines = [
+            _make_line("L1", "meta", 19500, date(2026, 6, 11), date(2026, 7, 19)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return self._WEEKS
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 0.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        run_pacing_for_project("26023", date(2026, 6, 14))
+
+        row = mock_tracking.call_args[0][2][0]
+        assert row["actual_spend_to_date"] == 0.0
+        assert row["planned_spend_to_date"] == 0.0
+        assert row["pacing_percentage"] == 0.0
+
+
 # ── Test: _float helper ──────────────────────────────────────────
 
 

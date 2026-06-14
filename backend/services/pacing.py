@@ -558,9 +558,37 @@ def run_pacing_for_project(
         else:
             line_status = "active"
 
-        # Even pacing calculation
+        # Even pacing calculation.
+        #
+        # Baseline floor (blocking-grid vs flight-date disagreement): a line that
+        # is active/completed and has attributed spend must never report
+        # planned_spend_to_date = 0. The blocking-chart grid can legitimately lag
+        # the flight — its first active week may start a few days after
+        # flight_start, or its Monday-aligned weeks may not have ticked over yet —
+        # while real spend is already landing. Trusting the grid alone in that
+        # window zeroes the planned baseline, which renders a live, spending line
+        # as "0% paced" and (because its baseline is 0) silently drops it from the
+        # project pacing denominator, inflating overall pacing. When the grid
+        # yields 0 elapsed active days but the line is active/completed WITH
+        # attributed spend, fall back to a flight-date proration (the same even
+        # split the no-grid branch uses) so the baseline tracks elapsed flight
+        # time. Lines with NO attributed spend keep the grid's verdict, so a
+        # legitimately-dark week still reads 0%. (A not_started line with spend —
+        # e.g. flight dates a year ahead — is deliberately NOT floored here: that
+        # is a date-ingestion error to surface, not to paper over with a baseline.)
         if line_status in ("active", "completed") and total_active_days > 0 and elapsed_active_days > 0:
             planned_spend_to_date = (budget / total_active_days) * elapsed_active_days
+        elif line_status in ("active", "completed") and actual_spend > 0:
+            flight_total_days = (flight_end - flight_start).days + 1
+            flight_elapsed_days = max(
+                0,
+                min((min(today, flight_end) - flight_start).days + 1, flight_total_days),
+            )
+            planned_spend_to_date = (
+                (budget / flight_total_days) * flight_elapsed_days
+                if flight_total_days > 0 and flight_elapsed_days > 0
+                else 0.0
+            )
         else:
             planned_spend_to_date = 0.0
 
