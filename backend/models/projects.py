@@ -12,6 +12,7 @@ class ProjectSummary(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     net_budget: float | None = None
+    direct_budget: float | None = None
     total_spend: float | None = None
     pacing_percentage: float | None = None
     days_remaining: int | None = None

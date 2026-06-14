@@ -20,6 +20,8 @@ export interface FlightMath {
   elapsed: number;
   remaining: number;
   budget: number;
+  /** Full contracted budget incl. direct buys (for total-budget display). */
+  totalBudget: number;
   spend: number;
   ended: boolean;
   noData: boolean;
@@ -66,10 +68,23 @@ export function computeFlight(p: Project): FlightMath {
   const remaining =
     daysToEnd <= 0 ? 0 : Math.min(rawRemaining, daysToEnd);
   const elapsed = Math.max(1, Math.min(flightTotal, flightTotal - remaining));
-  const budget = p.net_budget ?? 0;
+  const totalBudget = p.net_budget ?? 0;
+  // Pacing runs against the TRACKABLE (self-serve) budget: direct buys carry
+  // budget but never accrue trackable spend, so including them understates
+  // pacing and would tell the buyer to spend into budget that was never theirs
+  // to pace (the "lift to $X/day to use the full budget" wrong action).
+  // `totalBudget` keeps the full contract value for display. No-op for the
+  // common all-self-serve campaign where direct_budget is 0/absent.
+  const directBudget = p.direct_budget ?? 0;
+  const budget = Math.max(0, totalBudget - directBudget);
   const spend = p.total_spend ?? 0;
   const ended = p.status !== "active";
-  const noData = !ended && (spend === 0 || p.pacing_percentage == null);
+  // Finding #4: a live flight whose pacing collapses to exactly 0 (no planned
+  // baseline, e.g. spend present but unattributed) is "awaiting data", not a
+  // confident 0%; treat it as no-data instead of a red STALLED verdict.
+  const noData =
+    !ended &&
+    (spend === 0 || p.pacing_percentage == null || p.pacing_percentage === 0);
 
   const dailyRate = spend / elapsed; // recent average burn
   const dailyPlanned = budget / flightTotal; // even-plan daily target
@@ -112,6 +127,7 @@ export function computeFlight(p: Project): FlightMath {
     elapsed,
     remaining,
     budget,
+    totalBudget,
     spend,
     ended,
     noData,
