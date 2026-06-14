@@ -496,6 +496,20 @@ async def get_pacing(
     total_planned = sum(_float(r.get("planned_spend_to_date")) for r in active_rows)
     total_actual = sum(_float(r.get("actual_spend_to_date")) for r in active_rows)
 
+    # Pacing % is computed only over lines that have a planned baseline to pace
+    # against. A line with spend but planned_spend_to_date == 0 (degenerate
+    # flight dates, or a grid/flight disagreement the baseline floor could not
+    # resolve) would otherwise add to the numerator while contributing nothing
+    # to the denominator, inflating overall_pacing_percentage. Its spend still
+    # counts toward total_actual_to_date (the displayed "spent" figure); only
+    # the ratio excludes it. total_planned already excludes these lines, since a
+    # zero baseline contributes 0 to that sum.
+    paced_actual = sum(
+        _float(r.get("actual_spend_to_date"))
+        for r in active_rows
+        if _float(r.get("planned_spend_to_date")) > 0
+    )
+
     # Multi-plan: aggregate per (sheet_id, phase_label, display_order). Lines
     # with no sheet (legacy projects whose plan never landed in
     # project_media_plans) are dropped from the phases list — the response
@@ -516,11 +530,16 @@ async def get_pacing(
             "planned_budget": 0.0,
             "planned_spend_to_date": 0.0,
             "actual_spend_to_date": 0.0,
+            # Spend from lines that have a planned baseline (planned>0); the
+            # numerator for phase pacing %, mirroring the project-level guard.
+            "paced_actual_spend": 0.0,
         })
         bucket["line_count"] += 1
         bucket["planned_budget"] += _float(r.get("planned_budget"))
         bucket["planned_spend_to_date"] += _float(r.get("planned_spend_to_date"))
         bucket["actual_spend_to_date"] += _float(r.get("actual_spend_to_date"))
+        if _float(r.get("planned_spend_to_date")) > 0:
+            bucket["paced_actual_spend"] += _float(r.get("actual_spend_to_date"))
 
     phase_summaries = sorted(
         [
@@ -533,7 +552,7 @@ async def get_pacing(
                 planned_spend_to_date=p["planned_spend_to_date"],
                 actual_spend_to_date=p["actual_spend_to_date"],
                 pacing_percentage=(
-                    round(p["actual_spend_to_date"] / p["planned_spend_to_date"] * 100, 1)
+                    round(p["paced_actual_spend"] / p["planned_spend_to_date"] * 100, 1)
                     if p["planned_spend_to_date"]
                     else 0
                 ),
@@ -551,7 +570,7 @@ async def get_pacing(
         net_budget=net_budget,
         total_planned_to_date=total_planned,
         total_actual_to_date=total_actual,
-        overall_pacing_percentage=round(total_actual / total_planned * 100, 1) if total_planned else 0,
+        overall_pacing_percentage=round(paced_actual / total_planned * 100, 1) if total_planned else 0,
         # AI-002: untracked spend is included in the spent/remaining math
         # (conservative — never overstate remaining budget) but EXCLUDED from
         # overall_pacing_percentage (no planned baseline to pace against).

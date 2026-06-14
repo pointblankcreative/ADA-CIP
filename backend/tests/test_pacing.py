@@ -13,7 +13,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import asyncio
+
 from backend.services.pacing import run_pacing_for_project, _float
+from backend.routers import pacing as pacing_router
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -563,3 +566,75 @@ class TestFloatHelper:
     def test_decimal(self):
         from decimal import Decimal
         assert _float(Decimal("99.9")) == 99.9
+
+
+# ── Test: rollup denominator guard (Finding 2) ────────────────────
+
+
+class TestRollupDenominatorGuard:
+    """Finding 2: a line with spend but planned_spend_to_date == 0 must not
+    inflate overall_pacing_percentage. The line's spend still appears in the
+    displayed total_actual_to_date; only the pacing ratio excludes it."""
+
+    def _brow(self, **over):
+        base = {
+            "date": date(2026, 6, 14),
+            "line_id": "L", "line_code": "#01", "platform_id": "meta",
+            "channel_category": "Digital", "line_status": "active",
+            "planned_budget": 1000.0, "planned_spend_to_date": 1000.0,
+            "actual_spend_to_date": 1000.0, "remaining_budget": 0.0,
+            "remaining_days": 10, "pacing_percentage": 100.0,
+            "daily_budget_required": 0.0, "is_over_pacing": False,
+            "is_under_pacing": False, "bundle_id": None, "bundle_role": None,
+            "audience_name": "A", "flight_start": date(2026, 6, 1),
+            "flight_end": date(2026, 6, 30), "sheet_id": None,
+            "phase_label": None, "phase_display_order": None,
+        }
+        base.update(over)
+        return base
+
+    def _bq(self, rows):
+        class _BQ:
+            @staticmethod
+            def table(name):
+                return f"`proj.ds.{name}`"
+
+            @staticmethod
+            def string_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def date_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def array_param(n, t, v):
+                return (n, v)
+
+            @staticmethod
+            def run_query(sql, params=None):
+                if "dim_projects" in sql:
+                    return [{"project_code": "TEST", "net_budget": 100000.0}]
+                if "budget_tracking" in sql:
+                    return rows
+                return []
+        return _BQ
+
+    def test_zero_baseline_line_excluded_from_pct_but_kept_in_total(self):
+        rows = [
+            self._brow(line_id="healthy",
+                       planned_spend_to_date=1000.0, actual_spend_to_date=1000.0),
+            # spend but no baseline (e.g. degenerate dates the floor can't fix)
+            self._brow(line_id="zerobase",
+                       planned_spend_to_date=0.0, actual_spend_to_date=500.0),
+        ]
+        with patch.object(pacing_router, "bq", self._bq(rows)), \
+                patch.object(pacing_router, "_query_untracked_platform_spend",
+                             return_value=[]):
+            resp = asyncio.run(pacing_router.get_pacing("TEST"))
+
+        # 1000 / 1000 = 100%, NOT 1500 / 1000 = 150% (the inflated, pre-fix value)
+        assert resp.overall_pacing_percentage == 100.0
+        # the zero-baseline line's spend is still surfaced in the total
+        assert resp.total_actual_to_date == 1500.0
+        assert resp.total_planned_to_date == 1000.0

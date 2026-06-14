@@ -61,7 +61,8 @@ async def list_projects(
         LEFT JOIN (
             SELECT
                 bt_inner.project_code,
-                SUM(IF(bt_inner.line_status NOT IN ('pending','not_started'),
+                SUM(IF(bt_inner.line_status NOT IN ('pending','not_started')
+                       AND bt_inner.planned_spend_to_date > 0,
                        bt_inner.actual_spend_to_date, 0)) AS bt_actual,
                 SUM(IF(bt_inner.line_status NOT IN ('pending','not_started'),
                        bt_inner.planned_spend_to_date, 0)) AS bt_planned
@@ -152,7 +153,8 @@ async def get_project(project_code: str):
         LEFT JOIN (
             SELECT
                 project_code,
-                SUM(IF(line_status NOT IN ('pending','not_started'),
+                SUM(IF(line_status NOT IN ('pending','not_started')
+                       AND planned_spend_to_date > 0,
                        actual_spend_to_date, 0)) AS bt_actual,
                 SUM(IF(line_status NOT IN ('pending','not_started'),
                        planned_spend_to_date, 0)) AS bt_planned
