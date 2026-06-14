@@ -1628,7 +1628,7 @@ class TestDetailTabAuthoritative:
             # Meta #03 — $4,090 (THE line that wrongly showed the $99,362 total)
             ["Meta", "1", "Reach & Frequency", "Jun 11", "Jul 19", "39",
              "#03", "Member List Match", "BC", "", "", "", "CPM", "", "$4,090.00"],
-            # DOOH (Digital Out Of Home → perion) — $3,500, never appeared before
+            # DOOH (Digital Out Of Home → stackadapt) — $3,500, never appeared before
             ["Digital Out Of Home", "1", "Awareness", "Jun 13", "Jul 19", "5",
              "", "Bars on game day", "Vancouver", "", "", "", "CPM", "", "$3,500.00"],
             # Open Web Video (→ stackadapt) — $2,000, never appeared before
@@ -1699,16 +1699,18 @@ class TestDetailTabAuthoritative:
         assert len(meta_rf) == 1
 
     def test_detail_platforms_win(self):
-        """(b) Platforms come from the detail tab — DOOH (perion) and Open Web
-        (stackadapt) now appear; they were absent when the chart was the
-        source (its merged rows collapsed to a single Meta line)."""
+        """(b) Platforms come from the detail tab — DOOH and Open Web now
+        appear; they were absent when the chart was the source (its merged rows
+        collapsed to a single Meta line). DOOH now routes to StackAdapt (Perion
+        DOOH retired), so DOOH + Open Web both resolve to stackadapt and the
+        recognised platform set is {meta, stackadapt}."""
         bc = self._merged_chart()
         assert {l["platform_id"] for l in bc["lines"]} == {"meta"}
 
         _apply_source_selection(bc, self._detail_mp_lines())
 
         platforms = {l["platform_id"] for l in bc["lines"]}
-        assert platforms == {"meta", "perion", "stackadapt"}
+        assert platforms == {"meta", "stackadapt"}
 
     def test_blocking_chart_weeks_still_attached(self):
         """(c) The chart's weekly flighting is preserved, re-keyed onto the new

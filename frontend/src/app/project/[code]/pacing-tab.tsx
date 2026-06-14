@@ -8,6 +8,7 @@ import {
   type BundleMember,
   type PhaseSummary,
   type UntrackedPlatformSpend,
+  type DirectLine,
 } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { OscilloscopeCard } from "@/components/oscilloscope-card";
@@ -216,6 +217,16 @@ export function PacingTab({
             total={data.untracked_spend ?? 0}
           />
         )}
+        {/* Direct buys exist on the media plan independently of any pacing
+            snapshot (they're read straight off media_plan_lines), so surface
+            them here too. */}
+        {(data.direct_budget ?? 0) > 0 && (
+          <DirectBuysCard
+            lines={data.direct_lines ?? []}
+            directBudget={data.direct_budget ?? 0}
+            netBudget={data.net_budget}
+          />
+        )}
       </div>
     );
   }
@@ -338,6 +349,16 @@ export function PacingTab({
         />
       )}
 
+      {/* bcdirect: direct buys (is_direct lines) — managed directly, excluded
+          from pacing. Budget context only: no pacing %, no over/under alarms. */}
+      {(data.direct_budget ?? 0) > 0 && (
+        <DirectBuysCard
+          lines={data.direct_lines ?? []}
+          directBudget={data.direct_budget ?? 0}
+          netBudget={data.net_budget}
+        />
+      )}
+
       {/* Per-line pacing — grouped by phase when there's more than one. */}
       <PacingLinesSection
         data={data}
@@ -455,6 +476,75 @@ function UntrackedSpendCard({
           </div>
         ))}
       </div>
+    </Card>
+  );
+}
+
+/**
+ * bcdirect: direct buys (media_plan_lines.is_direct = TRUE) — budgeted lines
+ * with no self-serve feed (CTV, DOOH direct, LED truck, transit, …). They're
+ * EXCLUDED from pacing (no spend feed to pace against), so this card surfaces
+ * them purely as budget CONTEXT: a header total, a compact line list, and a
+ * one-line reconciliation strip. Deliberately info-toned (not warn) and
+ * carries NO pacing %, NO over/under alarms — mirrors UnattributedSpendNotice's
+ * calm tinted-border treatment rather than UntrackedSpendCard's warn tone,
+ * because a planned direct buy is expected, not a problem to flag.
+ */
+function DirectBuysCard({
+  lines,
+  directBudget,
+  netBudget,
+}: {
+  lines: DirectLine[];
+  directBudget: number;
+  netBudget: number;
+}) {
+  // Reconciliation identity surfaced on the strip: net = self-serve + direct.
+  // Self-serve is the paced remainder (net minus the direct context), so the
+  // strip always reconciles regardless of how much line spend has landed.
+  const selfServe = netBudget > 0 ? netBudget - directBudget : 0;
+  return (
+    <Card
+      className="border-tint-info"
+      style={{
+        background: "color-mix(in srgb, var(--info) 6%, var(--surface-card))",
+        borderLeft: "3px solid var(--info)",
+      }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="eyebrow" style={{ color: "var(--info)" }}>
+          Direct buys — {formatCurrency(directBudget)}
+        </div>
+        <span className="font-mono text-[11px] font-normal uppercase tracking-[0.08em] text-fg-faint">
+          managed directly, not tracked here
+        </span>
+      </div>
+      {lines.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2">
+          {lines.map((d, i) => (
+            <div
+              key={`${d.label}-${i}`}
+              className="flex items-center justify-between gap-3"
+            >
+              <span className="inline-flex items-center gap-2.5 text-[13px] font-semibold text-fg">
+                {d.platform && (
+                  <PlatformIcon platformId={d.platform} size={26} />
+                )}
+                {d.label}
+              </span>
+              <span className="font-mono text-[13px] text-fg-muted">
+                {formatCurrency(d.budget)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {netBudget > 0 && (
+        <p className="mt-3 border-t border-line-soft pt-2.5 font-mono text-[11.5px] text-fg-faint">
+          {formatCurrency(netBudget)} total = {formatCurrency(selfServe)}{" "}
+          self-serve + {formatCurrency(directBudget)} direct (context)
+        </p>
+      )}
     </Card>
   );
 }

@@ -30,6 +30,7 @@ from backend.services.media_plan_sync import (
 )
 from backend.services import pacing as pacing_mod
 from backend.services.pacing import run_pacing_for_project
+from backend.routers import pacing as pacing_router
 
 
 _META = {
@@ -237,6 +238,46 @@ class TestSurfacedDrops:
         )
         assert dropped == []
 
+    def test_no_budget_bundle_child_not_surfaced_as_dropped(self):
+        """Cry-wolf fix: a NULL-budget BUNDLE CHILD is written under its parent
+        (budget=NULL by design, pool on the parent), so it is NOT a lost line
+        and must NOT surface as 'dropped'. This is the 24058 case: 23 pooled
+        bundle children were wrongly reported as dropped=23. A child is flagged
+        by `merged_with_previous=True` (merge continuation) and/or a non-None
+        `bundle_group`."""
+        mp_lines = [
+            # Bundle PARENT — carries the $9,000 pool (survives the budget gate).
+            _mp("Meta", "meta", 9000.0, audience_name="Pool parent",
+                bundle_group=0),
+            # Two pooled children — NULL budget, merge continuation rows.
+            _mp("Meta", "meta", None, audience_name="Child A",
+                bundle_group=0, merged_with_previous=True),
+            _mp("Meta", "meta", None, audience_name="Child B",
+                bundle_group=0, merged_with_previous=True),
+        ]
+        dropped: list[dict] = []
+        out = _synthesise_lines_from_mp(mp_lines, _META, dropped=dropped)
+        # Only the budgeted parent synthesises a line here; children are written
+        # downstream by the bundle-aware line-record builder, not via synthesis.
+        assert len(out) == 1
+        assert out[0]["audience_name"] == "Pool parent"
+        # The crux: no pooled child surfaces as a dropped/lost line.
+        assert dropped == [], "bundle children must NOT be reported as dropped"
+
+    def test_genuine_no_budget_non_bundle_row_still_surfaces(self):
+        """Counter-case: a NULL-budget row that is NOT a bundle child (no
+        merge flag, no bundle_group) is a genuinely-lost line and MUST still
+        surface as dropped — the cry-wolf fix only spares pooled children."""
+        mp_lines = [
+            _mp("Meta", "meta", None, audience_name="Truly lost"),  # standalone
+        ]
+        dropped: list[dict] = []
+        out = _synthesise_lines_from_mp(mp_lines, _META, dropped=dropped)
+        assert out == []
+        assert len(dropped) == 1
+        assert dropped[0]["reason"] == "no_budget"
+        assert dropped[0]["label"]  # carries a human label
+
 
 # ── Item 3: reconciliation reports self-serve + direct + delta ────────
 
@@ -258,7 +299,7 @@ class TestReconciliation:
             # self-serve (recognised, will pace)
             self._line(19500.0),
             self._line(4090.0),
-            self._line(3500.0),   # DOOH → perion (recognised = self-serve)
+            self._line(3500.0),   # DOOH → stackadapt (recognised = self-serve)
             self._line(2000.0),   # Open Web → stackadapt
             # direct buys (is_direct, excluded from pacing)
             self._line(6000.0, is_direct=True),
@@ -337,10 +378,13 @@ class TestReconciliation:
 
 
 class TestPacingExcludesIsDirect:
-    def test_lines_query_filters_is_direct(self):
-        """The pacing line query must carry an is_direct exclusion alongside the
-        is_traditional one, so direct buys never produce budget_tracking rows or
-        alarms. We assert on the SQL the engine sends to BigQuery."""
+    def test_lines_query_filters_is_direct_not_is_traditional(self):
+        """Pacing inclusion is governed by TRACKABILITY (is_direct), NOT media
+        type (is_traditional). The line query must carry the is_direct exclusion
+        so direct buys never produce budget_tracking rows or alarms — AND must
+        NOT carry an is_traditional filter (removed: a recognised-platform line
+        whose label reads 'traditional', e.g. 26023's StackAdapt-backed DOOH,
+        must still pace). We assert on the SQL the engine sends to BigQuery."""
         captured_sql = {}
 
         class _BQ:
@@ -368,10 +412,95 @@ class TestPacingExcludesIsDirect:
             run_pacing_for_project("26023", date(2026, 6, 13))
 
         sql = captured_sql.get("lines", "")
-        assert "is_traditional = FALSE" in sql, "baseline filter must remain"
-        # The new exclusion (COALESCE guards the NULL window pre-resync).
+        # The is_traditional media-type FILTER CLAUSE has been REMOVED —
+        # trackability, not media type, governs pacing inclusion now. (We assert
+        # on the clause, not the bare word, since the explanatory SQL comment
+        # legitimately still names is_traditional.)
+        assert "l.is_traditional = FALSE" not in sql, (
+            "the is_traditional = FALSE pacing filter must be gone"
+        )
+        assert "AND l.is_traditional" not in sql, (
+            "no is_traditional filter clause may gate pacing inclusion"
+        )
+        # The trackability exclusion remains (COALESCE guards the NULL window
+        # between the ADD COLUMN migration and the first re-sync).
         assert "is_direct" in sql
         assert "COALESCE(l.is_direct, FALSE) = FALSE" in sql
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_recognised_traditional_line_paces_direct_line_does_not(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """Behavioural proof of the trackability swap: a recognised-platform
+        line whose label is keyword-'traditional' (26023 DOOH on StackAdapt,
+        is_traditional=TRUE / is_direct=FALSE) IS paced, while a direct buy
+        (is_direct=TRUE) is NOT. We model BQ's filtering: the engine's query
+        keeps is_direct=FALSE rows regardless of is_traditional, and drops
+        is_direct=TRUE rows."""
+        mock_date.today.return_value = date(2026, 6, 13)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        # A recognised DOOH line (StackAdapt-backed): traditional label but a
+        # real self-serve feed, so it must pace.
+        dooh_line = {
+            "line_id": "L-dooh",
+            "line_code": None,
+            "platform_id": "stackadapt",
+            "channel_category": "Digital",
+            "site_network": "Digital Out Of Home",
+            "budget": 3500.0,
+            "flight_start": date(2026, 6, 11),
+            "flight_end": date(2026, 7, 19),
+            "bundle_id": None,
+            "bundle_role": None,
+        }
+        # A direct buy (LED truck) — no self-serve feed, must be excluded.
+        direct_line = {
+            "line_id": "L-direct",
+            "line_code": None,
+            "platform_id": "led_truck",
+            "channel_category": "Digital",
+            "site_network": "LED Truck",
+            "budget": 17000.0,
+            "flight_start": date(2026, 6, 11),
+            "flight_end": date(2026, 7, 19),
+            "bundle_id": None,
+            "bundle_role": None,
+        }
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql and "ROW_NUMBER" in sql:
+                # Model BQ filtering: is_direct=FALSE rows survive (DOOH paces
+                # even though it's traditional); is_direct=TRUE rows are dropped.
+                assert "AND l.is_traditional" not in sql, (
+                    "the is_traditional pacing filter must be gone"
+                )
+                if "COALESCE(l.is_direct, FALSE) = FALSE" in sql:
+                    return [dooh_line]
+                return [dooh_line, direct_line]
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 500.0}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        result = run_pacing_for_project("26023", date(2026, 6, 13))
+
+        # Exactly one line paced — the recognised traditional DOOH line. The
+        # direct LED-truck buy was filtered out by the is_direct guard.
+        assert result["lines_processed"] == 1
+        tracking_rows = mock_tracking.call_args[0][2]
+        paced_ids = {r["line_id"] for r in tracking_rows}
+        assert paced_ids == {"L-dooh"}, "recognised traditional line must pace"
+        assert "L-direct" not in paced_ids, "direct buy must NOT pace"
 
     @patch("backend.services.pacing.date")
     @patch("backend.services.pacing.bq")
@@ -426,3 +555,77 @@ class TestPacingExcludesIsDirect:
         assert result["alerts"] == 0
         assert not mock_tracking.called
         assert not mock_alerts.called
+
+
+# ── Item D: direct-buys budget-context surfacing in the pacing router ─
+
+
+class TestDirectLinesRouter:
+    """`_query_direct_lines` reads is_direct lines off media_plan_lines and maps
+    them to DirectLine context records (budget context only — these are
+    excluded from pacing). We assert the dedup-guard SQL shape + the mapping."""
+
+    def _patched_bq(self, captured: dict, rows: list[dict]):
+        class _BQ:
+            @staticmethod
+            def table(name):
+                return f"`proj.ds.{name}`"
+
+            @staticmethod
+            def string_param(n, v):
+                return (n, v)
+
+            @staticmethod
+            def run_query(sql, params=None):
+                captured["sql"] = sql
+                captured["params"] = params
+                return rows
+
+        return _BQ
+
+    def test_query_direct_lines_sql_filters_is_direct_with_dedup_guard(self):
+        captured: dict = {}
+        with patch.object(
+            pacing_router, "bq", self._patched_bq(captured, [])
+        ):
+            out = pacing_router._query_direct_lines("26023")
+        assert out == []
+        sql = captured["sql"]
+        # Selects only is_direct lines (COALESCE guards the NULL migration window).
+        assert "COALESCE(l.is_direct, FALSE) = TRUE" in sql
+        # Standard ROW_NUMBER dedup + plan_id-in-current-plans guard (mpl_dedup).
+        assert "ROW_NUMBER" in sql
+        assert "_rn = 1" in sql
+        assert "is_current   = TRUE" in sql
+        assert "pmp.is_active   = TRUE" in sql
+
+    def test_query_direct_lines_maps_rows_to_models(self):
+        rows = [
+            {
+                "site_network": "Connected TV",
+                "platform_id": "connected_tv",
+                "budget": 6000.0,
+                "audience_name": "TSN & Crave",
+            },
+            {
+                "site_network": "LED Truck",
+                "platform_id": "led_truck",
+                "budget": 17000.0,
+                "audience_name": None,
+            },
+        ]
+        captured: dict = {}
+        with patch.object(
+            pacing_router, "bq", self._patched_bq(captured, rows)
+        ):
+            out = pacing_router._query_direct_lines("26023")
+        assert len(out) == 2
+        # audience_name preferred as the label; falls back to site_network.
+        assert out[0].label == "TSN & Crave"
+        assert out[0].budget == pytest.approx(6000.0)
+        assert out[0].platform == "Connected TV"
+        assert out[0].audience == "TSN & Crave"
+        # Row with no audience → label falls back to the platform/site label.
+        assert out[1].label == "LED Truck"
+        assert out[1].budget == pytest.approx(17000.0)
+        assert out[1].audience is None

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.models.pacing import (
     BundleMember,
+    DirectLine,
     LinePacing,
     PacingHistoryPoint,
     PacingHistoryResponse,
@@ -94,6 +95,68 @@ def _query_untracked_platform_spend(
             spend=_float(r.get("spend")),
             first_date=str(r["first_date"]) if r.get("first_date") else None,
             last_date=str(r["last_date"]) if r.get("last_date") else None,
+        )
+        for r in rows
+    ]
+
+
+def _query_direct_lines(project_code: str) -> list[DirectLine]:
+    """bcdirect: direct-buy lines (``media_plan_lines.is_direct = TRUE``) for a
+    project — budgeted lines with NO self-serve spend feed (CTV, DOOH direct,
+    LED truck, transit, …). These are EXCLUDED from pacing, so they never
+    appear in budget_tracking; we read them straight off media_plan_lines and
+    surface them as budget CONTEXT (no pacing %, no alarms).
+
+    Uses the standard ROW_NUMBER dedup + plan_id IN (current media_plans ×
+    active project_media_plans) guard — identical to
+    ``_query_untracked_platform_spend`` above and feedback_mpl_dedup.md — so a
+    stale sync version or a retired phase can't inflate the list. COALESCE
+    guards the migration window where pre-resync rows carry is_direct = NULL
+    (treated as not-direct, i.e. excluded here — they pace instead).
+    """
+    sql = f"""
+        SELECT site_network, platform_id, budget, audience_name
+        FROM (
+            SELECT
+                l.site_network,
+                l.platform_id,
+                l.budget,
+                l.audience_name,
+                ROW_NUMBER() OVER (
+                    PARTITION BY l.line_id
+                    ORDER BY l.sync_version DESC
+                ) AS _rn
+            FROM {bq.table('media_plan_lines')} l
+            WHERE l.project_code = @project_code
+              AND COALESCE(l.is_direct, FALSE) = TRUE
+              -- Plan-id-aware + multi-plan dedup guard (see top of this router
+              -- for the canonical comment).
+              AND l.plan_id IN (
+                  SELECT mp.plan_id
+                  FROM {bq.table('media_plans')} mp
+                  JOIN {bq.table('project_media_plans')} pmp
+                    ON mp.project_code = pmp.project_code
+                   AND mp.sheet_id   = pmp.sheet_id
+                  WHERE mp.project_code = @project_code
+                    AND mp.is_current   = TRUE
+                    AND pmp.is_active   = TRUE
+              )
+        )
+        WHERE _rn = 1
+        ORDER BY budget DESC
+    """
+    rows = bq.run_query(sql, [bq.string_param("project_code", project_code)])
+    return [
+        DirectLine(
+            label=(
+                r.get("audience_name")
+                or r.get("site_network")
+                or r.get("platform_id")
+                or "Direct buy"
+            ),
+            platform=r.get("site_network") or r.get("platform_id"),
+            budget=_float(r.get("budget")),
+            audience=r.get("audience_name"),
         )
         for r in rows
     ]
@@ -302,6 +365,13 @@ async def get_pacing(
     untracked = _query_untracked_platform_spend(project_code, as_of_date)
     untracked_total = sum(u.spend for u in untracked)
 
+    # bcdirect: direct buys (is_direct lines) — excluded from pacing, surfaced
+    # as budget context. Computed on every path (incl. the empty fallback) so a
+    # project with direct buys but no pacing snapshot still shows them. Read off
+    # media_plan_lines (point-in-time independent), so it's not as_of-date-aware.
+    direct_lines = _query_direct_lines(project_code)
+    direct_budget = sum(d.budget for d in direct_lines)
+
     replayed = False
     if not rows and as_of_date is not None:
         # AI-070/072: retrospective request for a date with no stored
@@ -348,6 +418,8 @@ async def get_pacing(
             untracked_spend=untracked_total,
             untracked_platforms=untracked,
             total_actual_all_platforms=untracked_total,
+            direct_budget=direct_budget,
+            direct_lines=direct_lines,
         )
 
     as_of = rows[0]["date"]
@@ -486,6 +558,10 @@ async def get_pacing(
         untracked_spend=untracked_total,
         untracked_platforms=untracked,
         total_actual_all_platforms=total_actual + untracked_total,
+        # bcdirect: direct buys (is_direct), excluded from pacing, surfaced as
+        # budget context only (no pacing %, no alarms).
+        direct_budget=direct_budget,
+        direct_lines=direct_lines,
         # AI-070/072: True when these rows were computed on demand rather
         # than read from a stored budget_tracking snapshot.
         replayed=replayed,

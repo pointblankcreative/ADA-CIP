@@ -102,6 +102,16 @@ export interface UntrackedPlatformSpend {
   last_date?: string | null;
 }
 
+/** bcdirect: a direct-buy line (media_plan_lines.is_direct = TRUE) — a budgeted
+ *  line with no self-serve feed (CTV, DOOH direct, LED truck, …), excluded from
+ *  pacing and surfaced as budget context only (no pacing %, no alarms). */
+export interface DirectLine {
+  label: string;
+  platform?: string | null;
+  budget: number;
+  audience?: string | null;
+}
+
 export interface PacingResponse {
   project_code: string;
   as_of_date: string;
@@ -116,6 +126,11 @@ export interface PacingResponse {
   untracked_platforms?: UntrackedPlatformSpend[];
   /** total_actual_to_date + untracked_spend — reconciles with the header. */
   total_actual_all_platforms?: number;
+  /** bcdirect: direct buys (is_direct lines) — budgeted lines with no self-serve
+   *  feed, excluded from pacing. Surfaced as budget context only. Optional so
+   *  the tab keeps working against a not-yet-redeployed backend. */
+  direct_budget?: number;
+  direct_lines?: DirectLine[];
   /** AI-070/071: true when no stored snapshot exists for the requested date
    *  AND a compute-on-miss replay was impossible (no plan / no data). */
   snapshot_missing?: boolean;
