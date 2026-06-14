@@ -215,7 +215,20 @@ def _normalise_platform(raw: str | None) -> str | None:
 
 
 def _parse_date(val: str | None, ref_year: int | None = None) -> date | None:
-    """Best-effort date parse. Handles 'March 5', 'Mar 22', '5 Mar', etc."""
+    """Best-effort date parse. Handles 'March 5', 'Mar 22', '5 Mar', etc.
+
+    ``ref_year`` is the year applied to month-day-only cells (e.g. "June 1",
+    which carries no year). It MUST be the campaign's actual year, NOT
+    ``date.today().year`` — for a campaign that already landed, "today" is a
+    year (or more) ahead of when the flight actually ran, which shifts every
+    parsed flight a year forward and makes the pacing engine treat a finished
+    campaign as "not yet started" (the 24058 / OPSEU "Worth Fighting For"
+    failure: a 2025-06→2025-12 campaign stored as 2026-06→2026-12). Callers
+    are expected to resolve ``ref_year`` from the project's own window via
+    ``_resolve_ref_year`` before reaching this parser. We keep
+    ``date.today().year`` only as a last-resort fallback for the genuinely
+    year-less, anchor-less case (a brand-new plan with no project window yet).
+    """
     if not val or not val.strip():
         return None
     val = val.strip()
@@ -240,6 +253,94 @@ def _parse_date(val: str | None, ref_year: int | None = None) -> date | None:
         return du_parse(val).date()
     except Exception:
         return None
+
+
+_EXPLICIT_YEAR_RE = re.compile(r"(?:^|\D)(19|20)\d{2}(?:\D|$)")
+
+
+def _cell_has_explicit_year(val: str | None) -> bool:
+    """True if a date cell carries a 4-digit year (e.g. "June 1, 2025",
+    "2025-06-01", "6/1/2025"). Month-day-only cells ("June 1", "Jun 1")
+    return False, signalling that the year must be inferred from an anchor.
+    """
+    if not val or not val.strip():
+        return False
+    return bool(_EXPLICIT_YEAR_RE.search(val.strip()))
+
+
+def _resolve_ref_year(
+    bc_start: date | None,
+    bc_dates_are_year_less: bool,
+    project_anchor_year: int | None,
+) -> int | None:
+    """Decide the reference year for month-day-only flight cells.
+
+    This is the year-inference fix for the 24058 date-year bug. Inputs:
+
+      * ``bc_start`` — the blocking chart's parsed start_date (may itself have
+        been forward-defaulted to today's year if its cell was month-day-only).
+      * ``bc_dates_are_year_less`` — True when the blocking chart's own
+        Start/End cells carried NO explicit year (so ``bc_start``'s year is
+        only as trustworthy as whatever default produced it).
+      * ``project_anchor_year`` — the year of ``dim_projects.start_date`` for
+        this project, i.e. the authoritative campaign window. None when the
+        project has no recorded window yet (brand-new plan).
+
+    Resolution order:
+
+      1. If the blocking chart gave an EXPLICIT year (cell like "June 1, 2025"
+         or "2025-06-01"), trust it — return ``bc_start.year``. The planner
+         wrote a real year; never override it.
+      2. Else, if we have a project anchor year, use it. This is the fix: a
+         landed campaign whose sheet cells are bare "June 1" resolves into the
+         campaign's real year instead of today's.
+      3. Else fall back to ``bc_start.year`` if present, else None (which lets
+         ``_parse_date`` apply ``date.today().year`` — unchanged legacy
+         behaviour for the anchor-less, year-less case).
+
+    Crucially this never *shifts* a correctly-yeared plan: when the sheet has
+    explicit years (every other project synced today), branch 1 short-circuits
+    and the anchor is ignored, so there is no regression.
+    """
+    if bc_start is not None and not bc_dates_are_year_less:
+        return bc_start.year
+    if project_anchor_year is not None:
+        return project_anchor_year
+    if bc_start is not None:
+        return bc_start.year
+    return None
+
+
+def _lookup_project_anchor_year(mtl: "bigquery.Client", project_code: str) -> int | None:
+    """Return the year of ``dim_projects.start_date`` for ``project_code``.
+
+    This is the authoritative campaign window (set when the project is created,
+    independent of the media-plan sheet's date formatting), so it's a safe
+    anchor for resolving year-less flight cells. Read-only single-row lookup.
+    Returns None when the project has no row or no start_date (e.g. a brand-new
+    project synced before its window is filled in) — callers then fall back to
+    the blocking chart / today, preserving legacy behaviour.
+    """
+    try:
+        prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
+        rows = list(
+            mtl.query(
+                f"SELECT start_date FROM {prefix}.dim_projects` "
+                f"WHERE project_code = @pc LIMIT 1",
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("pc", "STRING", project_code),
+                ]),
+            ).result()
+        )
+    except Exception as exc:  # table missing in dev, transient BQ error, etc.
+        logger.warning(
+            "  Could not look up dim_projects anchor year for %s: %s",
+            project_code, exc,
+        )
+        return None
+    if rows and rows[0].get("start_date"):
+        return rows[0]["start_date"].year
+    return None
 
 
 def _parse_money(val: str | None) -> float | None:
@@ -563,8 +664,17 @@ def _cell(data: list[list[str]], row: int, col: int) -> str:
 
 # ── Blocking Chart Parser ───────────────────────────────────────────
 
-def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
-    """Parse the Blocking Chart tab using label-based discovery."""
+def _parse_blocking_chart(
+    ws: gspread.Worksheet, anchor_year: int | None = None
+) -> dict:
+    """Parse the Blocking Chart tab using label-based discovery.
+
+    ``anchor_year`` is the project's authoritative campaign year (from
+    ``dim_projects.start_date``). It is used ONLY to resolve the year for
+    Start/End cells that carry no explicit year — the 24058 date-year fix.
+    When the chart's date cells include a real year, that year always wins and
+    the anchor is ignored (no regression for correctly-dated plans).
+    """
     all_data = ws.get_all_values()
     if len(all_data) < 8:
         raise ValueError(f"Blocking Chart has only {len(all_data)} rows — expected >= 8")
@@ -578,23 +688,48 @@ def _parse_blocking_chart(ws: gspread.Worksheet) -> dict:
     client_name = _cell(all_data, client_pos[0], client_pos[1] + 1) if client_pos else ""
     project_name = _cell(all_data, project_pos[0], project_pos[1] + 1) if project_pos else ""
 
-    ref_year = date.today().year
-
+    # First pass: locate the Start/End cells and note whether they carry an
+    # explicit year. We seed the parse with the anchor year so a year-less
+    # "June 1" lands in the campaign's real year on the FIRST parse (not
+    # today's), then re-derive ref_year from the resolved start_date.
+    start_cell_has_year = False
     start_date = None
     end_date = None
+    seed_year = anchor_year or date.today().year
     if dates_pos:
         r, c = dates_pos
         # Start/end may be in adjacent cells (c+1, c+2) or (c+1, c+3)
         for offset in range(1, 5):
-            d = _parse_date(_cell(all_data, r, c + offset), ref_year)
+            raw_cell = _cell(all_data, r, c + offset)
+            d = _parse_date(raw_cell, seed_year)
             if d:
                 if start_date is None:
                     start_date = d
+                    start_cell_has_year = _cell_has_explicit_year(raw_cell)
                 else:
                     end_date = d
                     break
-    if start_date:
-        ref_year = start_date.year
+
+    # Resolve the canonical ref_year for the rest of the chart (week-header
+    # and per-cell date parsing below). Explicit year in the sheet wins;
+    # otherwise the project anchor; otherwise today (legacy fallback).
+    ref_year = _resolve_ref_year(
+        bc_start=start_date,
+        bc_dates_are_year_less=not start_cell_has_year,
+        project_anchor_year=anchor_year,
+    ) or date.today().year
+
+    # If the seed year differed from the resolved year (e.g. we seeded with
+    # today because no anchor was passed, but the sheet actually had an
+    # explicit year), realign start/end onto the resolved year for year-less
+    # cells so the metadata window matches the per-line flights. Preserve
+    # year-rollover: a window like "Dec 15 → Jan 9" puts the end in the NEXT
+    # year, so only shift the end by the same delta the start moved.
+    if start_date is not None and not start_cell_has_year and start_date.year != ref_year:
+        year_delta = ref_year - start_date.year
+        start_date = start_date.replace(year=ref_year)
+        if end_date is not None:
+            end_date = end_date.replace(year=end_date.year + year_delta)
 
     net_budget = None
     if budget_pos:
@@ -740,6 +875,7 @@ def _parse_media_plan_tab(
     prefetched_data: list[list[str]] | None = None,
     ref_year: int | None = None,
     prefetched_merges: list[dict] | None = None,
+    stats: dict | None = None,
 ) -> list[dict]:
     """Parse the Media Plan tab for detailed line items with targeting info.
 
@@ -752,6 +888,13 @@ def _parse_media_plan_tab(
         prefetched_merges: Pre-fetched merge metadata (list of GSheets merge
             range dicts). If None, fetches from `ws`. Pass `[]` to explicitly
             skip merge detection (e.g. tests that don't care about bundles).
+        stats: Optional mutable dict the caller passes to collect parse
+            diagnostics. When provided, the key
+            ``"rows_skipped_unparseable_budget"`` is INCREMENTED (created at 0
+            if absent) for every data row whose Budget cell held content that
+            ``_parse_money`` could not turn into a number (ADAC-69). Omitting
+            ``stats`` leaves behaviour and the plain-list return type unchanged,
+            so existing callers/tests are unaffected.
     """
     all_data = prefetched_data or ws.get_all_values()
     if len(all_data) < 14:
@@ -980,7 +1123,8 @@ def _parse_media_plan_tab(
             gc(row, "start") or gc(row, "audience_group") or gc(row, "group_name")
         ):
             goal = current_goal
-        budget = _parse_money(gc(row, "budget"))
+        budget_raw = gc(row, "budget")
+        budget = _parse_money(budget_raw)
         audience_name = gc(row, "audience_name")
 
         # Squamish Col G "Group Name" carries both the line_code and the
@@ -1001,6 +1145,27 @@ def _parse_media_plan_tab(
             continue
         if "total" in goal.lower():
             continue
+
+        # ADAC-69: surface budget cells we couldn't parse instead of dropping
+        # them silently. The row survives (its targeting is still useful and it
+        # may carry a line_code), but budget lands as None and would otherwise
+        # vanish from any budget rollup with no trace. Only count rows where the
+        # cell actually HAD content — a blank Budget cell is a deliberate
+        # planner choice (e.g. bundle children whose pool lives on the parent),
+        # not a parse failure. Counted here, after the identity gates, so
+        # footer/total rows can't inflate the figure. The structured log carries
+        # the offending value + row index for fast triage.
+        if budget is None and budget_raw.strip():
+            if stats is not None:
+                stats["rows_skipped_unparseable_budget"] = (
+                    stats.get("rows_skipped_unparseable_budget", 0) + 1
+                )
+            logger.warning(
+                "  Media Plan row %d: unparseable budget %r (platform=%r, "
+                "line_code=%r) — keeping row but budget is NULL",
+                row_idx, budget_raw, current_platform, line_code,
+            )
+
         # Rows without budget still have targeting info, so include if they have a line_code
         if budget is not None and budget <= 0:
             budget = None
@@ -1453,14 +1618,39 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         except Exception:
             pass  # Safe to ignore
 
-    # ── Parse blocking chart + filter media plan tabs to this project ─
-    bc = _parse_blocking_chart(blocking_ws)
+    # ── Resolve the project's authoritative campaign year (24058 fix) ─
+    # dim_projects.start_date is set at project creation and is independent of
+    # the media-plan sheet's date formatting, so it's the safe anchor for
+    # year-less flight cells. Without it, a landed campaign whose sheet uses
+    # bare "June 1" cells gets stamped with today's year and shifts a year
+    # forward (24058 / OPSEU: 2025-06→12 stored as 2026-06→12, breaking pacing).
+    anchor_mtl = _mtl_client()
+    try:
+        project_anchor_year = _lookup_project_anchor_year(anchor_mtl, project_code)
+    finally:
+        anchor_mtl.close()
+    if project_anchor_year:
+        logger.info(
+            "  Project anchor year for %s = %d (from dim_projects.start_date)",
+            project_code, project_anchor_year,
+        )
 
-    # Extract ref_year from blocking chart start_date for consistent date parsing
+    # ── Parse blocking chart + filter media plan tabs to this project ─
+    bc = _parse_blocking_chart(blocking_ws, anchor_year=project_anchor_year)
+
+    # Extract ref_year from blocking chart start_date for consistent date
+    # parsing. The blocking-chart parser has already resolved the correct year
+    # using the anchor, so its start_date.year is now trustworthy for year-less
+    # sheets too.
     ref_year = None
     if bc["metadata"].get("start_date"):
         ref_year = bc["metadata"]["start_date"].year
         logger.info("  Using ref_year=%d from blocking chart start_date", ref_year)
+    elif project_anchor_year:
+        # Blocking chart yielded no start_date at all — fall back to the anchor
+        # so per-line month-day flights still resolve to the campaign year.
+        ref_year = project_anchor_year
+        logger.info("  Using ref_year=%d from project anchor (no bc start_date)", ref_year)
 
     filtered_tabs: list[tuple[gspread.Worksheet, list[list[str]]]] = []
     for mp_ws in media_plan_tabs:
@@ -1481,8 +1671,25 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
             logger.warning("  Skipping media plan tab: '%s' — %s", mp_ws.title, reason)
 
     mp_lines: list[dict] = []
+    # ADAC-69: accumulate per-tab parse diagnostics across all media plan tabs.
+    # Currently tracks rows dropped to a NULL budget because their Budget cell
+    # was non-empty but unparseable; surfaced in the response payload + a
+    # structured log so a bad data cell can't vanish silently.
+    parse_stats: dict = {"rows_skipped_unparseable_budget": 0}
     for mp_ws, tab_data in filtered_tabs:
-        mp_lines.extend(_parse_media_plan_tab(mp_ws, prefetched_data=tab_data, ref_year=ref_year))
+        mp_lines.extend(_parse_media_plan_tab(
+            mp_ws, prefetched_data=tab_data, ref_year=ref_year, stats=parse_stats,
+        ))
+
+    rows_skipped_unparseable_budget = parse_stats.get(
+        "rows_skipped_unparseable_budget", 0
+    )
+    if rows_skipped_unparseable_budget:
+        logger.warning(
+            "  Media plan sync for %s (sheet %s): %d row(s) had an unparseable "
+            "budget cell — kept with NULL budget. See per-row warnings above.",
+            project_code, sheet_id, rows_skipped_unparseable_budget,
+        )
 
     # ── Row-level project filter: remove lines that contain a different
     #    project code in their text fields (catches mixed-project tabs)
@@ -1777,6 +1984,10 @@ def sync_media_plan(sheet_id: str, project_code: str, tab_name: str | None = Non
         "net_budget": meta.get("net_budget"),
         "lines_created": len(line_records),
         "weeks_created": len(week_records),
+        # ADAC-69: N rows whose Budget cell had content we couldn't parse. Kept
+        # with NULL budget rather than dropped; surfaced so the admin layer can
+        # flag a malformed plan instead of it failing silently.
+        "rows_skipped_unparseable_budget": rows_skipped_unparseable_budget,
     }
     logger.info("  Sync complete: %s", result)
     return result
