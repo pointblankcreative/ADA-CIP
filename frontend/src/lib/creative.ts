@@ -17,6 +17,7 @@ import type {
   ObjectiveType,
   RotationCreative,
 } from "@/lib/api";
+import { formatNumberCompact } from "@/lib/utils";
 
 /* ── Quartile reads against PB campaign history ──────────────────── */
 
@@ -266,6 +267,80 @@ export function primaryValueFor(
   return { value: cr.cpa, bench: "cpa" };
 }
 
+/* ── Per-creative reason copy ─────────────────────────────────────────
+   The verdict sets the framing; each creative's OWN signals fill it in, so
+   no two cards read identically (the reason used to be one static string
+   per verdict, which made every same-verdict card identical). */
+
+const cap = (s: string): string =>
+  s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+function readWord(
+  value: number | null | undefined,
+  bench: QuartileBench | null | undefined
+): string {
+  const r = quartileRead(value, bench);
+  return r ? ` (${r.word.toLowerCase()})` : "";
+}
+
+/** A concrete clause from THIS creative's strongest reported signal: the
+ *  primary KPI when present, else the best secondary metric, else raw
+ *  delivery. Guarantees each card's reason carries its own numbers. */
+function signalClause(
+  cr: RotationCreative,
+  objective: ObjectiveType,
+  benches: CreativeBenches
+): string {
+  const { value, bench } = primaryValueFor(cr, objective);
+  if (value != null) {
+    const label =
+      objective === "awareness"
+        ? cr.type === "static"
+          ? "engagement"
+          : "completion"
+        : "cost per result";
+    const fmt = objective === "awareness" ? formatRate : formatMoney;
+    return `${label} ${fmt(value)}${readWord(value, benches[bench])}`;
+  }
+  if (cr.ctr != null)
+    return `${formatRate(cr.ctr)} CTR${readWord(cr.ctr, benches.ctr)}`;
+  if (cr.completion_rate != null)
+    return `${formatRate(cr.completion_rate)} completion${readWord(
+      cr.completion_rate,
+      benches.completion_rate
+    )}`;
+  if (cr.engagement_rate != null)
+    return `${formatRate(cr.engagement_rate)} engagement${readWord(
+      cr.engagement_rate,
+      benches.engagement_rate
+    )}`;
+  return `${formatNumberCompact(cr.impressions)} impressions, ${formatMoney(
+    cr.spend
+  )} spent`;
+}
+
+/** The fatigue driver in this creative's own numbers — frequency and/or a
+ *  falling CTR trend. At least one is set whenever isFatigued is true. */
+function fatigueDriver(cr: RotationCreative): string {
+  const freqTrend = cr.trend?.frequency ?? [];
+  const latestFreq = freqTrend.length
+    ? freqTrend[freqTrend.length - 1]
+    : cr.frequency;
+  const ctrTrend = (cr.trend?.ctr ?? []).filter((v) => v != null && v > 0);
+  const drop =
+    ctrTrend.length >= FATIGUE_MIN_POINTS && ctrTrend[0] > 0
+      ? (ctrTrend[0] - ctrTrend[ctrTrend.length - 1]) / ctrTrend[0]
+      : null;
+  const bits: string[] = [];
+  if (latestFreq != null && latestFreq > FATIGUE_FREQUENCY)
+    bits.push(`frequency is up to ${formatTimes(latestFreq)}`);
+  if (drop != null && drop >= FATIGUE_CTR_DROP)
+    bits.push(
+      `click-through has slipped ${Math.round(drop * 100)}% across the flight`
+    );
+  return bits.join(" and ") || "the audience has seen it";
+}
+
 export function judgeCreative(
   cr: RotationCreative,
   objective: ObjectiveType,
@@ -279,9 +354,9 @@ export function judgeCreative(
       creative: cr,
       verdict: "EARLY",
       tone: "var(--text-faint)",
-      reason:
-        "Under the volume guard: not enough delivery to judge yet. " +
-        "Verdicts arrive once it has real impressions behind it.",
+      reason: `Only ${formatNumberCompact(cr.impressions)} impressions and ${formatMoney(
+        cr.spend
+      )} spent so far — under the volume guard. A verdict lands once it has real delivery behind it.`,
       fatigued: false,
       primaryValue: value,
       primaryRead: read,
@@ -293,9 +368,9 @@ export function judgeCreative(
       creative: cr,
       verdict: "REFRESH",
       tone: "var(--warn)",
-      reason:
-        "Fatigued: the audience has seen it. High frequency or a falling " +
-        "click-through trend says this cut is done.",
+      reason: `Fatigued: ${fatigueDriver(cr)}. Rotate a fresh cut in${
+        objective !== "awareness" ? " before the cost climbs" : ""
+      }.`,
       fatigued: true,
       primaryValue: value,
       primaryRead: read,
@@ -307,9 +382,9 @@ export function judgeCreative(
       creative: cr,
       verdict: "SCALE",
       tone: "var(--ok)",
-      reason:
-        "Top quartile on the primary KPI against PB history, with volume " +
-        "behind it and no fatigue signature.",
+      reason: `${cap(
+        signalClause(cr, objective, benches)
+      )} against PB history, with volume behind it and no fatigue. Send the next dollar here.`,
       fatigued: false,
       primaryValue: value,
       primaryRead: read,
@@ -320,9 +395,9 @@ export function judgeCreative(
     creative: cr,
     verdict: "HOLD",
     tone: "var(--text-muted)",
-    reason:
-      "Earning its keep without breaking away. Keep it in rotation while " +
-      "the leader carries the weight.",
+    reason: `${cap(
+      signalClause(cr, objective, benches)
+    )} — steady without breaking away. Keep it in rotation while the leader carries the weight.`,
     fatigued: false,
     primaryValue: value,
     primaryRead: read,
