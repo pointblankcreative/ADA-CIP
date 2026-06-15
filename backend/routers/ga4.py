@@ -199,25 +199,63 @@ def _build_ga4_url_filter_sql(url_rows: list[dict]) -> tuple[str, list]:
     return f"({joined})", params
 
 
+def _summarize(daily_rows: list[dict], urls: list[GA4UrlResponse]) -> GA4PerformanceResponse:
+    """Roll daily GA4 rows up into the response shape."""
+    total_sessions = sum(int(r.get("sessions", 0) or 0) for r in daily_rows)
+    total_conversions = sum(int(round(float(r.get("conversions", 0) or 0))) for r in daily_rows)
+    daily = [
+        GA4WebAnalytics(
+            date=r["date"],
+            sessions=int(r.get("sessions", 0) or 0),
+            conversions=int(round(float(r.get("conversions", 0) or 0))),
+        )
+        for r in daily_rows
+    ]
+    return GA4PerformanceResponse(
+        has_ga4=True,
+        urls=urls,
+        daily=daily,
+        total_sessions=total_sessions,
+        total_conversions=total_conversions,
+    )
+
+
 @router.get("/{project_code}/analytics", response_model=GA4PerformanceResponse)
 async def get_ga4_analytics(
     project_code: str,
     start_date: str | None = Query(None, description="YYYY-MM-DD inclusive"),
     end_date: str | None = Query(None, description="YYYY-MM-DD inclusive"),
 ):
-    """Return GA4 web analytics from fact_ga4_daily for configured property + URL patterns."""
+    """GA4 web analytics from fact_ga4_daily.
+
+    Look-first / fall-back resolution:
+      1) The utm_content data layer. If campaigns are tagged to the PB standard
+         (session_content = "{project}-{campaign_id}-{adset_id}-{ad_id}"), the project's
+         GA4 traffic auto-maps by its project-code prefix, with no manual config.
+      2) Otherwise fall back to the manually configured project_ga4_urls patterns
+         (campaign/source/medium match) — the pre-existing behaviour.
+    """
     _ensure_table()
+
+    # Shared date filter.
+    date_params: list = []
+    date_parts: list[str] = []
+    if start_date:
+        date_parts.append("date >= @ga4_start_date")
+        date_params.append(bq.date_param("ga4_start_date", date.fromisoformat(start_date)))
+    if end_date:
+        date_parts.append("date <= @ga4_end_date")
+        date_params.append(bq.date_param("ga4_end_date", date.fromisoformat(end_date)))
+    date_sql = " AND ".join(date_parts) if date_parts else "TRUE"
+
+    # Configured manual mappings: used for the urls list and as the fallback filter.
     try:
         url_rows = bq.run_query(
             f"SELECT ga4_property_id, url_pattern, id, label FROM {bq.table('project_ga4_urls')} WHERE project_code = @pc",
             [bq.string_param("pc", project_code)],
         )
     except Exception:
-        return GA4PerformanceResponse(has_ga4=False)
-
-    if not url_rows:
-        return GA4PerformanceResponse(has_ga4=False)
-
+        url_rows = []
     urls = [
         GA4UrlResponse(
             id=r["id"], project_code=project_code,
@@ -227,17 +265,35 @@ async def get_ga4_analytics(
         for r in url_rows
     ]
 
+    # 1) LOOK FIRST: the utm_content data layer (auto-map by project-code prefix).
+    try:
+        content_rows = bq.run_query(
+            f"""
+            SELECT
+                date,
+                SUM(sessions) AS sessions,
+                SUM(page_views) AS page_views,
+                SUM(key_events) AS conversions
+            FROM {bq.table('fact_ga4_daily')}
+            WHERE session_content LIKE @content_prefix
+              AND {date_sql}
+            GROUP BY date
+            ORDER BY date
+            """,
+            [bq.string_param("content_prefix", f"{project_code}-%"), *date_params],
+        )
+    except Exception:
+        # session_content may not exist yet (column or Funnel dimension absent) → fall through.
+        content_rows = []
+    if content_rows:
+        return _summarize(content_rows, urls)
+
+    # 2) FALLBACK: manual project_ga4_urls patterns.
+    if not url_rows:
+        return GA4PerformanceResponse(has_ga4=False)
+
     url_filter_sql, params = _build_ga4_url_filter_sql(url_rows)
-
-    date_parts: list[str] = []
-    if start_date:
-        date_parts.append("date >= @ga4_start_date")
-        params.append(bq.date_param("ga4_start_date", date.fromisoformat(start_date)))
-    if end_date:
-        date_parts.append("date <= @ga4_end_date")
-        params.append(bq.date_param("ga4_end_date", date.fromisoformat(end_date)))
-    date_sql = " AND ".join(date_parts) if date_parts else "TRUE"
-
+    params = [*params, *date_params]
     daily_sql = f"""
         SELECT
             date,
@@ -250,29 +306,10 @@ async def get_ga4_analytics(
         GROUP BY date
         ORDER BY date
     """
-
     try:
         daily_rows = bq.run_query(daily_sql, params)
     except Exception:
-        logger.warning("get_ga4_analytics query failed for %s", project_code, exc_info=True)
+        logger.warning("get_ga4_analytics fallback query failed for %s", project_code, exc_info=True)
         return GA4PerformanceResponse(has_ga4=True, urls=urls)
 
-    total_sessions = sum(int(r.get("sessions", 0) or 0) for r in daily_rows)
-    total_conversions = sum(int(round(float(r.get("conversions", 0) or 0))) for r in daily_rows)
-
-    daily = [
-        GA4WebAnalytics(
-            date=r["date"],
-            sessions=int(r.get("sessions", 0) or 0),
-            conversions=int(round(float(r.get("conversions", 0) or 0))),
-        )
-        for r in daily_rows
-    ]
-
-    return GA4PerformanceResponse(
-        has_ga4=True,
-        urls=urls,
-        daily=daily,
-        total_sessions=total_sessions,
-        total_conversions=total_conversions,
-    )
+    return _summarize(daily_rows, urls)
