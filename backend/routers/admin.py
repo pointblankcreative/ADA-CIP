@@ -702,7 +702,7 @@ async def update_media_plan_line(line_id: str, body: MediaPlanLineUpdate):
 
     # Fetch the line's stable key fields to persist the override
     line_row = bq.run_query(f"""
-        SELECT project_code, platform_id, budget
+        SELECT project_code, platform_id, budget, line_code
         FROM {bq.table('media_plan_lines')}
         WHERE line_id = @line_id
     """, [bq.string_param("line_id", line_id)])
@@ -712,20 +712,24 @@ async def update_media_plan_line(line_id: str, body: MediaPlanLineUpdate):
         # Upsert into overrides table (keyed on project_code + platform_id + budget ±1%)
         bq.run_query(f"""
             MERGE {bq.table('media_plan_line_overrides')} t
-            USING (SELECT @pc AS project_code, @pid AS platform_id, @budget AS budget) s
+            USING (SELECT @pc AS project_code, @pid AS platform_id,
+                          @budget AS budget, @lc AS line_code) s
             ON t.project_code = s.project_code
-               AND t.platform_id = s.platform_id
-               AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01
+               AND ((s.line_code != '' AND t.line_code = s.line_code)
+                    OR (t.platform_id = s.platform_id
+                        AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01))
             WHEN MATCHED THEN UPDATE SET
                 audience_name = @audience_name,
+                line_code = @lc,
                 updated_at = CURRENT_TIMESTAMP()
             WHEN NOT MATCHED THEN INSERT
-                (project_code, platform_id, budget, audience_name, updated_at)
-                VALUES (@pc, @pid, @budget, @audience_name, CURRENT_TIMESTAMP())
+                (project_code, platform_id, budget, line_code, audience_name, updated_at)
+                VALUES (@pc, @pid, @budget, @lc, @audience_name, CURRENT_TIMESTAMP())
         """, [
             bq.string_param("pc", row["project_code"]),
             bq.string_param("pid", row.get("platform_id") or ""),
             bq.scalar_param("budget", "FLOAT64", float(row.get("budget") or 0)),
+            bq.string_param("lc", row.get("line_code") or ""),
             bq.string_param("audience_name", body.audience_name),
         ])
 
@@ -743,7 +747,7 @@ async def update_line_is_direct(line_id: str, body: IsDirectOverrideUpdate):
     auto.
     """
     line_row = bq.run_query(f"""
-        SELECT project_code, platform_id, budget
+        SELECT project_code, platform_id, budget, line_code
         FROM {bq.table('media_plan_lines')}
         WHERE line_id = @line_id
     """, [bq.string_param("line_id", line_id)])
@@ -765,19 +769,22 @@ async def update_line_is_direct(line_id: str, body: IsDirectOverrideUpdate):
     # key as the audience_name override) so it survives re-syncs.
     bq.run_query(f"""
         MERGE {bq.table('media_plan_line_overrides')} t
-        USING (SELECT @pc AS project_code, @pid AS platform_id, @budget AS budget) s
+        USING (SELECT @pc AS project_code, @pid AS platform_id,
+                      @budget AS budget, @lc AS line_code) s
         ON t.project_code = s.project_code
-           AND t.platform_id = s.platform_id
-           AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01
+           AND ((s.line_code != '' AND t.line_code = s.line_code)
+                OR (t.platform_id = s.platform_id
+                    AND ABS(t.budget - s.budget) / GREATEST(s.budget, 1) < 0.01))
         WHEN MATCHED THEN UPDATE SET
-            is_direct_override = @v, updated_at = CURRENT_TIMESTAMP()
+            is_direct_override = @v, line_code = @lc, updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN INSERT
-            (project_code, platform_id, budget, is_direct_override, updated_at)
-            VALUES (@pc, @pid, @budget, @v, CURRENT_TIMESTAMP())
+            (project_code, platform_id, budget, line_code, is_direct_override, updated_at)
+            VALUES (@pc, @pid, @budget, @lc, @v, CURRENT_TIMESTAMP())
     """, [
         bq.string_param("pc", row["project_code"]),
         bq.string_param("pid", row.get("platform_id") or ""),
         bq.scalar_param("budget", "FLOAT64", float(row.get("budget") or 0)),
+        bq.string_param("lc", row.get("line_code") or ""),
         bq.scalar_param("v", "BOOL", body.is_direct_override),
     ])
 

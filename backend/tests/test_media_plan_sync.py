@@ -13,6 +13,7 @@ from datetime import date, timedelta
 import pytest
 
 from backend.services.media_plan_sync import (
+    _apply_audience_overrides,
     _assign_bundle_groups,
     _build_line_records_for_bc_line,
     _compute_bundle_id,
@@ -1894,3 +1895,52 @@ class TestDetailTabAuthoritative:
         auds = {l.get("audience_name") for l in bc["lines"]}
         assert "Member List Match" in auds
         assert "List Lookalikes" in auds
+
+
+# ── Override durability: line_code match + cleanup/audience guards ─
+
+
+class _FakeJob:
+    num_dml_affected_rows = 0
+
+    def result(self):
+        return self
+
+
+class _FakeMtl:
+    """Captures every SQL string passed to .query()."""
+
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def query(self, sql, job_config=None):
+        self.queries.append(sql)
+        return _FakeJob()
+
+
+class TestOverrideDurability:
+    """A manual is_direct (direct/tracked) override must survive re-syncs even
+    when a line's budget shifts, and an is_direct-only override must never blank
+    a line's audience. Re-apply matches on line_code (sturdy) OR budget."""
+
+    def _queries(self):
+        mtl = _FakeMtl()
+        _apply_audience_overrides(mtl, "26023")
+        return mtl.queries
+
+    def test_reapply_matches_on_line_code(self):
+        # The sturdy key: line_code equality, OR-ed with the budget fallback,
+        # so a budget edit can't orphan the override.
+        assert "l.line_code = o.line_code" in " ".join(self._queries())
+
+    def test_cleanup_preserves_is_direct_overrides(self):
+        # The cleanup DELETE must skip any row carrying a manual is_direct
+        # choice, so a transient mismatch never drops the user's override.
+        delete = next(q for q in self._queries() if "DELETE" in q)
+        assert "o.is_direct_override IS NULL" in delete
+
+    def test_audience_apply_guards_against_null(self):
+        # The audience UPDATE only fires for rows that actually set an audience
+        # — a direct-only override (audience NULL) must not blank the line.
+        apply = next(q for q in self._queries() if "SET l.audience_name" in q)
+        assert "o.audience_name IS NOT NULL" in apply
