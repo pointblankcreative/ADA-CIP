@@ -98,6 +98,15 @@ function Dot({ size = 22, strong }: { size?: number; strong?: boolean }) {
   );
 }
 
+/** VIDEO / STATIC chip, overlaid on the top-left of whatever it's placed in. */
+function TypeChip({ type }: { type: "video" | "static" }) {
+  return (
+    <span className="absolute left-2 top-2 z-20 whitespace-nowrap rounded-xs border border-line-soft bg-surface-card px-1.5 py-0.5 font-mono text-[8.5px] font-semibold tracking-[0.1em] text-fg-muted">
+      {type === "video" ? "VIDEO" : "STATIC"}
+    </span>
+  );
+}
+
 /* ── phone: Stories / Reels / TikTok ─────────────────────────────── */
 
 function PhoneSkeleton({ media }: { media: React.ReactNode }) {
@@ -139,29 +148,26 @@ function PhoneSkeleton({ media }: { media: React.ReactNode }) {
 
 /* ── feed: 1:1 / 4:5 in-feed social card ─────────────────────────── */
 
-function FeedSkeleton({ media }: { media: React.ReactNode }) {
+function FeedSkeleton({
+  media,
+  type,
+}: {
+  media: React.ReactNode;
+  type: "video" | "static";
+}) {
   return (
     <div
       className="overflow-hidden rounded-md border border-line-soft bg-surface-card shadow-hard"
       style={{ width: 188 }}
     >
-      {/* header: avatar + handle */}
-      <div className="flex items-center gap-2 px-2.5 py-1.5">
-        <Dot size={18} strong />
-        <div className="flex flex-col gap-1">
-          <Bar w={64} h={5} strong />
-          <Bar w={40} h={4} />
-        </div>
-        <div className="ml-auto flex gap-[3px]">
-          <Dot size={3} strong />
-          <Dot size={3} strong />
-          <Dot size={3} strong />
-        </div>
+      {/* the creative, square — flush to the top of the card so the type chip
+          overlaps it (no empty header band above it). */}
+      <div className="relative aspect-square w-full overflow-hidden bg-surface-sunken">
+        {media}
+        <TypeChip type={type} />
       </div>
-      {/* the creative, square */}
-      <div className="aspect-square w-full overflow-hidden bg-surface-sunken">{media}</div>
       {/* action bar */}
-      <div className="flex items-center gap-3 px-2.5 pb-1 pt-1.5 text-fg-faint">
+      <div className="flex items-center gap-3 px-2.5 pb-1 pt-2 text-fg-faint">
         <Heart className="h-[15px] w-[15px]" />
         <MessageCircle className="h-[15px] w-[15px]" />
         <Send className="h-[15px] w-[15px]" />
@@ -266,16 +272,14 @@ function InstreamSkeleton({ media }: { media: React.ReactNode }) {
           <div className="h-full bg-accent" style={{ width: "28%" }} />
         </div>
       </div>
-      {/* title + channel row, so it reads as a watch page */}
-      <div className="flex flex-col gap-1.5 px-2.5 py-2.5">
-        <Bar w="92%" h={6} strong />
-        <Bar w="58%" h={6} strong />
-        <div className="mt-1 flex items-center gap-2">
-          <Dot size={18} strong />
-          <div className="flex flex-col gap-1">
-            <Bar w={72} h={4} />
-            <Bar w={46} h={4} />
-          </div>
+      {/* below the player: loading-style header + body copy, matching the
+          surface-sunken skeleton blocks ADA shows while a page loads. */}
+      <div className="flex flex-col gap-2 px-2.5 py-3">
+        <div className="h-3.5 w-3/4 rounded bg-surface-sunken" />
+        <div className="mt-0.5 flex flex-col gap-1.5">
+          <div className="h-2 w-full rounded bg-surface-sunken" />
+          <div className="h-2 w-full rounded bg-surface-sunken" />
+          <div className="h-2 w-3/5 rounded bg-surface-sunken" />
         </div>
       </div>
     </div>
@@ -322,13 +326,12 @@ export function PlacementFrame({
   return (
     <div className="relative flex items-center justify-center rounded-md bg-surface-sunken px-3 py-2" style={{ minHeight: 200 }}>
       {placement === "phone" && <PhoneSkeleton media={media} />}
-      {placement === "feed" && <FeedSkeleton media={media} />}
+      {placement === "feed" && <FeedSkeleton media={media} type={type} />}
       {placement === "instream" && <InstreamSkeleton media={media} />}
       {placement === "web" && <WebSkeleton media={media} ratio={ratio} />}
-      {/* media-type chip, kept from the old frame */}
-      <span className="absolute left-2 top-2 z-10 whitespace-nowrap rounded-xs border border-line-soft bg-surface-card px-1.5 py-0.5 font-mono text-[8.5px] font-semibold tracking-[0.1em] text-fg-muted">
-        {type === "video" ? "VIDEO" : "STATIC"}
-      </span>
+      {/* Type chip: the feed card renders its own over the creative; every
+          other placement shows it on the frame corner. */}
+      {placement !== "feed" && <TypeChip type={type} />}
     </div>
   );
 }
