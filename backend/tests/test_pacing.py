@@ -15,7 +15,12 @@ import pytest
 
 import asyncio
 
-from backend.services.pacing import run_pacing_for_project, _float
+from backend.services.pacing import (
+    run_pacing_for_project,
+    _float,
+    _audience_tokens,
+    _match_adset_to_line_id,
+)
 from backend.routers import pacing as pacing_router
 
 
@@ -958,3 +963,143 @@ class TestRaceFixes:
         assert resp.spend_without_baseline == 500.0
         # still excluded from the % (1000/1000 = 100, not 1500/1000 = 150)
         assert resp.overall_pacing_percentage == 100.0
+
+
+# ── Ad-set-name → line audience attribution ─────────────────────────
+
+
+class TestAudienceTokens:
+    """The token normaliser underpinning ad-set → line matching."""
+
+    def test_singularises_and_drops_numbers(self):
+        assert _audience_tokens("List Lookalikes") == {"list", "lookalike"}
+
+    def test_qualifier_tokens_kept_and_singularised(self):
+        assert _audience_tokens("PNE Fan Zone Attendees") == {
+            "pne", "fan", "zone", "attendee",
+        }
+
+    def test_none_and_empty(self):
+        assert _audience_tokens(None) == set()
+        assert _audience_tokens("   -  ") == set()
+
+    def test_adset_name_strips_structural_tokens(self):
+        toks = _audience_tokens("01 - 26023 Sierra Club - Conversion - Lookalike List")
+        assert {"lookalike", "list"} <= toks
+        assert "01" not in toks and "26023" not in toks
+
+
+class TestMatchAdsetToLine:
+    """Confident, unambiguous ad-set → line audience matching."""
+
+    CANDS = [
+        {"line_id": "L0", "audience_name": "List Lookalikes"},
+        {"line_id": "L1", "audience_name": "Member List Match"},
+        {"line_id": "L2", "audience_name": "PNE Fan Zone Attendees"},
+    ]
+
+    def test_lookalike_adset_matches_lookalike_line(self):
+        assert _match_adset_to_line_id(
+            "01 - 26023 Sierra Club - Conversion - Lookalike List", self.CANDS
+        ) == "L0"
+
+    def test_fan_zone_adset_matches_fan_zone_line(self):
+        assert _match_adset_to_line_id(
+            "02 - 26023 Sierra Club - Conversion - Fan Zone", self.CANDS
+        ) == "L2"
+
+    def test_reach_adset_matches_nothing(self):
+        # No plan line is about "reach"/"awareness"; must not false-match.
+        assert _match_adset_to_line_id(
+            "01 - 26023 Sierra Club BC FIFA Reach", self.CANDS
+        ) is None
+
+    def test_full_match_beats_single_generic_token(self):
+        # "Member List Match …" shares only 'list' with List Lookalikes (0.5,
+        # 1 token) but fully matches Member List Match — the true line wins.
+        assert _match_adset_to_line_id(
+            "03 - 26023 Sierra Club - Member List Match Audience", self.CANDS
+        ) == "L1"
+
+    def test_single_generic_token_alone_does_not_match(self):
+        # An ad set sharing only the generic 'list' token with one line, with no
+        # stronger competitor, stays unmatched (needs ≥2 tokens or a full match).
+        cands = [{"line_id": "X", "audience_name": "List Lookalikes"}]
+        assert _match_adset_to_line_id("Some Random List Of Things", cands) is None
+
+    def test_ambiguous_tie_returns_none(self):
+        cands = [
+            {"line_id": "A", "audience_name": "Fan Zone"},
+            {"line_id": "B", "audience_name": "Fan Zone"},
+        ]
+        assert _match_adset_to_line_id("Fan Zone", cands) is None
+
+    def test_empty_inputs(self):
+        assert _match_adset_to_line_id("", self.CANDS) is None
+        assert _match_adset_to_line_id(None, self.CANDS) is None
+
+
+class TestAudienceAttributionInPacing:
+    """End-to-end: audience-matched ad sets are measured directly; unmatched
+    ad-set spend still flows through the budget-weight residual (no spend lost).
+    Mirrors the real 26023 Meta case."""
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_meta_split_by_audience_with_residual_fallback(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        mock_date.today.return_value = date(2026, 6, 14)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+        mock_bq.array_param.side_effect = lambda n, t, v: (n, v)
+
+        fs, fe = date(2026, 6, 4), date(2026, 7, 15)
+        lines = [
+            _make_line("L0", "meta", 19500, fs, fe, line_code="#01"),
+            _make_line("L1", "meta", 4090, fs, fe, line_code="#02"),
+        ]
+        lines[0]["audience_name"] = "List Lookalikes"
+        lines[1]["audience_name"] = "Member List Match"
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            # My audience query — check ad_set_name BEFORE the SUM(spend) catch.
+            if "ad_set_name" in sql:
+                return [
+                    {"ad_set_name": "01 - 26023 Sierra Club - Conversion - Lookalike List",
+                     "spend": 1391.47},
+                    {"ad_set_name": "01 - 26023 Sierra Club BC FIFA Reach",
+                     "spend": 227.41},
+                ]
+            # line_code lookups hit the view; return no line_code-attributed spend
+            # so attribution must fall to the audience tier.
+            if "vw_fact_digital_daily" in sql or "line_codes" in sql:
+                return [{"total_spend": 0.0, "first_spend_date": None}]
+            if "SUM(spend)" in sql:  # platform group total
+                return [{"total_spend": 1618.88}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        run_pacing_for_project("26023", date(2026, 6, 14))
+
+        rows = mock_tracking.call_args[0][2]
+        by_id = {r["line_id"]: r for r in rows}
+
+        # L0 measured directly from its matching ad set.
+        assert by_id["L0"]["actual_spend_to_date"] == 1391.47
+        # L1 has no matching ad set; the unmatched "FIFA Reach" spend ($227.41)
+        # flows through the residual budget-weight split to the only unattributed
+        # line — nothing is dropped.
+        assert by_id["L1"]["actual_spend_to_date"] == pytest.approx(227.41, abs=0.01)
+        # Total spend is conserved (matches the platform group total).
+        total = by_id["L0"]["actual_spend_to_date"] + by_id["L1"]["actual_spend_to_date"]
+        assert total == pytest.approx(1618.88, abs=0.01)
