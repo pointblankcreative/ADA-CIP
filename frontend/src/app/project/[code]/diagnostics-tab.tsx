@@ -47,6 +47,16 @@ function statusVar(status: string | null | undefined): string {
   return "var(--text-faint)";
 }
 
+/** Message to show for an engine-level alert ON THE BOARD. The triage board
+ *  already renders each failing signal as its own ACT/WATCH card, so the
+ *  health-regression alert's "Top failing signals" enumeration (which restates
+ *  those same signals' full diagnostic prose) renders the identical text twice.
+ *  Trim it to the headline here; other surfaces (Slack, Alerts page) keep the
+ *  full message, and messages without that section pass through unchanged. */
+function boardAlertMessage(msg: string): string {
+  return msg.split(/\n+Top failing signals:/)[0].trim();
+}
+
 export interface RetrospectiveMetadata {
   cached: boolean;
   engineVersion: string;
@@ -831,7 +841,7 @@ export function DiagnosticsTab({
       {/* header row */}
       <div className="flex flex-wrap items-start justify-between gap-[18px]">
         <Eyebrow>Campaign health · {campaignTypeLabel}</Eyebrow>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
           <div className="text-right font-mono">
             <div className="whitespace-nowrap text-[11px] text-fg-muted">
               Day {first.flight_day} of {first.flight_total_days} · evaluated{" "}
@@ -909,7 +919,7 @@ export function DiagnosticsTab({
           <span className="whitespace-nowrap font-mono text-[9.5px] font-bold uppercase tracking-[0.12em] text-danger">
             Critical · {a.type.replace(/_/g, " ")}
           </span>
-          <span className="text-[13px] text-fg-secondary">{a.message}</span>
+          <span className="text-[13px] text-fg-secondary">{boardAlertMessage(a.message)}</span>
         </div>
       ))}
       {act.length > 0 ? (
@@ -966,7 +976,7 @@ export function DiagnosticsTab({
                   Alert · {a.type.replace(/_/g, " ")}
                 </div>
                 <p className="mt-[9px] text-[12.5px] leading-relaxed text-fg-secondary">
-                  {a.message}
+                  {boardAlertMessage(a.message)}
                 </p>
               </div>
             ))}
