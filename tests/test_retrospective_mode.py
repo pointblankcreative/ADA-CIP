@@ -560,10 +560,6 @@ def test_retrospective_endpoint_returns_expected_shape(monkeypatch):
 
     # find_or_compute returns (rows, was_cached). True = came from cache.
     monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: (fake_rows, True))
-    monkeypatch.setattr(
-        retrospective, "run_pacing_for_project",
-        lambda *a, **k: {"project_code": "25013", "lines_processed": 3, "alerts": 0},
-    )
     monkeypatch.setattr(retrospective.settings, "engine_version", "sha-abc")
 
     client = TestClient(main.app)
@@ -578,7 +574,9 @@ def test_retrospective_endpoint_returns_expected_shape(monkeypatch):
     assert len(body["diagnostics"]) == 1
     assert body["diagnostics"][0]["campaign_type"] == "persuasion"
     assert body["diagnostics"][0]["health_score"] == 81.0
-    assert body["pacing"]["lines_processed"] == 3
+    # Pacing is no longer computed by this endpoint (the retro UI fetches it
+    # from /api/pacing); the field is kept as null for response-shape stability.
+    assert body["pacing"] is None
 
 
 def test_retrospective_endpoint_reports_cache_miss_when_computed(monkeypatch):
@@ -623,10 +621,6 @@ def test_retrospective_endpoint_reports_cache_miss_when_computed(monkeypatch):
 
     # find_or_compute returns (rows, was_cached=False) → "fresh compute".
     monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: (fake_rows, False))
-    monkeypatch.setattr(
-        retrospective, "run_pacing_for_project",
-        lambda *a, **k: {"project_code": "25013", "lines_processed": 0, "alerts": 0},
-    )
     monkeypatch.setattr(retrospective.settings, "engine_version", "sha-abc")
 
     client = TestClient(main.app)
@@ -646,41 +640,11 @@ def test_retrospective_endpoint_rejects_bad_date():
     assert resp.status_code == 422
 
 
-def test_retrospective_endpoint_skip_writes_on_pacing(monkeypatch):
-    """Regression guard: the endpoint MUST pass skip_writes=True to pacing —
-    otherwise a retrospective request would pollute budget_tracking and fire
-    Slack alerts about yesterday's state."""
-    from fastapi.testclient import TestClient
-
-    from backend import main
-    from backend.routers import retrospective
-    from backend.services import snapshots as snapshots_mod
-    from backend.middleware import auth as auth_mod
-
-    async def passthrough(self, request, call_next):
-        return await call_next(request)
-
-    monkeypatch.setattr(auth_mod.FirebaseAuthMiddleware, "dispatch", passthrough)
-
-    captured_kwargs = {}
-
-    def fake_pacing(project_code, as_of_date, **kwargs):
-        captured_kwargs.update(kwargs)
-        captured_kwargs["project_code"] = project_code
-        captured_kwargs["as_of_date"] = as_of_date
-        return {"project_code": project_code, "lines_processed": 0, "alerts": 0}
-
-    monkeypatch.setattr(snapshots_mod, "find_or_compute", lambda *a, **k: ([], False))
-    monkeypatch.setattr(retrospective, "run_pacing_for_project", fake_pacing)
-
-    client = TestClient(main.app)
-    resp = client.get("/api/diagnostics/as-of/2026-03-01/project/25013")
-    assert resp.status_code == 200
-    assert captured_kwargs["skip_writes"] is True, (
-        "Retrospective endpoint must pass skip_writes=True to pacing to avoid "
-        "corrupting budget_tracking with reconstructed rows."
-    )
-    assert captured_kwargs["as_of_date"] == date(2026, 3, 1)
+# Removed test_retrospective_endpoint_skip_writes_on_pacing: the retrospective
+# endpoint no longer computes pacing at all (the retro UI fetches it from
+# /api/pacing, which carries its own skip_writes handling), so there is nothing
+# to guard here. The skip_writes contract is still covered by the pacing-direct
+# tests below.
 
 
 def test_pacing_default_skip_writes_false_still_writes():

@@ -54,7 +54,6 @@ from fastapi import APIRouter, HTTPException
 from backend.config import settings
 from backend.routers.diagnostics import _row_to_diagnostic
 from backend.services import snapshots
-from backend.services.pacing import run_pacing_for_project
 
 logger = logging.getLogger(__name__)
 
@@ -97,22 +96,16 @@ async def get_retrospective(
         )
         raise HTTPException(500, f"Retrospective diagnostics failed: {e}")
 
-    try:
-        pacing_result = run_pacing_for_project(
-            project_code, as_of_date, skip_writes=True,
-        )
-    except Exception as e:
-        logger.error(
-            "Retrospective pacing failed for %s @ %s: %s",
-            project_code, as_of_date, e, exc_info=True,
-        )
-        raise HTTPException(500, f"Retrospective pacing failed: {e}")
-
+    # Pacing is intentionally NOT computed here. The retrospective UI fetches
+    # pacing separately via GET /api/pacing/{code}?as_of_date=, which has its
+    # own compute-on-miss path — running it here too just burned 6-10 extra
+    # BigQuery queries per view for a field nothing reads. Kept as null for
+    # response-shape stability.
     return {
         "project_code": project_code,
         "as_of_date": as_of_date.isoformat(),
         "engine_version": settings.engine_version,
         "cached": cached,
         "diagnostics": [_row_to_diagnostic(r) for r in diag_rows],
-        "pacing": pacing_result,
+        "pacing": None,
     }
