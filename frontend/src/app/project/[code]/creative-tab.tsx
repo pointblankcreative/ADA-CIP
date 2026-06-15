@@ -58,10 +58,10 @@ import {
   QuartileBar,
   SectionHead,
   Spark,
-  ThumbFrame,
   VerdictWord,
   WarnStrip,
 } from "@/components/perf/primitives";
+import { PlacementFrame } from "@/components/perf/placement-frame";
 import { Card } from "@/components/card";
 import { Btn, Eyebrow, Label } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -385,9 +385,10 @@ function RotationCard({
         {/* The still from the asset sync, when stored; the abstract
             glyph frame otherwise. The VIDEO/STATIC chip stays overlaid
             either way. */}
-        <ThumbFrame
+        <PlacementFrame
           type={cr.type}
-          height={104}
+          platforms={cr.platforms}
+          alt={cr.variant}
           imageUrl={
             /* The proxy returns an API-relative path; absolutize it. */
             cr.image_url && cr.image_url.startsWith("/")
