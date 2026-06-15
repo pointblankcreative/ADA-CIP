@@ -337,11 +337,12 @@ def run_pacing_for_project(
     lines_sql = f"""
         SELECT line_id, line_code, platform_id, channel_category,
                site_network, budget, flight_start, flight_end,
-               bundle_id, bundle_role
+               bundle_id, bundle_role, audience_name
         FROM (
             SELECT
                 l.line_id,
                 l.line_code,
+                l.audience_name,
                 l.platform_id,
                 l.channel_category,
                 l.site_network,
