@@ -1259,7 +1259,7 @@ function LineRow({
           />
         </div>
         <div className="mt-[5px] flex justify-between font-mono text-[9.5px] text-fg-faint">
-          <span>0%</span>
+          <span>{formatPercent(budgetPct)} of budget spent</span>
           <span>Budget {formatCurrency(line.planned_budget)}</span>
         </div>
       </div>

@@ -165,6 +165,25 @@ export interface Verdict {
   action: { label: string; icon: VerdictIcon } | null;
 }
 
+/**
+ * Early-flight ramp grace: in the first week (and first quarter) of a flight,
+ * under-pacing is expected — delivery ramps and platform data lags 1-2 days, so
+ * the even-pace plan-to-date naturally runs ahead of actual. Treat under-pacing
+ * in that window as an informational "ramping" state rather than escalating to
+ * LAGGING / STALLED, which are mature-flight verdicts. Over-pacing is left alone
+ * (burning the budget too fast early is still worth flagging), and zero spend is
+ * handled separately as DARK / no-data.
+ */
+function earlyFlightRamping(f: FlightMath): boolean {
+  return (
+    !f.ended &&
+    !f.noData &&
+    f.elapsed <= 7 &&
+    f.elapsed / f.flightTotal < 0.25 &&
+    (f.status === "warning-under" || f.status === "critical-under")
+  );
+}
+
 export function verdict(p: Project, f: FlightMath): Verdict {
   const dn = formatCurrency(Math.round(f.dailyNeeded));
   const absDelta = formatCurrency(Math.abs(Math.round(f.deltaAmount ?? 0)));
@@ -189,6 +208,17 @@ export function verdict(p: Project, f: FlightMath): Verdict {
       tone: "var(--info)",
       headline: "No data yet.",
       detail: `Flight opens ${p.start_date}. Pacing lights up once the platforms start spending.`,
+      action: null,
+    };
+  }
+  if (earlyFlightRamping(f)) {
+    return {
+      word: "RAMPING",
+      tone: "var(--info)",
+      headline: "Early in the flight — still ramping.",
+      detail: `Day ${f.elapsed} of ${f.flightTotal}. Tracking ${formatPercent(
+        p.pacing_percentage
+      )} of the even-pace plan; early under-pacing is normal while delivery builds and platform data lags a day or two. Worth a look if it's still soft by the end of week one.`,
       action: null,
     };
   }
@@ -254,6 +284,7 @@ export function verdict(p: Project, f: FlightMath): Verdict {
 export function flightDotColor(p: Project, f: FlightMath): string {
   if (f.ended) return "var(--done)";
   if (f.noData) return "var(--info)";
+  if (earlyFlightRamping(f)) return "var(--info)";
   if (f.status === "on-track") return "var(--ok)";
   if (f.status.includes("critical")) return "var(--danger)";
   return "var(--warn)";
