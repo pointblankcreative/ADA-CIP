@@ -17,6 +17,7 @@ Alert thresholds (from CLAUDE.md):
 
 import json
 import logging
+import re
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal
@@ -58,6 +59,80 @@ def _float(v, default=0.0) -> float:
     if v is None:
         return default
     return float(v) if not isinstance(v, float) else v
+
+
+# ── Ad-set → line audience attribution ──────────────────────────────
+# Meta (and other ad-platform) rows in fact_digital_daily carry an ad_set_name
+# but no usable line_code: the scalar column is never populated, and
+# vw_fact_digital_daily derives line_codes from the ad set's leading number,
+# which collides across campaigns (a Conversion and a Reach campaign each number
+# their ad sets 01/02). When line_code attribution yields nothing for a line, we
+# match the ad set's audience text to the plan line's audience_name so per-line
+# spend is a real measurement instead of a budget-weighted estimate. Ad sets that
+# match no line stay unattributed and flow into the existing budget-weight group
+# split, so no spend is ever dropped.
+
+# Pure structural/stopword tokens that must never carry a match on their own.
+_AUDIENCE_STOPWORDS = frozenset({
+    "the", "and", "of", "a", "an", "in", "on", "for", "to", "with",
+    "at", "by", "or", "ad", "ads", "set", "audience", "targeting",
+})
+
+
+def _audience_tokens(s: str | None) -> set[str]:
+    """Normalise a label to a set of significant tokens: lowercase, split on
+    non-alphanumerics, drop pure numbers + stopwords, and singularise (strip a
+    trailing 's' on tokens longer than 3) so 'Lookalikes' == 'Lookalike' and
+    'Attendees' == 'Attendee'."""
+    if not s:
+        return set()
+    out: set[str] = set()
+    for tok in re.split(r"[^a-z0-9]+", s.lower()):
+        if not tok or tok.isdigit() or tok in _AUDIENCE_STOPWORDS:
+            continue
+        if len(tok) > 3 and tok.endswith("s"):
+            tok = tok[:-1]
+        out.add(tok)
+    return out
+
+
+def _match_adset_to_line_id(
+    ad_set_name: str | None, candidates: list[dict]
+) -> str | None:
+    """Return the line_id whose audience_name best matches ``ad_set_name``, or
+    None when there is no confident, unambiguous match.
+
+    Score = |audience_tokens ∩ adset_tokens| / |audience_tokens| (how much of the
+    plan line's audience label appears in the ad set name). A match requires:
+      • score ≥ 0.5, and
+      • at least 2 overlapping tokens OR a full (100%) audience match — so a
+        single generic shared token (e.g. 'list') can't carry a match, and
+      • a strict single winner — ties are treated as ambiguous → no match.
+    ``candidates`` should exclude bundle children (their spend is handled by the
+    bundle aggregate)."""
+    adset = _audience_tokens(ad_set_name)
+    if not adset:
+        return None
+    scored: list[tuple[float, int, str]] = []
+    for line in candidates:
+        aud = _audience_tokens(line.get("audience_name"))
+        if not aud:
+            continue
+        overlap = len(aud & adset)
+        if overlap == 0:
+            continue
+        scored.append((overlap / len(aud), overlap, line["line_id"]))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    top_score, top_overlap, top_line_id = scored[0]
+    if top_score < 0.5:
+        return None
+    if top_overlap < 2 and top_score < 0.999:
+        return None
+    if len(scored) > 1 and scored[1][0] == top_score:
+        return None  # ambiguous — two lines match the ad set equally well
+    return top_line_id
 
 
 def _count_active_days(
@@ -357,6 +432,7 @@ def run_pacing_for_project(
     # query spend once per unique flight window instead of once per line.
     spend_by_group: dict[tuple, float] = {}          # (platform_id, fs, fe) → total_spend
     spend_by_line_code: dict[str, float] = {}        # line_code → total_spend
+    spend_by_line_audience: dict[str, float] = {}    # line_id → ad-set-name-matched spend
     first_spend_date_by_line: dict[str, date] = {}   # line_code → first_spend_date (C1 fix)
 
     flight_groups: dict[tuple, list[dict]] = {}
@@ -451,6 +527,51 @@ def run_pacing_for_project(
                 if isinstance(fsd, str):
                     fsd = date.fromisoformat(fsd)
                 first_spend_date_by_line[lc] = fsd
+
+        # ── 3a. Audience-name attribution (ad_set_name → line) ──────
+        # Pull this group's per-ad-set spend and match each ad set to a plan
+        # line by audience text. Matched spend is attributed directly (a
+        # measurement); unmatched ad sets stay in spend_by_group and flow
+        # through the budget-weight residual split below, so nothing is lost.
+        # Bundle children are excluded — their spend is handled by the bundle
+        # aggregate, not by an audience match.
+        audience_candidates = [
+            l for l in group_lines
+            if l.get("bundle_role") not in ("suggested_child", "confirmed_child")
+            and l.get("audience_name")
+        ]
+        if audience_candidates:
+            if fs is not None and fe is not None:
+                adset_sql = f"""
+                    SELECT ad_set_name, SUM(spend) AS spend
+                    FROM {bq.table('fact_digital_daily')}
+                    WHERE project_code = @project_code
+                        AND platform_id = @platform_id
+                        AND date >= @flight_start
+                        AND date <= @flight_end
+                        AND date <= @as_of_date
+                        AND spend > 0
+                    GROUP BY ad_set_name
+                """
+            else:
+                adset_sql = f"""
+                    SELECT ad_set_name, SUM(spend) AS spend
+                    FROM {bq.table('fact_digital_daily')}
+                    WHERE project_code = @project_code
+                        AND platform_id = @platform_id
+                        AND date <= @as_of_date
+                        AND spend > 0
+                    GROUP BY ad_set_name
+                """
+            for ar in bq.run_query(adset_sql, params):
+                matched_id = _match_adset_to_line_id(
+                    ar.get("ad_set_name"), audience_candidates
+                )
+                if matched_id:
+                    spend_by_line_audience[matched_id] = (
+                        spend_by_line_audience.get(matched_id, 0.0)
+                        + _float(ar.get("spend"))
+                    )
 
     # ── 3b. Bundle spend aggregation (PR 4) ─────────────────────────
     # For each bundle, query TOTAL spend where ANY of the bundle's member
@@ -563,6 +684,7 @@ def run_pacing_for_project(
             gbid = gl.get("bundle_id")
             glc = gl.get("line_code")
             glc_spend = spend_by_line_code.get(glc, 0.0) if glc else 0.0
+            ga_spend = spend_by_line_audience.get(gl["line_id"], 0.0)
             gb_spend = (
                 bundle_spend.get(gbid, 0.0)
                 if gbid and role in ("suggested_parent", "confirmed_parent")
@@ -574,6 +696,8 @@ def run_pacing_for_project(
                     seen_bundles.add(gbid)
             elif glc_spend > 0:
                 claimed += glc_spend
+            elif ga_spend > 0:
+                claimed += ga_spend
             else:
                 pool_budget += _float(gl.get("budget"))
         group_residual_spend[gkey] = max(0.0, spend_by_group.get(gkey, 0.0) - claimed)
@@ -628,10 +752,10 @@ def run_pacing_for_project(
             elapsed_days_raw = (min(today, flight_end) - flight_start).days + 1
             elapsed_active_days = max(0, min(elapsed_days_raw, total_active_days))
 
-        # Match actual spend FIRST: bundle > line_code > flight-group split.
-        # Computed before line_status because the grace-period check below now
-        # keys off whether the line has ANY attributed spend, not just
-        # line_code-attributed spend.
+        # Match actual spend FIRST: bundle > line_code > audience-name match >
+        # flight-group split. Computed before line_status because the grace-
+        # period check below now keys off whether the line has ANY attributed
+        # spend, not just line_code-attributed spend.
         group_key = (platform_id, flight_start, flight_end)
         actual_spend = 0.0
         if bundle_role in ("suggested_parent", "confirmed_parent") and bundle_id:
@@ -643,6 +767,12 @@ def run_pacing_for_project(
                 actual_spend = spend_by_line_code[line_code]
         elif line_code and line_code in spend_by_line_code:
             actual_spend = spend_by_line_code[line_code]
+        # Audience-name match (ad_set_name → this line's audience_name): used when
+        # bundle + line_code attribution found nothing for the line, but BEFORE
+        # the budget-weight group split, so a line with a matching ad set gets a
+        # real measurement instead of a proportional estimate.
+        if actual_spend == 0.0 and spend_by_line_audience.get(line_id, 0.0) > 0:
+            actual_spend = spend_by_line_audience[line_id]
         if actual_spend == 0.0 and platform_id and group_key in spend_by_group:
             # Split only the RESIDUAL (unclaimed) group spend across only the
             # still-unattributed lines, so spend already claimed by line_code or
