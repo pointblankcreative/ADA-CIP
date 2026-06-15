@@ -456,12 +456,12 @@ class TestGracePeriodSpendDetection:
         assert result["alerts"] == 0
 
 
-class TestBlockingGridLagFloor:
-    """Regression (26023 Meta): a live line whose blocking-chart active weeks
-    start AFTER the as-of date (the grid lags the flight) must not collapse to a
-    0 planned baseline when real spend is already attributed. Without the floor
-    it renders 'active, 0% paced' and, because its baseline is 0, drops out of
-    the project pacing denominator and inflates overall pacing.
+class TestGridIgnoredForDayCount:
+    """Regression (26023 Meta): day counts come from the authoritative flight
+    dates, NOT the blocking chart. A Monday-aligned grid whose active weeks lag
+    the flight start must not change how many days a line has been active — doing
+    so understated the baseline and produced false overpacing (read 250% on day
+    5). The blocking chart is a within-week weighting input only.
     """
 
     # Blocking grid whose first ACTIVE week (Jun 15) starts the day AFTER the
@@ -480,12 +480,12 @@ class TestBlockingGridLagFloor:
     @patch("backend.services.pacing.bq")
     @patch("backend.services.pacing._write_budget_tracking")
     @patch("backend.services.pacing._write_alerts")
-    def test_grid_lag_with_spend_floors_to_flight_proration(
+    def test_grid_lag_with_spend_uses_flight_dates(
         self, mock_alerts, mock_tracking, mock_bq, mock_date
     ):
-        """Grid yields 0 elapsed active days, but real spend is attributed →
-        planned_spend_to_date floors to the flight-date proration (4 of 39 days),
-        so the line paces >0% instead of a false 0%."""
+        """Grid active weeks start after flight_start, but the day count comes
+        from the flight dates regardless: 4 of 39 days elapsed →
+        19500 / 39 * 4 = 2000, so the line paces against a real baseline."""
         mock_date.today.return_value = date(2026, 6, 14)
         mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
@@ -520,12 +520,13 @@ class TestBlockingGridLagFloor:
     @patch("backend.services.pacing.bq")
     @patch("backend.services.pacing._write_budget_tracking")
     @patch("backend.services.pacing._write_alerts")
-    def test_grid_lag_without_spend_stays_zero(
+    def test_grid_lag_without_spend_still_uses_flight_baseline(
         self, mock_alerts, mock_tracking, mock_bq, mock_date
     ):
-        """Surgical: the floor only fires when spend is attributed. Same lagging
-        grid, NO spend → keep the grid's verdict (0 planned, honestly awaiting
-        delivery) so a legitimately-dark week is never faked into a baseline."""
+        """Same lagging grid, NO spend: the baseline still comes from the flight
+        dates (4 of 39 → 2000), so an in-flight line that isn't delivering reads
+        as honestly under-pacing (0% of a real baseline) rather than being hidden
+        by the grid. Flight dates, not the grid, decide the line is live."""
         mock_date.today.return_value = date(2026, 6, 14)
         mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
         mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
@@ -551,8 +552,54 @@ class TestBlockingGridLagFloor:
 
         row = mock_tracking.call_args[0][2][0]
         assert row["actual_spend_to_date"] == 0.0
-        assert row["planned_spend_to_date"] == 0.0
+        # 4 of 39 flight days → a real baseline, NOT 0 (the grid no longer
+        # suppresses it). actual 0 against a real baseline = honest 0% under-pace.
+        assert row["planned_spend_to_date"] == pytest.approx(19500 / 39 * 4)
         assert row["pacing_percentage"] == 0.0
+
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_grid_partial_lag_uses_flight_dates_not_grid(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date
+    ):
+        """The exact 26023 Meta bug. As-of Jun 15 the lagging grid yields
+        elapsed=1 of 35 active days, so the OLD grid-based baseline was
+        19500/35*1 = 557.14, reading ~250% over. Day counts now come from the
+        flight dates: 5 of 39 → 19500/39*5 = 2500, a realistic baseline (~56%)."""
+        mock_date.today.return_value = date(2026, 6, 15)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda name: f"`proj.ds.{name}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+
+        lines = [
+            _make_line("L1", "meta", 19500, date(2026, 6, 11), date(2026, 7, 19)),
+        ]
+
+        def query_router(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return self._WEEKS
+            if "SUM(spend)" in sql:
+                return [{"total_spend": 1391.47}]
+            return []
+
+        mock_bq.run_query.side_effect = query_router
+
+        run_pacing_for_project("26023", date(2026, 6, 15))
+
+        row = mock_tracking.call_args[0][2][0]
+        # Flight-date baseline (5 of 39 → 2500), NOT the grid's 19500/35*1=557.14.
+        assert row["planned_spend_to_date"] == pytest.approx(19500 / 39 * 5)
+        assert row["planned_spend_to_date"] != pytest.approx(19500 / 35 * 1)
+        # Realistic pacing (~55.7%), not the false ~250%.
+        assert row["pacing_percentage"] == pytest.approx(
+            1391.47 / (19500 / 39 * 5) * 100, abs=0.1
+        )
+        assert row["pacing_percentage"] < 100
 
 
 # ── Test: _float helper ──────────────────────────────────────────
