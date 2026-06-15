@@ -1068,6 +1068,9 @@ class TestAudienceAttributionInPacing:
 
         def query_router(sql, params=None):
             if "media_plan_lines" in sql:
+                # Regression guard: the matcher can only run if the lines query
+                # actually selects audience_name (it silently no-ops without it).
+                assert "audience_name" in sql
                 return lines
             if "blocking_chart_weeks" in sql:
                 return []
