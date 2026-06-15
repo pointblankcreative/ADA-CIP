@@ -647,11 +647,14 @@ def _ensure_schema_migrations(mtl: bigquery.Client) -> None:
             budget FLOAT64,
             audience_name STRING,
             is_direct_override BOOLEAN,
+            line_code STRING,
             updated_at TIMESTAMP
         )""",
-        # is_direct_override added via ALTER too, so existing prod override
-        # tables gain the column (CREATE IF NOT EXISTS is a no-op once it exists).
+        # is_direct_override + line_code added via ALTER too, so existing prod
+        # override tables gain the columns (CREATE IF NOT EXISTS is a no-op once
+        # the table exists). line_code is the sturdy re-apply key.
         f"ALTER TABLE {prefix}.media_plan_line_overrides` ADD COLUMN IF NOT EXISTS is_direct_override BOOLEAN",
+        f"ALTER TABLE {prefix}.media_plan_line_overrides` ADD COLUMN IF NOT EXISTS line_code STRING",
         # Multi-plan support (2026-04-25): join table mapping projects to one or
         # more media plan sheets. Backfill from dim_projects.media_plan_sheet_id
         # is handled by the live migration script
@@ -2600,27 +2603,43 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
     """
     prefix = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}"
 
-    # Apply overrides that still have matching lines (widened key)
+    # An override matches a line by line_code when both carry one (the sturdy
+    # key — survives budget edits and re-parses), else by platform + budget
+    # (±1%) for lines with no code. OR-ing them keeps the original budget key as
+    # a fallback so pre-existing rows (line_code NULL) still match.
+    match = (
+        "(((o.line_code IS NOT NULL AND o.line_code != '') AND l.line_code = o.line_code) "
+        "OR (l.platform_id = o.platform_id "
+        "AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01))"
+    )
+
+    # Re-apply audience_name overrides. Guard with o.audience_name IS NOT NULL:
+    # a direct-only override row carries audience_name NULL and must NOT blank
+    # the line's audience.
     sql_apply = f"""
         UPDATE {prefix}.media_plan_lines` l
         SET l.audience_name = o.audience_name
         FROM {prefix}.media_plan_line_overrides` o
         WHERE l.project_code = o.project_code
-          AND l.platform_id = o.platform_id
-          AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
-          AND COALESCE(l.audience_name, '') != COALESCE(o.audience_name, '')
           AND l.project_code = @pc
+          AND o.audience_name IS NOT NULL
+          AND {match}
+          AND COALESCE(l.audience_name, '') != COALESCE(o.audience_name, '')
     """
 
-    # Clean up overrides whose lines no longer exist (prevent stale rows)
+    # Clean up stale override rows whose line no longer exists — but ONLY rows
+    # that carry no manual is_direct choice. A transient budget change or a
+    # re-parse must never permanently drop the user's direct/tracked override;
+    # it just doesn't re-apply this sync and re-applies once the line matches
+    # again. Audience-only stale rows are still pruned.
     sql_cleanup = f"""
         DELETE FROM {prefix}.media_plan_line_overrides` o
         WHERE o.project_code = @pc
+          AND o.is_direct_override IS NULL
           AND NOT EXISTS (
               SELECT 1 FROM {prefix}.media_plan_lines` l
               WHERE l.project_code = o.project_code
-                AND l.platform_id = o.platform_id
-                AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
+                AND {match}
           )
     """
 
@@ -2646,10 +2665,9 @@ def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
         SET l.is_direct_override = o.is_direct_override
         FROM {prefix}.media_plan_line_overrides` o
         WHERE l.project_code = o.project_code
-          AND l.platform_id = o.platform_id
-          AND ABS(l.budget - o.budget) / GREATEST(o.budget, 1) < 0.01
-          AND o.is_direct_override IS NOT NULL
           AND l.project_code = @pc
+          AND o.is_direct_override IS NOT NULL
+          AND {match}
     """
     try:
         result = mtl.query(sql_apply_isdirect, job_config=param_config).result()
