@@ -17,18 +17,28 @@
  * grey placeholder UI; only the creative carries colour.
  */
 import { useState } from "react";
-import { Heart, MessageCircle, Send } from "lucide-react";
+import { Heart, MessageCircle, Play, Send } from "lucide-react";
 
-type Placement = "phone" | "feed" | "web";
+type Placement = "phone" | "feed" | "web" | "instream";
 
 const SKEL = "color-mix(in srgb, var(--fg) 10%, transparent)";
 const SKEL_STRONG = "color-mix(in srgb, var(--fg) 16%, transparent)";
 
-function resolvePlacement(platforms: string[], ratio: number | null): Placement {
+function resolvePlacement(
+  platforms: string[],
+  ratio: number | null,
+  type: "video" | "static"
+): Placement {
   const p = platforms.map((x) => x.toLowerCase());
   const has = (...keys: string[]) =>
     p.some((x) => keys.some((k) => x.includes(k)));
   if (has("tiktok", "snap")) return "phone";
+  // Video: vertical cuts run as Reels / Shorts (phone chrome); anything
+  // landscape or square reads as an in-stream player (YouTube / news pre-roll).
+  if (type === "video") {
+    if (ratio != null && ratio < 0.72) return "phone";
+    return "instream";
+  }
   if (
     has(
       "stackadapt",
@@ -44,7 +54,7 @@ function resolvePlacement(platforms: string[], ratio: number | null): Placement 
     )
   )
     return "web";
-  // Meta / Instagram / unknown: shape decides.
+  // Meta / Instagram / unknown static: shape decides.
   if (ratio != null && ratio < 0.72) return "phone"; // 9:16-ish
   if (ratio != null && ratio > 1.5) return "web"; // wide banner
   return "feed"; // 1:1 / 4:5
@@ -136,8 +146,8 @@ function FeedSkeleton({ media }: { media: React.ReactNode }) {
       style={{ width: 188 }}
     >
       {/* header: avatar + handle */}
-      <div className="flex items-center gap-2 px-2.5 py-2">
-        <Dot size={20} strong />
+      <div className="flex items-center gap-2 px-2.5 py-1.5">
+        <Dot size={18} strong />
         <div className="flex flex-col gap-1">
           <Bar w={64} h={5} strong />
           <Bar w={40} h={4} />
@@ -151,15 +161,14 @@ function FeedSkeleton({ media }: { media: React.ReactNode }) {
       {/* the creative, square */}
       <div className="aspect-square w-full overflow-hidden bg-surface-sunken">{media}</div>
       {/* action bar */}
-      <div className="flex items-center gap-3 px-2.5 pt-2 text-fg-faint">
+      <div className="flex items-center gap-3 px-2.5 pb-1 pt-1.5 text-fg-faint">
         <Heart className="h-[15px] w-[15px]" />
         <MessageCircle className="h-[15px] w-[15px]" />
         <Send className="h-[15px] w-[15px]" />
       </div>
-      {/* caption lines */}
-      <div className="flex flex-col gap-1 px-2.5 pb-2.5 pt-2">
-        <Bar w="85%" h={5} />
-        <Bar w="55%" h={5} />
+      {/* caption line */}
+      <div className="px-2.5 pb-2">
+        <Bar w="80%" h={5} />
       </div>
     </div>
   );
@@ -230,6 +239,49 @@ function WebSkeleton({
   );
 }
 
+/* ── in-stream: YouTube / news pre-roll video player ─────────────── */
+
+function InstreamSkeleton({ media }: { media: React.ReactNode }) {
+  return (
+    <div
+      className="overflow-hidden rounded-md border border-line-soft bg-surface-card shadow-hard"
+      style={{ width: 248 }}
+    >
+      {/* 16:9 player */}
+      <div className="relative w-full overflow-hidden bg-black" style={{ aspectRatio: "16 / 9" }}>
+        {media}
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-black/45">
+            <Play className="h-4 w-4 text-white" fill="currentColor" />
+          </div>
+        </div>
+        <span className="absolute left-1.5 top-1.5 rounded-[2px] bg-accent px-1 py-px font-mono text-[7px] font-bold uppercase tracking-[0.1em] text-on-accent">
+          Ad
+        </span>
+        <span className="absolute bottom-2 right-1.5 rounded-[2px] bg-black/55 px-1.5 py-0.5 font-mono text-[7.5px] text-white/90">
+          Skip ad
+        </span>
+        {/* scrubber */}
+        <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-white/25">
+          <div className="h-full bg-accent" style={{ width: "28%" }} />
+        </div>
+      </div>
+      {/* title + channel row, so it reads as a watch page */}
+      <div className="flex flex-col gap-1.5 px-2.5 py-2.5">
+        <Bar w="92%" h={6} strong />
+        <Bar w="58%" h={6} strong />
+        <div className="mt-1 flex items-center gap-2">
+          <Dot size={18} strong />
+          <div className="flex flex-col gap-1">
+            <Bar w={72} h={4} />
+            <Bar w={46} h={4} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── the wrapper ─────────────────────────────────────────────────── */
 
 export function PlacementFrame({
@@ -244,7 +296,7 @@ export function PlacementFrame({
   alt?: string;
 }) {
   const [ratio, setRatio] = useState<number | null>(null);
-  const placement = resolvePlacement(platforms, ratio);
+  const placement = resolvePlacement(platforms, ratio, type);
 
   const media = imageUrl ? (
     // eslint-disable-next-line @next/next/no-img-element
@@ -268,9 +320,10 @@ export function PlacementFrame({
   );
 
   return (
-    <div className="relative flex items-center justify-center rounded-md bg-surface-sunken px-3 py-3" style={{ minHeight: 224 }}>
+    <div className="relative flex items-center justify-center rounded-md bg-surface-sunken px-3 py-2" style={{ minHeight: 200 }}>
       {placement === "phone" && <PhoneSkeleton media={media} />}
       {placement === "feed" && <FeedSkeleton media={media} />}
+      {placement === "instream" && <InstreamSkeleton media={media} />}
       {placement === "web" && <WebSkeleton media={media} ratio={ratio} />}
       {/* media-type chip, kept from the old frame */}
       <span className="absolute left-2 top-2 z-10 whitespace-nowrap rounded-xs border border-line-soft bg-surface-card px-1.5 py-0.5 font-mono text-[8.5px] font-semibold tracking-[0.1em] text-fg-muted">
