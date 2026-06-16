@@ -1,6 +1,10 @@
-/** Exported for the few places that build asset URLs (the creative
- * image proxy returns API-relative paths the UI must absolutize). */
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+/** Same-origin base. The browser now calls the frontend's own /api/* path,
+ * which a server-side proxy (app/api/[...path]/route.ts) forwards to the real
+ * backend with a Cloud Run identity token. Empty string = same origin, so the
+ * few places that build asset URLs by concatenating API_BASE + an /api-relative
+ * path stay same-origin and route through the proxy too. The backend URL itself
+ * lives in NEXT_PUBLIC_API_URL, now read only by that proxy. */
+export const API_BASE = "";
 
 export async function apiFetch<T>(
   path: string,
