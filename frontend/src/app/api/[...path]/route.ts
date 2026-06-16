@@ -52,77 +52,19 @@ async function getIdToken(audience: string): Promise<string | null> {
 
 async function proxy(request: Request): Promise<Response> {
   const url = new URL(request.url);
-
-  // ---- TEMP diagnostic (remove after the token issue is fixed): /api/__proxydebug
-  // Reports, for the current backend URL and the canonical project-number URL,
-  // whether a token mints, its aud/email claims, and how the locked backend
-  // responds. Same-origin + behind the frontend IAP, so not publicly reachable.
-  if (url.pathname === "/api/__proxydebug") {
-    const mintRaw = async (audience: string): Promise<string | null> => {
-      try {
-        const r = await fetch(
-          "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=" +
-            encodeURIComponent(audience),
-          { headers: { "Metadata-Flavor": "Google" }, cache: "no-store" },
-        );
-        if (!r.ok) return null;
-        return (await r.text()).trim() || null;
-      } catch {
-        return null;
-      }
-    };
-    const canonical = "https://cip-backend-staging-807520113440.northamerica-northeast1.run.app";
-    const candidates: Record<string, string> = { legacy: BACKEND_URL, canonical };
-    const out: Record<string, unknown> = {};
-    for (const name of Object.keys(candidates)) {
-      const base = candidates[name];
-      const tok = await mintRaw(base);
-      const isJwt = tok !== null && tok.split(".").length === 3;
-      let aud: string | null = null;
-      let email: string | null = null;
-      if (tok && isJwt) {
-        try {
-          const payload = JSON.parse(
-            Buffer.from(tok.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
-          ) as { aud?: string; email?: string };
-          aud = payload.aud ?? null;
-          email = payload.email ?? null;
-        } catch {
-          aud = "DECODE_ERROR";
-        }
-      }
-      let followTest: Record<string, unknown>;
-      try {
-        const h = new Headers();
-        if (tok && isJwt) h.set("authorization", `Bearer ${tok}`);
-        const u = await fetch(`${base}/api/orphan-projects`, { headers: h, redirect: "follow", cache: "no-store" });
-        let finalHost: string | null = null;
-        try {
-          finalHost = new URL(u.url).host;
-        } catch {
-          finalHost = null;
-        }
-        followTest = { status: u.status, redirected: u.redirected, finalHost };
-      } catch (e) {
-        followTest = { fetchError: String(e).slice(0, 80) };
-      }
-      out[name] = { base, tokenMinted: isJwt, tokenAud: aud, tokenEmail: email, followTest };
-    }
-    return new Response(JSON.stringify(out, null, 2), {
-      headers: { "content-type": "application/json" },
-      status: 200,
-    });
-  }
-  // ---- end diagnostic ----
-
   const target = `${BACKEND_URL}${url.pathname}${url.search}`;
 
-  const headers = new Headers(request.headers);
-  headers.delete("host");
-  headers.delete("content-length");
-  headers.delete("connection");
-  headers.delete("cookie"); // don't leak the frontend's IAP session to the backend
-  headers.delete("x-goog-iap-jwt-assertion"); // frontend-only IAP assertion
+  // Build a clean, minimal header set rather than forwarding the browser's
+  // incoming request headers. Some of those (the IAP identity headers and the
+  // x-forwarded-* set added on the way into the frontend) cause the locked
+  // backend's Cloud Run front end to validate our identity token against the
+  // wrong audience and reject it with 401, even though the token itself is valid.
+  // Forward only what the backend API needs, plus our service-account bearer.
+  const headers = new Headers();
+  const contentType = request.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+  const accept = request.headers.get("accept");
+  if (accept) headers.set("accept", accept);
 
   const token = await getIdToken(BACKEND_URL);
   if (token) headers.set("authorization", `Bearer ${token}`);
