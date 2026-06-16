@@ -60,29 +60,54 @@ async function proxy(request: Request): Promise<Response> {
   // backend's Cloud Run front end to validate our identity token against the
   // wrong audience and reject it with 401, even though the token itself is valid.
   // Forward only what the backend API needs, plus our service-account bearer.
-  const headers = new Headers();
   const contentType = request.headers.get("content-type");
-  if (contentType) headers.set("content-type", contentType);
   const accept = request.headers.get("accept");
-  if (accept) headers.set("accept", accept);
-
   const token = await getIdToken(BACKEND_URL);
-  if (token) headers.set("authorization", `Bearer ${token}`);
 
-  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  // Clean header set, rebuilt for every hop. We follow redirects MANUALLY rather
+  // than with redirect:"follow" because fetch strips the Authorization header when
+  // it follows a redirect itself, which made the backend's trailing-slash 307s
+  // (e.g. /api/projects/) come back 403 once the backend required auth. Following
+  // server-side also keeps the browser from ever seeing the backend's redirect.
+  const buildHeaders = (): Headers => {
+    const h = new Headers();
+    if (contentType) h.set("content-type", contentType);
+    if (accept) h.set("accept", accept);
+    if (token) h.set("authorization", `Bearer ${token}`);
+    return h;
+  };
 
+  let method = request.method;
+  let body: ArrayBuffer | undefined =
+    method !== "GET" && method !== "HEAD" ? await request.arrayBuffer() : undefined;
+
+  let currentTarget = target;
   let upstream: Response;
   try {
-    upstream = await fetch(target, {
-      method: request.method,
-      headers,
-      body: hasBody ? await request.arrayBuffer() : undefined,
-      // Follow the backend's own redirects (FastAPI's trailing-slash 307s and
-      // any http->https upgrade) SERVER-SIDE, so the browser never receives an
-      // absolute http:// backend redirect that it would block as mixed content.
-      redirect: "follow",
-      cache: "no-store",
-    });
+    let hops = 0;
+    for (;;) {
+      upstream = await fetch(currentTarget, {
+        method,
+        headers: buildHeaders(),
+        body,
+        redirect: "manual",
+        cache: "no-store",
+      });
+      const location = upstream.headers.get("location");
+      if (!location || upstream.status < 300 || upstream.status >= 400 || hops >= 5) {
+        break;
+      }
+      hops += 1;
+      // 303 (and 301/302 on POST) downgrade to GET without a body, per spec.
+      if (
+        upstream.status === 303 ||
+        ((upstream.status === 301 || upstream.status === 302) && method === "POST")
+      ) {
+        method = "GET";
+        body = undefined;
+      }
+      currentTarget = new URL(location, currentTarget).toString();
+    }
   } catch {
     return new Response("Upstream request failed", { status: 502 });
   }
