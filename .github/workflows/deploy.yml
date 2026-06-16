@@ -89,6 +89,18 @@ jobs:
             --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
             --role="roles/run.invoker"
 
+      - name: Enforce IAM invoker check (keep backend private)
+        run: |
+          # Re-assert the Cloud Run IAM auth check on every deploy. Prod once
+          # carried run.googleapis.com/invoker-iam-disabled=true, which makes Cloud
+          # Run skip auth entirely - the backend was reachable anonymously even with
+          # no allUsers binding, and deploy.yml did not manage that flag. This makes
+          # the private posture declarative. Idempotent: a no-op when already on.
+          gcloud run services update ${{ needs.determine-environment.outputs.backend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --invoker-iam-check
+
       - name: Get backend URL
         id: backend_url
         run: |
