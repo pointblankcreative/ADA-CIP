@@ -74,7 +74,20 @@ jobs:
             --timeout=300 \
             --min-instances=0 \
             --max-instances=5 \
-            --allow-unauthenticated
+            --no-allow-unauthenticated
+
+      - name: Lock backend to the frontend service account
+        run: |
+          # Backend is private (no --allow-unauthenticated). Grant invoke only to
+          # the frontend's runtime service account so the same-origin proxy can
+          # reach it. The frontend deploy sets no --service-account, so it runs as
+          # the project default compute SA. Idempotent: safe to re-run each deploy.
+          PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format='value(projectNumber)')
+          gcloud run services add-iam-policy-binding ${{ needs.determine-environment.outputs.backend_service }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+            --role="roles/run.invoker"
 
       - name: Get backend URL
         id: backend_url
@@ -90,7 +103,9 @@ jobs:
           sleep 5
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.backend_url.outputs.url }}/health")
           echo "Health check status: $STATUS"
-          if [[ "$STATUS" != "200" ]]; then
+          # 403 is expected and healthy now that the backend requires auth: it means
+          # Cloud Run is up and correctly refusing the unauthenticated probe.
+          if [[ "$STATUS" != "200" && "$STATUS" != "403" ]]; then
             echo "::warning::Backend health check returned $STATUS"
           fi
 
