@@ -38,6 +38,7 @@ SELECT
     IFNULL(Session_source___GA4__Google_Analytics, '(not set)') AS session_source,
     IFNULL(Session_medium___GA4__Google_Analytics, '(not set)') AS session_medium,
     IFNULL(Session_campaign___GA4__Google_Analytics, '(not set)') AS session_campaign,
+    {content_select} AS session_content,
     SUM(IF(Event_name___GA4__Google_Analytics = 'session_start',
            Sessions___GA4_event_based__Google_Analytics, 0)) AS sessions,
     SUM(IF(Event_name___GA4__Google_Analytics = 'page_view',
@@ -63,8 +64,48 @@ FROM `point-blank-ada.core_funnel_export.funnel_data`
 WHERE Property_ID___GA4__Google_Analytics IS NOT NULL
   AND Property_ID___GA4__Google_Analytics != ''
   {date_filter}
-GROUP BY Date, Property_ID___GA4__Google_Analytics, session_source, session_medium, session_campaign
+GROUP BY Date, Property_ID___GA4__Google_Analytics, session_source, session_medium, session_campaign{content_group_by}
 """
+
+# utm_content (the "manual ad content" GA4 dimension) is our machine-readable data
+# layer: "{project}-{campaign_id}-{adset_id}-{ad_id}". Funnel only exposes the column
+# once it is configured to pull that dimension, so we detect it at runtime and degrade
+# gracefully to a constant '(not set)' until then. Prefer the session-scoped column.
+CONTENT_COLUMN_SQL = """
+SELECT column_name
+FROM `point-blank-ada.core_funnel_export.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name = 'funnel_data'
+  AND LOWER(column_name) LIKE '%manual_ad_content%'
+ORDER BY
+  (CASE WHEN LOWER(column_name) LIKE 'session_manual_ad_content%' THEN 0 ELSE 1 END),
+  column_name
+LIMIT 1
+"""
+
+
+def _detect_content_column(us: bigquery.Client) -> str | None:
+    """Return the funnel_data column holding GA4 manual ad content (utm_content), or None."""
+    try:
+        rows = list(us.query(CONTENT_COLUMN_SQL).result())
+        return rows[0]["column_name"] if rows else None
+    except Exception:
+        logger.warning("Could not detect GA4 manual_ad_content column in funnel_data", exc_info=True)
+        return None
+
+
+def _build_select_sql(date_filter: str, content_column: str | None) -> str:
+    """Build the GA4 pivot SQL, wiring in the content column when funnel_data has it."""
+    if content_column:
+        content_select = f"IFNULL(`{content_column}`, '(not set)')"
+        content_group_by = ", session_content"
+    else:
+        content_select = "'(not set)'"
+        content_group_by = ""
+    return GA4_SELECT_SQL.format(
+        date_filter=date_filter,
+        content_select=content_select,
+        content_group_by=content_group_by,
+    )
 
 
 def _us_client() -> bigquery.Client:
@@ -143,12 +184,20 @@ def run_ga4_transformation(mode: str = "daily") -> dict:
     else:
         date_filter = ""
 
-    select_sql = GA4_SELECT_SQL.format(date_filter=date_filter)
-
     us = _us_client()
     mtl = _mtl_client()
 
     try:
+        # Detect the utm_content (manual ad content) column in funnel_data, if Funnel is
+        # pulling it yet. Absent → session_content defaults to '(not set)' (no breakage).
+        content_column = _detect_content_column(us)
+        if content_column:
+            logger.info("  GA4 content data-layer column detected: %s", content_column)
+        else:
+            logger.info("  No manual_ad_content column in funnel_data yet — "
+                        "session_content defaults to '(not set)'")
+        select_sql = _build_select_sql(date_filter, content_column)
+
         # Step 1: SELECT in US region
         logger.info("GA4 Transform [%s] started — reading from funnel_data (US)…", mode)
         job = us.query(select_sql)
@@ -186,6 +235,8 @@ def run_ga4_transformation(mode: str = "daily") -> dict:
         load_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            # Let the load add session_content to fact_ga4_daily if the ALTER hasn't run.
+            schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
         )
         load_job = mtl.load_table_from_json(data, TARGET_TABLE, job_config=load_config)
         load_job.result()
