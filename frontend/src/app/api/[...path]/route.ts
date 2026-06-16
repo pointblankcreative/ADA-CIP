@@ -17,8 +17,13 @@ export const dynamic = "force-dynamic";
 
 // The real backend URL. NEXT_PUBLIC_API_URL is set both at build (Dockerfile
 // ENV / cloudbuild) and at runtime (Cloud Run env var) to the backend service
-// URL; only this server-side proxy reads it now.
-const BACKEND_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/+$/, "");
+// URL; only this server-side proxy reads it now. Force https for the deployed
+// backend (env has it as http) so neither the ID-token audience nor a followed
+// redirect ever lands on an http URL.
+let BACKEND_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/+$/, "");
+if (BACKEND_URL.startsWith("http://") && !BACKEND_URL.includes("localhost")) {
+  BACKEND_URL = "https://" + BACKEND_URL.slice("http://".length);
+}
 
 // Cache the identity token per instance (Cloud Run ID tokens last ~1 hour).
 let tokenCache: { token: string; expiresAt: number } | null = null;
@@ -67,7 +72,10 @@ async function proxy(request: Request): Promise<Response> {
       method: request.method,
       headers,
       body: hasBody ? await request.arrayBuffer() : undefined,
-      redirect: "manual",
+      // Follow the backend's own redirects (FastAPI's trailing-slash 307s and
+      // any http->https upgrade) SERVER-SIDE, so the browser never receives an
+      // absolute http:// backend redirect that it would block as mixed content.
+      redirect: "follow",
       cache: "no-store",
     });
   } catch {
