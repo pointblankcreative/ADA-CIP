@@ -4,7 +4,9 @@ Covers:
   - GA4 transform SQL builder: wires in the content column when funnel_data has it,
     degrades to a constant '(not set)' (and no extra GROUP BY term) when it does not.
   - GA4 analytics resolution: look at the utm_content data layer first (auto-map by
-    project-code prefix), and fall back to the manual project_ga4_urls pattern otherwise.
+    project-code prefix), then the campaign-code naming convention
+    (LEFT(session_campaign, LEN(code)) = code), and finally fall back to the manual
+    project_ga4_urls pattern.
 """
 
 import asyncio
@@ -44,9 +46,10 @@ class TestBuildSelectSql:
 class _Router:
     """Dispatches mocked bq.run_query by SQL content and records the calls."""
 
-    def __init__(self, url_rows, content_rows, fallback_rows):
+    def __init__(self, url_rows, content_rows, campaign_rows, fallback_rows):
         self.url_rows = url_rows
         self.content_rows = content_rows
+        self.campaign_rows = campaign_rows
         self.fallback_rows = fallback_rows
         self.calls = []
 
@@ -56,6 +59,8 @@ class _Router:
             return self.url_rows
         if "session_content LIKE" in sql:
             return self.content_rows
+        if "LEFT(session_campaign" in sql:
+            return self.campaign_rows
         return self.fallback_rows
 
 
@@ -76,6 +81,7 @@ class TestAnalyticsContentFirst:
                 {"date": "2026-06-10", "sessions": 80, "page_views": 60, "conversions": 8},
                 {"date": "2026-06-11", "sessions": 20, "page_views": 15, "conversions": 2},
             ],
+            campaign_rows=[{"date": "2026-06-10", "sessions": 555, "conversions": 555}],
             fallback_rows=[{"date": "2026-06-10", "sessions": 999, "conversions": 999}],
         )
         _patch_bq(mock_bq, router)
@@ -87,7 +93,36 @@ class TestAnalyticsContentFirst:
         assert res.total_conversions == 10
         # looked up by the project-code prefix
         assert any(p and ("content_prefix", "26023-%") in p for _, p in router.calls)
-        # and never consulted the manual-pattern fallback
+        # content short-circuits before the campaign-convention and manual paths
+        assert not any("LEFT(session_campaign" in s for s, _ in router.calls)
+        assert not any("LOWER(session_campaign)" in s for s, _ in router.calls)
+
+
+class TestAnalyticsCampaignConvention:
+    @patch("backend.routers.ga4.bq")
+    @patch("backend.routers.ga4._ensure_table")
+    def test_uses_campaign_code_when_no_content(self, _ensure, mock_bq):
+        router = _Router(
+            # a manual mapping exists, but the convention path should win over it
+            url_rows=[{"id": "u1", "ga4_property_id": "491551036", "url_pattern": "26023", "label": "x"}],
+            content_rows=[],  # nothing tagged to the content-layer standard yet
+            campaign_rows=[
+                {"date": "2026-06-10", "sessions": 40, "page_views": 30, "conversions": 4},
+                {"date": "2026-06-11", "sessions": 10, "page_views": 8, "conversions": 1},
+            ],
+            fallback_rows=[{"date": "2026-06-10", "sessions": 999, "conversions": 999}],
+        )
+        _patch_bq(mock_bq, router)
+
+        res = asyncio.run(get_ga4_analytics("26023", start_date=None, end_date=None))
+
+        assert res.has_ga4 is True
+        assert res.total_sessions == 50
+        assert res.total_conversions == 5
+        # matched on the campaign-code convention, with the project code as the param
+        assert any("LEFT(session_campaign" in s for s, _ in router.calls)
+        assert any(p and ("campaign_code", "26023") in p for _, p in router.calls)
+        # the convention path wins over the manual fallback (never consulted)
         assert not any("LOWER(session_campaign)" in s for s, _ in router.calls)
 
 
@@ -97,7 +132,8 @@ class TestAnalyticsFallback:
     def test_falls_back_to_manual_pattern_when_no_content(self, _ensure, mock_bq):
         router = _Router(
             url_rows=[{"id": "u1", "ga4_property_id": "491551036", "url_pattern": "26023", "label": "x"}],
-            content_rows=[],  # nothing tagged to the standard yet
+            content_rows=[],  # nothing tagged to the standard
+            campaign_rows=[],  # campaign names don't follow the code convention either
             fallback_rows=[{"date": "2026-06-10", "sessions": 5, "conversions": 1}],
         )
         _patch_bq(mock_bq, router)
@@ -112,7 +148,7 @@ class TestAnalyticsFallback:
     @patch("backend.routers.ga4.bq")
     @patch("backend.routers.ga4._ensure_table")
     def test_no_content_and_no_mapping_reads_not_connected(self, _ensure, mock_bq):
-        router = _Router(url_rows=[], content_rows=[], fallback_rows=[])
+        router = _Router(url_rows=[], content_rows=[], campaign_rows=[], fallback_rows=[])
         _patch_bq(mock_bq, router)
 
         res = asyncio.run(get_ga4_analytics("26023", start_date=None, end_date=None))

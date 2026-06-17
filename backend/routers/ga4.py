@@ -228,11 +228,15 @@ async def get_ga4_analytics(
 ):
     """GA4 web analytics from fact_ga4_daily.
 
-    Look-first / fall-back resolution:
-      1) The utm_content data layer. If campaigns are tagged to the PB standard
-         (session_content = "{project}-{campaign_id}-{adset_id}-{ad_id}"), the project's
-         GA4 traffic auto-maps by its project-code prefix, with no manual config.
-      2) Otherwise fall back to the manually configured project_ga4_urls patterns
+    Resolution order (first match wins):
+      1) The utm_content data layer (ad-level precise). If campaigns are tagged to the
+         PB standard (session_content = "{project}-{campaign_id}-{adset_id}-{ad_id}"),
+         the project's GA4 traffic auto-maps by its project-code prefix, no manual config.
+      2) The campaign-code naming convention (project-level). Every PB campaign group
+         name starts with the project code, and GA4 stores it as session_campaign
+         (utm_campaign = campaign group name), so LEFT(session_campaign, LEN(code)) = code
+         attributes correctly-named traffic even without utm_content.
+      3) Otherwise fall back to the manually configured project_ga4_urls patterns
          (campaign/source/medium match) — the pre-existing behaviour.
     """
     _ensure_table()
@@ -288,7 +292,37 @@ async def get_ga4_analytics(
     if content_rows:
         return _summarize(content_rows, urls)
 
-    # 2) FALLBACK: manual project_ga4_urls patterns.
+    # 2) CONVENTION: the project code is the leading characters of every PB campaign
+    # group name, which GA4 stores as session_campaign (utm_campaign = campaign group
+    # name). Auto-attribute by LEFT(session_campaign, LEN(code)) = code, so correctly
+    # named traffic maps with no utm_content and no manual config. Scoped to this
+    # project_code; the only mis-attribution risk is non-PB traffic whose campaign
+    # coincidentally starts with these exact characters, and only when the content
+    # layer above matched nothing.
+    try:
+        campaign_rows = bq.run_query(
+            f"""
+            SELECT
+                date,
+                SUM(sessions) AS sessions,
+                SUM(page_views) AS page_views,
+                SUM(key_events) AS conversions
+            FROM {bq.table('fact_ga4_daily')}
+            WHERE session_campaign IS NOT NULL
+              AND LEFT(session_campaign, LENGTH(@campaign_code)) = @campaign_code
+              AND {date_sql}
+            GROUP BY date
+            ORDER BY date
+            """,
+            [bq.string_param("campaign_code", project_code), *date_params],
+        )
+    except Exception:
+        # session_campaign should always exist; guard anyway so we degrade to fallback.
+        campaign_rows = []
+    if campaign_rows:
+        return _summarize(campaign_rows, urls)
+
+    # 3) FALLBACK: manual project_ga4_urls patterns.
     if not url_rows:
         return GA4PerformanceResponse(has_ga4=False)
 
