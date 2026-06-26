@@ -28,6 +28,7 @@ import {
 import {
   buildTriageModel,
   formatEvidence,
+  OWNER_LABELS,
   PILLAR_LABELS,
   SIGNAL_EVIDENCE,
   SIGNAL_MEANINGS,
@@ -425,7 +426,16 @@ function DgActCard({
               Suggested move
             </span>
             <span className="mx-1.5 text-fg-faint">→</span>
-            <span className="font-semibold text-fg-secondary">{s.action}</span>
+            <span className="font-semibold text-fg-secondary">{s.action.action}</span>
+            <span className="ml-1.5 whitespace-nowrap rounded-xs border border-line bg-surface-sunken px-1.5 py-0.5 text-[11px] font-medium text-fg-muted">
+              {OWNER_LABELS[s.action.owner]}
+            </span>
+            {s.action.hedge && (
+              <span className="text-fg-faint"> ({s.action.hedge})</span>
+            )}
+            {s.action.platform && (
+              <span className="ml-1 text-fg-muted">Take action in {s.action.platform}.</span>
+            )}
           </p>
         )}
       </div>

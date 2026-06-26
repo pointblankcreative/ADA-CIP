@@ -46,31 +46,58 @@ export function signalPillar(id: string): string | null {
    source. A future engine version can supply per-evaluation actions and
    this map becomes the fallback. Unknown IDs simply render no chip. */
 
-export const SIGNAL_ACTIONS: Record<string, string> = {
+export type SignalOwner = "Media" | "Trading" | "Creative" | "Web" | "Client";
+
+/** Display label for an owner tag. Sentence case, deliberately NOT the
+ *  mono-uppercase styling the platform/pillar chips use, so an owner can
+ *  never be misread as a platform. */
+export const OWNER_LABELS: Record<SignalOwner, string> = {
+  Media: "Media team",
+  Trading: "Trading desk",
+  Creative: "Creative team",
+  Web: "Web team",
+  Client: "Client",
+};
+
+export interface SignalAction {
+  /** The suggested move itself, advisory, never commanding. */
+  action: string;
+  /** Team that typically owns this move (routing, not a command). */
+  owner: SignalOwner;
+  /** Optional caveat where the move may be constrained by an outside
+   *  party (contracts, IO minimums, DSP or deal availability, budget
+   *  caps, creative in flight, landing-page ownership). */
+  hedge?: string;
+  /** Optional "take action in <platform>" pointer. Left unset for now:
+   *  the worst platform is per-evaluation, not constant per signal. */
+  platform?: string;
+}
+
+export const SIGNAL_ACTIONS: Record<string, SignalAction> = {
   // Persuasion · Distribution
-  D1: "Rebalance budget toward efficient-reach lines", // Reach Attainment
-  D2: "Consolidate audiences to build frequency", // Frequency Adequacy
-  D3: "Rebalance platform budgets to even out delivery", // Frequency Distribution
-  D4: "Trim overlapping audiences and push new reach", // Incremental Reach
-  D5: "Confirm platform delivery and smooth daily pacing", // Delivery Cadence
+  D1: { action: "Rebalance budget toward efficient-reach lines", owner: "Media", hedge: "where contract or IO minimums allow" }, // Reach Attainment
+  D2: { action: "Consolidate audiences to build frequency", owner: "Media" }, // Frequency Adequacy
+  D3: { action: "Rebalance platform budgets to even out delivery", owner: "Media" }, // Frequency Distribution
+  D4: { action: "Trim overlapping audiences and push new reach", owner: "Trading", hedge: "subject to DSP and deal availability" }, // Incremental Reach
+  D5: { action: "Confirm platform delivery and smooth daily pacing", owner: "Media" }, // Delivery Cadence
   // Persuasion · Attention
-  A1: "Test shorter cuts or stronger openings", // Video Completion Quality
-  A3: "Shift spend to higher-viewability placements", // Viewability
-  A4: "Refresh the creative rotation", // Focused View
-  A5: "Rotate in fresh creative this week", // Creative Fatigue
+  A1: { action: "Test shorter cuts or stronger openings", owner: "Creative" }, // Video Completion Quality
+  A3: { action: "Shift spend to higher-viewability placements", owner: "Trading" }, // Viewability
+  A4: { action: "Refresh the creative rotation", owner: "Creative" }, // Focused View
+  A5: { action: "Rotate in fresh creative this week", owner: "Creative", hedge: "if new creative is ready or in review" }, // Creative Fatigue
   // Persuasion · Resonance
-  R1: "Review creative tone against engagement quality", // Engagement Quality Ratio
-  R3: "Tighten the landing page path", // Landing Page Depth
+  R1: { action: "Review creative tone against engagement quality", owner: "Creative" }, // Engagement Quality Ratio
+  R3: { action: "Tighten the landing page path", owner: "Web" }, // Landing Page Depth
   // Conversion · Acquisition
-  C1: "Shift budget to the cheapest converting lines", // CPA vs Target
-  C2: "Raise caps on converting lines", // Volume Trajectory
-  C3: "Refresh audiences before CPA creep compounds", // CPA Trend
+  C1: { action: "Shift budget to the cheapest converting lines", owner: "Media", hedge: "within any per-line budget caps" }, // CPA vs Target
+  C2: { action: "Raise caps on converting lines", owner: "Media", hedge: "if budget headroom and pacing allow" }, // Volume Trajectory
+  C3: { action: "Refresh audiences before CPA creep compounds", owner: "Media" }, // CPA Trend
   // Conversion · Funnel
-  F1: "Test new hooks and calls to action", // Click-Through Rate
-  F2: "Fix link tags and landing page load", // Landing Page Load Rate
-  F3: "Move the form above the fold", // Scroll & Form Discovery
-  F4: "Cut form fields to reduce friction", // Form Completion Rate
-  F5: "Strengthen the post-conversion journey", // Post-Conversion Activation
+  F1: { action: "Test new hooks and calls to action", owner: "Creative" }, // Click-Through Rate
+  F2: { action: "Fix link tags and landing page load", owner: "Web" }, // Landing Page Load Rate
+  F3: { action: "Move the form above the fold", owner: "Web", hedge: "if the landing page is ours to change" }, // Scroll & Form Discovery
+  F4: { action: "Cut form fields to reduce friction", owner: "Web" }, // Form Completion Rate
+  F5: { action: "Strengthen the post-conversion journey", owner: "Client" }, // Post-Conversion Activation
 };
 
 /* ── Plain-language explainers — shown when a signal card is expanded ──
@@ -259,7 +286,7 @@ export interface TriageSignal extends DiagnosticSignal {
   /** Trailing per-evaluation scores (oldest → newest), max ~6 points. */
   trend: number[] | null;
   /** Curated action suggestion (ACTION cards only). */
-  action: string | null;
+  action: SignalAction | null;
 }
 
 export interface TriageEngineChip {
