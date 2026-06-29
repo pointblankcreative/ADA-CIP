@@ -196,9 +196,15 @@ export function verdict(p: Project, f: FlightMath): Verdict {
       word: "LANDED",
       tone: "var(--done)",
       headline: finalOver ? "Closed slightly over budget." : "Closed on budget.",
-      detail: `Final spend ${formatCurrency(f.spend)} of ${formatCurrency(
-        f.budget
-      )} — ${formatPercent(p.pacing_percentage)} of plan.`,
+      detail:
+        `Final spend ${formatCurrency(f.spend)} of ${formatCurrency(
+          f.budget
+        )} — ${formatPercent(p.pacing_percentage)} of plan.` +
+        (f.totalBudget > f.budget
+          ? ` Self-serve budget only; ${formatCurrency(
+              f.totalBudget
+            )} total incl. direct buys.`
+          : ""),
       action: null,
     };
   }

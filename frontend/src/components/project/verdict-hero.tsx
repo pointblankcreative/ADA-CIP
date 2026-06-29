@@ -10,6 +10,8 @@ import type { Project } from "@/lib/api";
 import type { FlightMath, Verdict, VerdictIcon } from "@/lib/flight";
 import { Card } from "@/components/card";
 import { Btn } from "@/components/ui";
+import { Glossary } from "@/components/glossary";
+import { type ReactNode } from "react";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/utils";
 
 const VERDICT_ICONS: Record<VerdictIcon, LucideIcon> = {
@@ -17,6 +19,15 @@ const VERDICT_ICONS: Record<VerdictIcon, LucideIcon> = {
   "trending-up": TrendingUp,
   activity: Activity,
 };
+
+/** Worst-engine diagnostic risk roll-up for the Summary verdict note (#4),
+ *  derived in summary-tab.tsx from the diagnostics it already holds. */
+export interface DiagRiskSummary {
+  /** count of signals currently in the action band, across engines */
+  actionCount: number;
+  /** count of signals currently in the watch band, across engines */
+  watchCount: number;
+}
 
 export function DeltaChip({ f }: { f: FlightMath }) {
   if (f.deltaAmount == null) return null;
@@ -51,6 +62,7 @@ export function VerdictHero({
   f,
   v,
   asOf,
+  diagRisk,
   onTab,
 }: {
   p: Project;
@@ -58,6 +70,8 @@ export function VerdictHero({
   v: Verdict;
   /** ISO date the read is current as of (pacing.as_of_date). */
   asOf: string | null;
+  /** Non-pacing diagnostic risk, or null when health is all-strong / loading. */
+  diagRisk: DiagRiskSummary | null;
   onTab: (tab: string) => void;
 }) {
   const ActionIcon = v.action ? VERDICT_ICONS[v.action.icon] : null;
@@ -69,6 +83,37 @@ export function VerdictHero({
   // The healthy "— 99.9% of plan." case carries a real number and is left
   // untouched.
   const detail = v.detail.replace(/\s*—\s*—\s*of plan\.?/g, ".");
+
+  // Right-panel stat rows. Labels widen to ReactNode because the
+  // direct-buys case wraps two of them in <Glossary>; we key the .map by
+  // index since a JSX element can't be a React key.
+  const rows: Array<[ReactNode, string]> = [];
+  if (f.totalBudget > f.budget) {
+    rows.push([
+      <Glossary key="self_serve_budget" termKey="self_serve_budget">
+        Self-serve budget
+      </Glossary>,
+      formatCurrency(f.budget),
+    ]);
+    rows.push([
+      <Glossary key="direct_buys" termKey="direct_buys">
+        Direct buys
+      </Glossary>,
+      formatCurrency(f.totalBudget - f.budget),
+    ]);
+  } else {
+    rows.push(["Budget", formatCurrency(f.budget)]);
+  }
+  rows.push(["Spent to date", formatCurrency(f.spend)]);
+  rows.push(
+    f.exhaustEarlyDays > 0
+      ? ["Budget runs out", `${Math.abs(f.exhaustEarlyDays)}d early`]
+      : ["Days remaining", `${f.remaining}d`]
+  );
+  rows.push([
+    "To land on budget",
+    `${formatCurrency(Math.round(f.dailyNeeded))}/day`,
+  ]);
 
   return (
     <Card
@@ -87,7 +132,7 @@ export function VerdictHero({
               style={{ backgroundColor: v.tone }}
             />
             <span className="eyebrow" style={{ color: v.tone }}>
-              Verdict · as of {f.ended ? p.end_date : (asOf ?? "today")}
+              Budget pacing · as of {f.ended ? p.end_date : (asOf ?? "today")}
             </span>
           </div>
           <div
@@ -102,6 +147,32 @@ export function VerdictHero({
           <p className="mt-2.5 max-w-[520px] text-[14.5px] leading-relaxed text-fg-secondary">
             {detail}
           </p>
+          {diagRisk && !f.noData && (() => {
+            const hasAction = diagRisk.actionCount > 0;
+            const n = hasAction ? diagRisk.actionCount : diagRisk.watchCount;
+            const tone = hasAction ? "var(--danger)" : "var(--warn)";
+            const countPhrase = hasAction
+              ? `${n} signal${n === 1 ? "" : "s"} flagged for action`
+              : `${n} signal${n === 1 ? "" : "s"} to keep an eye on`;
+            const pacingIsCalm = ["ON PACE", "RAMPING", "LANDED"].includes(v.word);
+            return (
+              <p
+                className="mt-2.5 max-w-[520px] text-[13px] leading-relaxed text-fg-secondary"
+                style={{ borderLeft: `2px solid ${tone}`, paddingLeft: "11px" }}
+              >
+                {pacingIsCalm
+                  ? `This verdict covers budget pacing only. Diagnostics has ${countPhrase} right now, so the campaign needs a look beyond the spend. `
+                  : `Beyond pacing, diagnostics has ${countPhrase} right now. `}
+                <button
+                  type="button"
+                  onClick={() => onTab("diagnostics")}
+                  className="font-semibold text-accent-ink underline-offset-2 hover:underline"
+                >
+                  See diagnostics
+                </button>
+              </p>
+            );
+          })()}
           {v.action && ActionIcon && (
             <div className="mt-[18px] flex flex-wrap gap-2.5">
               <Btn
@@ -149,18 +220,9 @@ export function VerdictHero({
                 <DeltaChip f={f} />
               </div>
               <div className="mt-[18px] flex flex-col gap-[11px]">
-                {(
-                  [
-                    ["Budget", formatCurrency(f.budget)],
-                    ["Spent to date", formatCurrency(f.spend)],
-                    f.exhaustEarlyDays > 0
-                      ? ["Budget runs out", `${Math.abs(f.exhaustEarlyDays)}d early`]
-                      : ["Days remaining", `${f.remaining}d`],
-                    ["To land on budget", `${formatCurrency(Math.round(f.dailyNeeded))}/day`],
-                  ] as Array<[string, string]>
-                ).map(([k, val]) => (
+                {rows.map(([k, val], i) => (
                   <div
-                    key={k}
+                    key={i}
                     className="flex items-baseline justify-between gap-3 text-[12.5px]"
                   >
                     <span className="text-fg-muted">{k}</span>
@@ -170,6 +232,13 @@ export function VerdictHero({
                   </div>
                 ))}
               </div>
+              {f.totalBudget > f.budget && (
+                <p className="mt-3 text-[11.5px] leading-relaxed text-fg-faint">
+                  Pacing tracks the self-serve budget only. The{" "}
+                  {formatCurrency(f.totalBudget - f.budget)} in direct buys is booked
+                  off-platform and never reports spend here.
+                </p>
+              )}
             </>
           )}
         </div>

@@ -194,8 +194,12 @@ export default function ProjectDetailPage() {
                     <span className="text-fg-meta">{project.client_name}</span>
                   )}
                   <span>
-                    Budget {formatCurrency(project.net_budget)}
+                    {(project.direct_budget ?? 0) > 0 ? "Total budget" : "Budget"}{" "}
+                    {formatCurrency(project.net_budget)}
                     {project.currency ? ` ${project.currency}` : ""}
+                    {(project.direct_budget ?? 0) > 0
+                      ? ` (${formatCurrency(project.net_budget - project.direct_budget!)} self-serve)`
+                      : ""}
                   </span>
                   <span
                     className="cursor-help"
