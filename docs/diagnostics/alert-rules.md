@@ -112,10 +112,16 @@ yet. Revisit once we have a feel for the channel's noise floor.
 |-----------------------------------|------------|
 | Health regression to ACTION       | `critical` |
 | Signal-level ACTION (any signal)  | `critical` |
+| Signal-level ACTION, coverage < `ALERT_LOW_COVERAGE_THRESHOLD` (0.10) | `warning` |
 
-Both rules produce `critical` severity. Warning-tier diagnostic
-alerts may be added later (e.g., for WATCH regressions); this release
-keeps it binary.
+Both rules default to `critical`. One exception (UAT #22): a
+signal-level ACTION alert is downgraded to `warning` when the signal
+reports its own measured coverage (`measurement_coverage` in its
+inputs) below `ALERT_LOW_COVERAGE_THRESHOLD` (0.10), because the
+evidence is too thin to page as urgent. Today only A3 Viewability
+reports coverage, but the gate is generic. This changes only the stated
+severity, never whether the alert fires. Other warning-tier diagnostic
+alerts (e.g. for WATCH regressions) may still be added later.
 
 ---
 
@@ -131,6 +137,14 @@ existing pacing pattern in `services/pacing._deduplicate_alerts`:
 
 Same key structure as pacing, so future work can promote the helper
 to a shared module.
+
+Severity is part of the dedup key, so the coverage downgrade (UAT #22)
+moves a signal from the `(…, critical)` bucket to `(…, warning)`. Across
+the single deploy that introduces the downgrade, a still-open `critical`
+row written before the change and the new `warning` row are distinct
+keys, so for up to one 24h window the same signal can appear once as
+critical (pre-existing, unresolved) and once as warning. It is
+self-clearing and harmless.
 
 ---
 

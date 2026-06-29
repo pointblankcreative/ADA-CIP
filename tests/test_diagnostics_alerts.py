@@ -28,6 +28,7 @@ from backend.services.diagnostics.models import (
     StatusBand,
 )
 from backend.services.diagnostics.shared.alerts import (
+    _build_signal_alert,
     build_regression_alert,
     populate_signal_alerts,
 )
@@ -43,6 +44,7 @@ def _signal(
     guard_passed: bool = True,
     name: str | None = None,
     diagnostic: str = "",
+    inputs: dict | None = None,
 ) -> SignalResult:
     return SignalResult(
         id=sid,
@@ -51,6 +53,7 @@ def _signal(
         status=status,
         guard_passed=guard_passed,
         diagnostic=diagnostic,
+        inputs=inputs or {},
     )
 
 
@@ -514,3 +517,80 @@ class TestAlertTitleFormatting:
         assert "F1" in title
         assert "Click-to-Landing-Page" in title
         assert "ACTION (22)" in title
+
+
+# ── Coverage-gated severity (UAT #22) ───────────────────────────────
+
+
+class TestCoverageGatedSeverity:
+    """UAT #22: a signal-level ACTION alert is downgraded critical -> warning
+    when the signal reports a measured coverage below
+    ALERT_LOW_COVERAGE_THRESHOLD (0.10). Firing is unchanged; only the stated
+    severity changes. Viewability (A3) is the only signal reporting
+    measurement_coverage today, but the gate is generic."""
+
+    def _alert_for(self, inputs):
+        output = _output([
+            _pillar("attention", [
+                _signal("A3", 31.3, StatusBand.ACTION, name="Viewability",
+                        diagnostic="Only 62.5% of measured ads were seen.",
+                        inputs=inputs),
+            ]),
+        ])
+        return _build_signal_alert(output.pillars[0].signals[0], output)
+
+    def test_low_coverage_downgrades_to_warning(self):
+        alert = self._alert_for({"measurement_coverage": 0.017})
+        assert alert.severity == AlertSeverity.WARNING
+        assert alert.type == "signal_a3"
+        assert alert.signal_id == "A3"
+
+    def test_zero_coverage_downgrades_to_warning(self):
+        assert self._alert_for(
+            {"measurement_coverage": 0.0}
+        ).severity == AlertSeverity.WARNING
+
+    def test_high_coverage_stays_critical(self):
+        assert self._alert_for(
+            {"measurement_coverage": 0.85}
+        ).severity == AlertSeverity.CRITICAL
+
+    def test_exactly_at_threshold_stays_critical(self):
+        # strict `<`: coverage == threshold is NOT downgraded.
+        assert self._alert_for(
+            {"measurement_coverage": 0.10}
+        ).severity == AlertSeverity.CRITICAL
+
+    def test_missing_coverage_key_stays_critical(self):
+        # Signals that do not report coverage (e.g. F3) are unaffected.
+        assert self._alert_for({}).severity == AlertSeverity.CRITICAL
+
+    def test_none_coverage_stays_critical(self):
+        assert self._alert_for(
+            {"measurement_coverage": None}
+        ).severity == AlertSeverity.CRITICAL
+
+    def test_firing_count_unchanged_only_severity_differs(self):
+        # One low-coverage ACTION signal + one normal ACTION signal: BOTH
+        # still fire (count parity); exactly one warning + one critical.
+        output = _output([
+            _pillar("attention", [
+                _signal("A3", 31.3, StatusBand.ACTION,
+                        inputs={"measurement_coverage": 0.017}),
+            ]),
+            _pillar("distribution", [
+                _signal("D1", 0.0, StatusBand.ACTION),  # no coverage key
+            ]),
+        ])
+        populate_signal_alerts(output)
+        assert len(output.alerts) == 2
+        by_signal = {a.signal_id: a.severity for a in output.alerts}
+        assert by_signal["A3"] == AlertSeverity.WARNING
+        assert by_signal["D1"] == AlertSeverity.CRITICAL
+
+    def test_downgraded_alert_dedup_bucket_is_warning(self):
+        # Dedup key is (project_code, alert_type, severity); the downgrade
+        # moves A3 into the warning bucket.
+        alert = self._alert_for({"measurement_coverage": 0.017})
+        assert (alert.type, alert.severity) == (
+            "signal_a3", AlertSeverity.WARNING)

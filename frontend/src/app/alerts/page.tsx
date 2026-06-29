@@ -33,10 +33,20 @@ function filterColor(sev: string): string {
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [severity, setSeverity] = useState<string>("");
+  // Standing count of signals in the diagnostic "Act now" band across active
+  // campaigns, sourced from the SAME definition the Diagnostics board uses
+  // (guard-passed signals with status ACTION) so the two surfaces agree.
+  // null = unknown / not yet loaded / fetch failed -> the cards fall back to
+  // the no-number wording. 0 is a real value. Fetched independently of the
+  // alert feed so the feed (which can 500) never blocks or masks it.
+  const [actNow, setActNow] = useState<number | null>(null);
+  const [actNowLink, setActNowLink] = useState<string>("/");
 
   const load = async () => {
     setLoading(true);
+    setError(false);
     try {
       const data = await api.alerts.list({
         severity: severity || undefined,
@@ -44,7 +54,11 @@ export default function AlertsPage() {
       });
       setAlerts(data);
     } catch {
+      // The feed endpoint can fail (a 500 currently masks itself as empty).
+      // Record the error so the UI shows an honest "did not load" state
+      // instead of a falsely reassuring empty/all-clear state.
       setAlerts([]);
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -54,6 +68,56 @@ export default function AlertsPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [severity]);
+
+  // Act-now count: read-only, 1 + N(active) calls, fully resilient. Mirrors
+  // the board's act-band membership exactly. Any failure leaves actNow null
+  // and the empty/error cards render the no-number copy. Runs once.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const projects = await api.projects.list();
+        const active = projects.filter(
+          (p) => p.status === "active" && !p.recently_ended
+        );
+        if (active.length === 0) {
+          if (!cancelled) {
+            setActNow(0);
+            setActNowLink("/");
+          }
+          return;
+        }
+        const results = await Promise.allSettled(
+          active.map((p) => api.diagnostics.get(p.project_code))
+        );
+        let anyOk = false;
+        let count = 0;
+        for (const r of results) {
+          if (r.status !== "fulfilled") continue;
+          anyOk = true;
+          for (const out of r.value ?? []) {
+            for (const sig of out.signals ?? []) {
+              if (sig.guard_passed && sig.status === "ACTION") count += 1;
+            }
+          }
+        }
+        if (!cancelled) {
+          // Every diagnostics call failed -> unknown (null), not a false 0.
+          setActNow(anyOk ? count : null);
+          setActNowLink(
+            active.length === 1
+              ? `/project/${active[0].project_code}`
+              : "/"
+          );
+        }
+      } catch {
+        if (!cancelled) setActNow(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /** Acknowledge with optional action note; the backend records the IAP
    *  user and we mirror its response into local state. */
@@ -75,6 +139,7 @@ export default function AlertsPage() {
 
   const criticalCount = alerts.filter((a) => a.severity === "critical").length;
   const warningCount = alerts.filter((a) => a.severity === "warning").length;
+  const infoCount = alerts.filter((a) => a.severity === "info").length;
 
   return (
     <div className="mx-auto max-w-[980px] px-5 pb-20 pt-7 sm:px-7">
@@ -85,9 +150,13 @@ export default function AlertsPage() {
             Alerts
           </h1>
           <p className="mt-3 text-sm text-fg-muted">
-            {criticalCount > 0
-              ? `${criticalCount} critical, ${warningCount} warning — newest first.`
-              : "All clear. Signals land here the moment something drifts."}
+            {loading
+              ? "Loading the latest alerts."
+              : error
+                ? "The feed did not load, so this is not an all-clear."
+                : alerts.length === 0
+                  ? "Nothing new in the feed. A heads-up channel, not a full health check."
+                  : `${alertSummary(criticalCount, warningCount, infoCount)}. Newest first.`}
           </p>
         </div>
         <Btn
@@ -140,11 +209,10 @@ export default function AlertsPage() {
               <div className="mt-2 h-3 w-72 rounded bg-surface-sunken" />
             </Card>
           ))
+        ) : error ? (
+          <FeedErrorCard onRefresh={load} actNow={actNow} actNowLink={actNowLink} />
         ) : alerts.length === 0 ? (
-          <Card className="flex flex-col items-center py-12">
-            <CheckCircle2 className="h-10 w-10 text-ok opacity-60" />
-            <p className="mt-3 text-fg-muted">No alerts</p>
-          </Card>
+          <FeedEmptyCard actNow={actNow} actNowLink={actNowLink} />
         ) : (
           alerts.map((alert) => (
             <AlertRow
@@ -156,6 +224,117 @@ export default function AlertsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/** Compact, count-driven feed summary. Never says "All clear". */
+function alertSummary(critical: number, warning: number, info: number): string {
+  const parts: string[] = [];
+  if (critical > 0) parts.push(`${critical} critical`);
+  if (warning > 0) parts.push(`${warning} warning`);
+  if (info > 0) parts.push(`${info} info`);
+  return parts.length > 0 ? parts.join(", ") : "Alerts in the feed";
+}
+
+/** Shared "open the board" link. */
+function BoardLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Link href={href} className="underline underline-offset-2 hover:opacity-70">
+      {label}
+    </Link>
+  );
+}
+
+/** Genuinely-empty feed. Honest heads-up framing, no green "all-clear"
+ *  check, and (when known) the live Act-now count from the board. */
+function FeedEmptyCard({
+  actNow,
+  actNowLink,
+}: {
+  actNow: number | null;
+  actNowLink: string;
+}) {
+  return (
+    <Card className="flex flex-col items-center py-12 text-center">
+      <Info className="h-9 w-9 text-fg-faint opacity-70" />
+      <p className="mt-3 font-medium text-fg">Nothing new to flag right now.</p>
+      <p className="mt-2 max-w-[42rem] text-sm leading-relaxed text-fg-muted">
+        Alerts flag new or changed events as they happen, deduped daily, so this
+        feed is a heads-up channel rather than a full health check.{" "}
+        {actNow == null ? (
+          <>
+            For where each campaign stands now, including anything in the Act now
+            band, <BoardLink href="/" label="open its Diagnostics board" />.
+          </>
+        ) : actNow === 0 ? (
+          <>
+            Diagnostics currently shows no signals in the Act now band.{" "}
+            <BoardLink href={actNowLink} label="Open the board" /> for the full
+            picture, including anything to keep an eye on.
+          </>
+        ) : (
+          <>
+            Diagnostics currently shows {actNow} signal{actNow === 1 ? "" : "s"}{" "}
+            in the Act now band, so{" "}
+            <BoardLink href={actNowLink} label="open the board" /> to see where{" "}
+            {actNow === 1 ? "it stands" : "each one stands"}.
+          </>
+        )}
+      </p>
+    </Card>
+  );
+}
+
+/** Feed failed to load. The previous behaviour swallowed the error and
+ *  rendered the empty/all-clear state; this states plainly that it did not
+ *  load and is NOT an all-clear, and still surfaces the board's Act-now
+ *  count (it comes from a different, healthy endpoint). */
+function FeedErrorCard({
+  onRefresh,
+  actNow,
+  actNowLink,
+}: {
+  onRefresh: () => void;
+  actNow: number | null;
+  actNowLink: string;
+}) {
+  return (
+    <Card className="flex flex-col items-center py-12 text-center">
+      <AlertTriangle className="h-9 w-9 text-warn opacity-90" />
+      <p className="mt-3 font-medium text-fg">The alert feed did not load.</p>
+      <p className="mt-2 max-w-[42rem] text-sm leading-relaxed text-fg-muted">
+        This is not an all-clear. Alerts could not be reached, so any that are
+        active are not shown here.{" "}
+        {actNow == null ? (
+          <>
+            Try refreshing, and check each campaign&apos;s{" "}
+            <BoardLink href="/" label="Diagnostics board" /> for where it stands
+            now.
+          </>
+        ) : actNow === 0 ? (
+          <>
+            Diagnostics did load and currently shows no signals in the Act now
+            band. <BoardLink href={actNowLink} label="Open the board" /> for the
+            full picture.
+          </>
+        ) : (
+          <>
+            Diagnostics did load and currently shows {actNow} signal
+            {actNow === 1 ? "" : "s"} in the Act now band.{" "}
+            <BoardLink href={actNowLink} label="Open the board" />.
+          </>
+        )}
+      </p>
+      <Btn
+        variant="outline"
+        size="sm"
+        onClick={onRefresh}
+        className="mt-4"
+        icon={<RefreshCw className="h-3.5 w-3.5" />}
+      >
+        Refresh
+      </Btn>
+    </Card>
   );
 }
 

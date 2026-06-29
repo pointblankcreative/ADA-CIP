@@ -254,6 +254,16 @@ A3_BENCHMARK = 80
 A3_FLOOR = 50
 A3_COVERAGE_NOTE_THRESHOLD = 0.30
 
+# Alert severity coverage gate (UAT #22): when a signal reports its own
+# measured coverage (``measurement_coverage`` in inputs) and that coverage is
+# below this fraction, its ACTION-band alert is downgraded from critical to
+# warning ("keep an eye on") because the evidence is too thin to page as
+# urgent. Deliberately LOWER than A3_COVERAGE_NOTE_THRESHOLD (0.30, which only
+# hedges the prose) so a genuinely-evidenced viewability problem still pages
+# critical, while a finding measured on a sliver of impressions (the ~2% UAT
+# case) does not. Tune deliberately; this is the judgement value.
+ALERT_LOW_COVERAGE_THRESHOLD = 0.10
+
 
 # ── A4: Focused View / ThruPlay Rate ───────────────────────────────
 #
