@@ -63,6 +63,7 @@ import {
 } from "@/components/perf/primitives";
 import { PlacementFrame } from "@/components/perf/placement-frame";
 import { Card } from "@/components/card";
+import { Glossary } from "@/components/glossary";
 import { Btn, Eyebrow, Label } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 import { SyncStatus } from "@/components/sync-status";
@@ -265,8 +266,14 @@ function StageRow({ s }: { s: FunnelStage }) {
           {s.label}
         </div>
         {s.primary && (
-          <div className="mt-px font-mono text-[7px] tracking-[0.08em] text-accent-ink">
-            ✱ SETS RANK
+          <div className="mt-px">
+            <Glossary
+              termKey="sets_rank"
+              variant="icon"
+              className="font-mono text-[7px] tracking-[0.08em] text-accent-ink"
+            >
+              ✱ SETS RANK
+            </Glossary>
           </div>
         )}
         {s.notKpi && (

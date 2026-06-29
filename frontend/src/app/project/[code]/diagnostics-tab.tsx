@@ -36,7 +36,9 @@ import {
 } from "@/lib/diagnostics";
 import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
+import { Glossary } from "@/components/glossary";
 import { Btn, Eyebrow, Label } from "@/components/ui";
+import { lookupTerm } from "@/lib/glossary";
 import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
 import { statusWord } from "@/lib/viz/health-core";
 
@@ -405,7 +407,15 @@ function DgActCard({
             to most users. The code stays as quiet metadata beside it. */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <span className="font-mono text-[11px] font-bold text-danger">{s.id}</span>
-          <span className="text-[11.5px] font-semibold text-fg-muted">{s.name}</span>
+          {lookupTerm(s.id) ? (
+            <Glossary termKey={s.id} variant="wrap">
+              <span className="text-[11.5px] font-semibold text-fg-muted">
+                {s.name}
+              </span>
+            </Glossary>
+          ) : (
+            <span className="text-[11.5px] font-semibold text-fg-muted">{s.name}</span>
+          )}
           {mixed && <DgEngine engine={s.engine} />}
           {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
           <span className="ml-auto flex items-center gap-2">
@@ -467,33 +477,52 @@ function DgWatchCard({
         dimmed && "opacity-40"
       )}
     >
-      <button
-        onClick={() => setOpen(!open)}
-        className="block w-full px-[15px] py-[13px] text-left"
-      >
-        <div className="flex flex-wrap items-center gap-x-[7px] gap-y-1">
-          <span className="font-mono text-[10.5px] font-bold text-warn">{s.id}</span>
-          <span className="text-[11px] font-semibold text-fg-muted">{s.name}</span>
-          {mixed && <DgEngine engine={s.engine} />}
-          {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
-          <span className="ml-auto flex items-center gap-2">
-            <DgSpark data={s.trend} w={52} h={14} color="var(--warn)" />
-            <DgDelta delta={s.delta} size={10} />
+      {/* The toggle button and the definition affordance are SIBLINGS in a
+          flex row, never nested (no button inside a button). The info dot
+          rides the name row at the card's right edge, clear of the in-button
+          spark/delta, and only shows for signals with a glossary entry
+          (D4/A4 today). */}
+      <div className="flex items-start">
+        <button
+          onClick={() => setOpen(!open)}
+          className="block min-w-0 flex-1 px-[15px] py-[13px] text-left"
+        >
+          <div className="flex flex-wrap items-center gap-x-[7px] gap-y-1">
+            <span className="font-mono text-[10.5px] font-bold text-warn">{s.id}</span>
+            <span className="text-[11px] font-semibold text-fg-muted">{s.name}</span>
+            {mixed && <DgEngine engine={s.engine} />}
+            {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
+            <span className="ml-auto flex items-center gap-2">
+              <DgSpark data={s.trend} w={52} h={14} color="var(--warn)" />
+              <DgDelta delta={s.delta} size={10} />
+            </span>
+          </div>
+          <p className="mt-[9px] text-[12.5px] leading-relaxed text-fg-secondary">
+            {s.diagnostic}
+          </p>
+          <div className="mt-2.5 flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-fg-faint">
+              <DgChevron open={open} />
+              {open ? "Hide details" : "Details"}
+            </span>
+            <span className="tnum font-mono text-xs font-bold text-warn">
+              {s.score?.toFixed(0) ?? "—"}
+            </span>
+          </div>
+        </button>
+        {lookupTerm(s.id) && (
+          <span className="flex-shrink-0 pr-[13px] pt-[14px]">
+            <Glossary
+              termKey={s.id}
+              variant="wrap"
+              side="bottom"
+              className="text-fg-faint"
+            >
+              <span className="sr-only">{s.name}</span>
+            </Glossary>
           </span>
-        </div>
-        <p className="mt-[9px] text-[12.5px] leading-relaxed text-fg-secondary">
-          {s.diagnostic}
-        </p>
-        <div className="mt-2.5 flex items-center justify-between">
-          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-fg-faint">
-            <DgChevron open={open} />
-            {open ? "Hide details" : "Details"}
-          </span>
-          <span className="tnum font-mono text-xs font-bold text-warn">
-            {s.score?.toFixed(0) ?? "—"}
-          </span>
-        </div>
-      </button>
+        )}
+      </div>
       {open && (
         <div className="px-[15px] pb-[13px]">
           <DgEvidence s={s} />
@@ -814,12 +843,49 @@ export function DiagnosticsTab({
   for (const key of ["cpm", "cpc", "cpa", "cpcv", "pacing_pct"] as const) {
     eff[key] = outputs.map((o) => o.efficiency?.[key]).find((v) => v != null) ?? null;
   }
-  const effBits: string[] = [];
-  if (eff.cpm != null) effBits.push("CPM $" + eff.cpm.toFixed(2));
-  if (eff.cpc != null) effBits.push("CPC $" + eff.cpc.toFixed(2));
-  if (eff.cpa != null) effBits.push("CPA $" + eff.cpa.toFixed(2));
-  if (eff.cpcv != null) effBits.push("CPCV $" + eff.cpcv.toFixed(3));
-  if (eff.pacing_pct != null) effBits.push("Pacing " + eff.pacing_pct.toFixed(0) + "%");
+  // Each cost metric leads with its acronym wrapped in a glossary
+  // affordance; the value text keeps its exact formatting (CPCV at 3dp,
+  // the rest at 2dp). Pacing stays plain (no definition). React nodes,
+  // not strings — interleaved with " · " separators at render.
+  const effBits: React.ReactNode[] = [];
+  if (eff.cpm != null)
+    effBits.push(
+      <>
+        <Glossary termKey="cpm" variant="underline">
+          CPM
+        </Glossary>{" "}
+        ${eff.cpm.toFixed(2)}
+      </>
+    );
+  if (eff.cpc != null)
+    effBits.push(
+      <>
+        <Glossary termKey="cpc" variant="underline">
+          CPC
+        </Glossary>{" "}
+        ${eff.cpc.toFixed(2)}
+      </>
+    );
+  if (eff.cpa != null)
+    effBits.push(
+      <>
+        <Glossary termKey="cpa" variant="underline">
+          CPA
+        </Glossary>{" "}
+        ${eff.cpa.toFixed(2)}
+      </>
+    );
+  if (eff.cpcv != null)
+    effBits.push(
+      <>
+        <Glossary termKey="cpcv" variant="underline">
+          CPCV
+        </Glossary>{" "}
+        ${eff.cpcv.toFixed(3)}
+      </>
+    );
+  if (eff.pacing_pct != null)
+    effBits.push(<>Pacing {eff.pacing_pct.toFixed(0)}%</>);
 
   const { act, watch, strong, dead } = model;
 
@@ -848,7 +914,12 @@ export function DiagnosticsTab({
               {first.evaluation_date}
             </div>
             <div className="mt-[3px] whitespace-nowrap text-[10.5px] text-fg-faint">
-              {effBits.join(" · ")}
+              {effBits.map((bit, i) => (
+                <span key={i}>
+                  {i > 0 && " · "}
+                  {bit}
+                </span>
+              ))}
             </div>
           </div>
           {!asOfDate && (
