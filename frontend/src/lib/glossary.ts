@@ -81,6 +81,19 @@ const DICTIONARY: Record<string, MetricDefinition> = {
       "Every click a platform counts, not just the clicks that reach the destination site.",
     how: "A raw platform field. ADA uses link clicks (the ones that reach the landing page) for click-through rate, so the two can differ.",
   },
+  self_serve_budget: {
+    key: "self_serve_budget",
+    label: "Self-serve budget",
+    definition:
+      "The part of the budget that runs on self-serve ad platforms and reports spend back to ADA. Pacing is measured against this.",
+    how: "The contracted budget minus any direct buys booked off-platform.",
+  },
+  direct_buys: {
+    key: "direct_buys",
+    label: "Direct buys",
+    definition:
+      "Placements booked directly off-platform, so no live spend feed reaches ADA. They count toward the total budget but not toward tracked spend or pacing.",
+  },
 
   /* ---- PRE-SEEDED entries (not wired yet; siblings register/override) ---- */
   pillar_distribution: {
