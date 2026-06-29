@@ -99,13 +99,24 @@ export const STATUS_WORD: Record<Severity, string> = {
   nodata: "No signal",
 };
 
+/** Diagnostic health words — deliberately distinct from the pacing words in
+ *  STATUS_WORD so a health score is never mistaken for the pacing meter. */
+export const DIAGNOSTIC_WORD: Record<Severity, string> = {
+  ok: "Strong",
+  watch: "Watch",
+  critical: "At risk",
+  nodata: "No signal",
+};
+
 /**
  * Map a legacy/back-end status string onto the Claude Design status word.
  *
  * The diagnostic engine and the per-tab readers still emit their own
  * vocabularies (STRONG/WATCH/ACTION, ACT, NO DATA, Healthy/Watch/Critical).
- * This converges the *displayed* word onto the shared four-token system
- * without touching any threshold or branching logic — callers keep their
+ * This converges the *displayed* word onto the shared DIAGNOSTIC_WORD set
+ * (Strong / Watch / At risk / No signal) — deliberately distinct from the
+ * pacing words in STATUS_WORD so a health read is never mistaken for the
+ * pacing meter. No threshold or branching logic changes — callers keep their
  * existing status keys for colour/branching and only swap the rendered text.
  * Unknown/empty inputs read as "No signal".
  */
@@ -116,18 +127,18 @@ export function statusWord(status: string | null | undefined): string {
     case "OK":
     case "ON PACE":
     case "ON TRACK":
-      return STATUS_WORD.ok;
+      return DIAGNOSTIC_WORD.ok;
     case "WATCH":
     case "WATCHED":
     case "DRIFTING":
-      return STATUS_WORD.watch;
+      return DIAGNOSTIC_WORD.watch;
     case "ACTION":
     case "ACT":
     case "CRITICAL":
     case "OFF PACE":
-      return STATUS_WORD.critical;
+      return DIAGNOSTIC_WORD.critical;
     default:
-      return STATUS_WORD.nodata;
+      return DIAGNOSTIC_WORD.nodata;
   }
 }
 

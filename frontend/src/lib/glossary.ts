@@ -88,30 +88,35 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     label: "Distribution",
     definition:
       "Whether the ads are reaching enough of the right people, often enough, spread evenly across platforms.",
+    how: "Built from the signals under it that have enough data to report (reach, frequency, spread across platforms), with the more important ones counting for more; the rest sit out.",
   },
   pillar_attention: {
     key: "pillar_attention",
     label: "Attention",
     definition:
       "Whether people who see the ads actually watch them, rather than scrolling past.",
+    how: "Built from the signals under it that have enough data to report (completion, viewability, focused view), with the more important ones counting for more; the rest sit out.",
   },
   pillar_resonance: {
     key: "pillar_resonance",
     label: "Resonance",
     definition:
       "Whether the ads land, measured by deliberate engagement and what people do after they click.",
+    how: "Built from the signals under it that have enough data to report (engagement quality, landing-page depth), with the more important ones counting for more; the rest sit out.",
   },
   pillar_acquisition: {
     key: "pillar_acquisition",
     label: "Acquisition",
     definition:
       "Whether conversions are coming in at the right cost and the right pace.",
+    how: "Built from the signals under it that have enough data to report (cost per conversion, conversion pace), with the more important ones counting for more; the rest sit out.",
   },
   pillar_funnel: {
     key: "pillar_funnel",
     label: "Funnel",
     definition:
       "Whether the path from click to completed action holds up (click, page load, scroll, form).",
+    how: "Built from the signals under it that have enough data to report (click-through, page load, scroll, form completion), with the more important ones counting for more; the rest sit out.",
   },
   pillar_quality: {
     key: "pillar_quality",
@@ -124,28 +129,30 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     label: "Persuasion",
     definition:
       "ADA's read on awareness and consideration lines, did the campaign reach, hold, and move people.",
+    how: "Rolls up its pillars (Distribution, Attention, Resonance), each built from its own signals.",
   },
   engine_conversion: {
     key: "engine_conversion",
     label: "Conversion",
     definition:
       "ADA's read on direct-response lines, did the campaign turn spend into leads or sales efficiently.",
+    how: "Rolls up its pillars (Acquisition, Funnel), each built from its own signals.",
   },
   band_strong: {
     key: "band_strong",
-    label: "On pace (70+)",
+    label: "Strong (70 and up)",
     definition:
       "The campaign is firing on most signals. ADA treats 70 and up as success, not as a near-miss of 100.",
   },
   band_watch: {
     key: "band_watch",
-    label: "Drifting (40 to 69)",
+    label: "Watch (40 to 69)",
     definition:
       "Some signals are slipping. Worth a look this week, not an emergency.",
   },
   band_action: {
     key: "band_action",
-    label: "Off pace (under 40)",
+    label: "At risk (under 40)",
     definition:
       "One or more signals need action now to keep the flight on track.",
   },
@@ -157,9 +164,10 @@ const DICTIONARY: Record<string, MetricDefinition> = {
   },
   score_scale: {
     key: "score_scale",
-    label: "Health score",
+    label: "Health score (0 to 100)",
     definition:
-      "A 0 to 100 read on the whole campaign. Crossing 70 is the goal; 100 needs every signal perfect at once, which live campaigns rarely hit.",
+      "A 0 to 100 read on whether the campaign is working, separate from pacing. Pacing asks whether spend is on schedule, the health score asks whether the campaign is performing. Crossing 70 is the goal, 100 needs every signal perfect at once, which live campaigns rarely hit.",
+    how: "The overall score blends the pillars by weight, and is eased early in a flight when data is still thin.",
   },
   hook_rate: {
     key: "hook_rate",

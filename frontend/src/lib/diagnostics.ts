@@ -38,6 +38,263 @@ export function signalPillar(id: string): string | null {
   return PILLAR_BY_PREFIX[id?.charAt(0)?.toUpperCase()] ?? null;
 }
 
+/* ── Guard reasons — plain-language "why this isn't reporting" copy ─────
+   Signals that fail a guard come back with a machine token in
+   `guard_reason` (see backend/services/diagnostics/shared/guards.py and the
+   per-pillar signal modules). The raw token (e.g. "min_impressions_1000",
+   "single_platform") leaks pipeline jargon to the user, so guardCopy()
+   maps each to a short, honest sentence in one of three categories:
+
+     pending  — the data type isn't built into the platform yet
+     waiting  — the data just hasn't arrived in enough volume yet
+     na       — the check doesn't apply to this campaign's shape/objective
+
+   Never frame a quiet check as "broken / failed / error / pipeline" — a
+   guard withholding a score is the system being careful, not failing. */
+
+export type GuardCategory = "pending" | "waiting" | "na";
+
+export const GUARD_CATEGORY_LABEL: Record<GuardCategory, string> = {
+  pending: "Coming soon",
+  waiting: "Waiting on data",
+  na: "Not applicable",
+};
+
+/* Keys are the exact backend tokens. Templated guards that suffix a
+   threshold (e.g. `min_impressions_1000`) are stored under their
+   normalized prefix (`min_impressions`); guardCopy() strips the trailing
+   `_<number>` before the lookup. */
+export const GUARD_REASONS: Record<
+  string,
+  { text: string; category: GuardCategory }
+> = {
+  // ── Pending: data type not yet available in the transformation ──
+  no_audio_data_in_transformation: {
+    text: "Audio completion isn't available yet.",
+    category: "pending",
+  },
+  no_earned_data_in_transformation: {
+    text: "Earned and viral reach (free reshares) isn't available yet.",
+    category: "pending",
+  },
+
+  // ── Not applicable: the check doesn't fit this campaign ──
+  single_platform: {
+    text: "Runs on a single platform, so there is nothing to compare across platforms.",
+    category: "na",
+  },
+  no_target_cpa: {
+    text: "No target cost per result is set, so there is nothing to measure against.",
+    category: "na",
+  },
+  no_key_events_configured: {
+    text: "No key events are configured to count as conversions.",
+    category: "na",
+  },
+  arch_b_only: {
+    text: "Only applies to campaigns that send clicks to a landing page.",
+    category: "na",
+  },
+  no_arch_a_lp_reporting: {
+    text: "This campaign's landing page doesn't report the views this check needs.",
+    category: "na",
+  },
+  no_reporting_platforms: {
+    text: "No platform on this campaign reports the data this check needs.",
+    category: "na",
+  },
+  no_lp_view_reporting: {
+    text: "Landing-page views aren't reported for this campaign.",
+    category: "na",
+  },
+  no_ffs_data: {
+    text: "No form-friction inputs are set, so there is nothing to benchmark against.",
+    category: "na",
+  },
+  no_media_plan: {
+    text: "No media plan is attached, so there is nothing to measure against.",
+    category: "na",
+  },
+  no_planned_impressions: {
+    text: "The media plan has no planned impressions to measure against.",
+    category: "na",
+  },
+
+  // ── Waiting: not enough has come in yet ──
+  no_reach_data: { text: "Reach hasn't come in yet.", category: "waiting" },
+  no_frequency_data: {
+    text: "Frequency hasn't come in yet.",
+    category: "waiting",
+  },
+  no_engagement_data: {
+    text: "Engagement hasn't come in yet.",
+    category: "waiting",
+  },
+  no_attention_data: {
+    text: "Attention data hasn't come in yet.",
+    category: "waiting",
+  },
+  no_quartile_data: {
+    text: "Video completion data hasn't come in yet.",
+    category: "waiting",
+  },
+  no_landing_page_views: {
+    text: "Landing-page views haven't come in yet.",
+    category: "waiting",
+  },
+  no_clickable_impressions: {
+    text: "No clickable impressions have come in yet.",
+    category: "waiting",
+  },
+  no_starts: { text: "No video starts have come in yet.", category: "waiting" },
+  below_min_starts: {
+    text: "Not enough video starts yet to read this reliably.",
+    category: "waiting",
+  },
+  no_impressions: {
+    text: "No impressions have come in yet.",
+    category: "waiting",
+  },
+  no_clicks: { text: "No clicks have come in yet.", category: "waiting" },
+  no_in_platform_leads: {
+    text: "No in-platform leads have come in yet.",
+    category: "waiting",
+  },
+  no_conversions: {
+    text: "No conversions have come in yet.",
+    category: "waiting",
+  },
+  no_daily_data: {
+    text: "Not enough day-by-day data yet to read a trend.",
+    category: "waiting",
+  },
+  zero_conversions: {
+    text: "No conversions have come in yet.",
+    category: "waiting",
+  },
+  zero_attention_baseline: {
+    text: "Not enough attention data yet to set a baseline.",
+    category: "waiting",
+  },
+  zero_expected_volume: {
+    text: "Not enough planned volume yet to measure against.",
+    category: "waiting",
+  },
+  zero_planned_reach: {
+    text: "Not enough planned reach yet to measure against.",
+    category: "waiting",
+  },
+  zero_window_impressions: {
+    text: "Not enough impressions in this window yet to read it.",
+    category: "waiting",
+  },
+  zero_mean: {
+    text: "Not enough data yet to read a stable average.",
+    category: "waiting",
+  },
+  insufficient_data: {
+    text: "Not enough data yet to read this reliably.",
+    category: "waiting",
+  },
+  insufficient_days: {
+    text: "Not enough days into the flight yet to read this.",
+    category: "waiting",
+  },
+  insufficient_days_after_volume_filter: {
+    text: "Not enough qualifying days yet to read a trend.",
+    category: "waiting",
+  },
+  insufficient_daily_data: {
+    text: "Not enough day-by-day data yet to read a trend.",
+    category: "waiting",
+  },
+  insufficient_daily_series: {
+    text: "Not enough day-by-day data yet to read a trend.",
+    category: "waiting",
+  },
+  insufficient_cpa_days: {
+    text: "Not enough days with conversions yet to read cost stability.",
+    category: "waiting",
+  },
+  insufficient_per_platform_impressions: {
+    text: "Not enough impressions per platform yet to compare them.",
+    category: "waiting",
+  },
+
+  // ── Waiting: templated minimum thresholds (normalized prefixes) ──
+  min_days: {
+    text: "Not enough days into the flight yet to read this.",
+    category: "waiting",
+  },
+  min_impressions: {
+    text: "Not enough impressions yet to read this reliably.",
+    category: "waiting",
+  },
+  min_spend: {
+    text: "Not enough spend yet to read cost metrics.",
+    category: "waiting",
+  },
+  min_clicks: {
+    text: "Not enough clicks yet to read this reliably.",
+    category: "waiting",
+  },
+  min_clicks_for_lp: {
+    text: "Not enough clicks yet to read landing-page load.",
+    category: "waiting",
+  },
+  min_clicks_for_f1: {
+    text: "Not enough clicks yet to read click-through reliably.",
+    category: "waiting",
+  },
+  min_ga4_sessions: {
+    text: "Not enough site sessions yet to read the funnel.",
+    category: "waiting",
+  },
+  min_conversions: {
+    text: "Not enough conversions yet to read a stable cost.",
+    category: "waiting",
+  },
+  min_video_starts: {
+    text: "Not enough video starts yet to read completion.",
+    category: "waiting",
+  },
+  min_engagements: {
+    text: "Not enough engagements yet to read this reliably.",
+    category: "waiting",
+  },
+  min_form_starts: {
+    text: "Not enough form starts yet to read completion.",
+    category: "waiting",
+  },
+  min_form_submits: {
+    text: "Not enough form submissions yet to read this.",
+    category: "waiting",
+  },
+  min_viewability_measured: {
+    text: "Not enough measured impressions yet to read viewability.",
+    category: "waiting",
+  },
+};
+
+/* Strip a trailing `_<int|float>` threshold so templated tokens like
+   `min_impressions_1000` resolve to the `min_impressions` family entry. */
+const GUARD_FALLBACK: { text: string; category: GuardCategory } = {
+  text: "Not enough data to report this yet.",
+  category: "waiting",
+};
+
+export function guardCopy(
+  reason: string | null
+): { text: string; category: GuardCategory } {
+  if (reason == null) return GUARD_FALLBACK;
+  const exact = GUARD_REASONS[reason];
+  if (exact) return exact;
+  const normalized = reason.replace(/_-?\d+(\.\d+)?$/, "");
+  const fam = GUARD_REASONS[normalized];
+  if (fam) return fam;
+  return GUARD_FALLBACK;
+}
+
 /* ── Curated action copy — shown on ACT NOW cards ───────────────────────
    Keyed by signal ID, matched to the PRODUCTION signal definitions (the
    `name=` arguments at the SignalResult construction sites — same source

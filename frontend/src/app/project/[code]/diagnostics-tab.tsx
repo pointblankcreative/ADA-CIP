@@ -28,6 +28,8 @@ import {
 import {
   buildTriageModel,
   formatEvidence,
+  GUARD_CATEGORY_LABEL,
+  guardCopy,
   OWNER_LABELS,
   PILLAR_LABELS,
   SIGNAL_EVIDENCE,
@@ -49,6 +51,11 @@ function statusVar(status: string | null | undefined): string {
   if (status === "ACTION") return "var(--danger)";
   return "var(--text-faint)";
 }
+
+/** Glossary key for a pillar (e.g. "distribution" -> "pillar_distribution").
+ *  Returns plain children when the key is unknown, so pillar-less or
+ *  unrecognised signals degrade cleanly. */
+const pillarTermKey = (p: string) => `pillar_${p}`;
 
 /** Message to show for an engine-level alert ON THE BOARD. The triage board
  *  already renders each failing signal as its own ACT/WATCH card, so the
@@ -163,6 +170,57 @@ function DgTag({ children }: { children: React.ReactNode }) {
     <span className="whitespace-nowrap rounded-xs border border-line px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
       {children}
     </span>
+  );
+}
+
+/* ── score legend (#3) ──────────────────────────────────────────────
+   One quiet row under the engine chips that names the health scale, maps
+   its three bands to their colours, and draws the line to pacing so the
+   two 0-100-ish meters are never conflated. Each band label is a glossary
+   affordance; the swatch colours track the status tokens. */
+
+function DgSwatch({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-2 w-2 flex-shrink-0 rounded-[1px] align-middle"
+      style={{ background: color }}
+    />
+  );
+}
+
+function DgScaleLegend() {
+  return (
+    <div className="mt-2 flex w-full flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[10px] text-fg-faint">
+      <Glossary termKey="score_scale" variant="underline">
+        Health score
+      </Glossary>
+      <span aria-hidden>·</span>
+      <span className="inline-flex items-center gap-1">
+        <DgSwatch color="var(--ok)" />
+        <Glossary termKey="band_strong" variant="underline">
+          Strong 70 and up
+        </Glossary>
+      </span>
+      <span aria-hidden>·</span>
+      <span className="inline-flex items-center gap-1">
+        <DgSwatch color="var(--warn)" />
+        <Glossary termKey="band_watch" variant="underline">
+          Watch 40 to 69
+        </Glossary>
+      </span>
+      <span aria-hidden>·</span>
+      <span className="inline-flex items-center gap-1">
+        <DgSwatch color="var(--danger)" />
+        <Glossary termKey="band_action" variant="underline">
+          At risk under 40
+        </Glossary>
+      </span>
+      <span aria-hidden>·</span>
+      <span>
+        Different from pacing, which tracks whether spend is on schedule.
+      </span>
+    </div>
   );
 }
 
@@ -319,8 +377,11 @@ function DgEvidence({ s }: { s: TriageSignal }) {
         </div>
       )}
       {!s.guard_passed && s.guard_reason && (
-        <DgKV k="Not scored" v={s.guard_reason.replace(/_/g, " ")} />
+        <DgKV k="Not scored" v={guardCopy(s.guard_reason).text} />
       )}
+      {/* The raw signal code lives here now (#16): demoted out of the
+          card headline but kept discoverable for traceability. */}
+      <div className="font-mono text-[10px] text-fg-faint">Signal {s.id}</div>
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -352,7 +413,13 @@ function DgChip({ chip }: { chip: TriageEngineChip }) {
   return (
     <div className="rounded-md border-[1.5px] border-line bg-surface-card px-4 pb-[11px] pt-2.5">
       <div className="flex items-center gap-3">
-        <span className="label text-[9.5px]">{chip.label}</span>
+        <Glossary
+          termKey={`engine_${chip.id}`}
+          variant="wrap"
+          className="label text-[9.5px]"
+        >
+          <span className="label text-[9.5px]">{chip.label}</span>
+        </Glossary>
         <span
           className="tnum font-display text-[30px] leading-none"
           style={{ color: statusVar(chip.status) }}
@@ -404,21 +471,30 @@ function DgActCard({
         className="px-[18px] pb-4 pt-4"
         style={{ background: "color-mix(in srgb, var(--danger) 7%, transparent)" }}
       >
-        {/* Lead with the signal's plain name — "D3" alone means nothing
-            to most users. The code stays as quiet metadata beside it. */}
+        {/* The signal NAME is the headline (#16) — the code "D3" alone
+            means nothing to most users, so it moves to a title tooltip and
+            the Details panel. The pillar stays a small, quiet locator
+            ahead of it, definition-wrapped (#9), so the names read cleanly
+            down the column. (This header is a div, so wrapping the pillar
+            DgTag in a Glossary button is safe here — no nested buttons.) */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-          <span className="font-mono text-[11px] font-bold text-danger">{s.id}</span>
+          {s.pillar && (
+            <Glossary termKey={pillarTermKey(s.pillar)} variant="wrap">
+              <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>
+            </Glossary>
+          )}
           {lookupTerm(s.id) ? (
             <Glossary termKey={s.id} variant="wrap">
-              <span className="text-[11.5px] font-semibold text-fg-muted">
+              <span className="text-[14px] font-semibold text-fg" title={`Signal ${s.id}`}>
                 {s.name}
               </span>
             </Glossary>
           ) : (
-            <span className="text-[11.5px] font-semibold text-fg-muted">{s.name}</span>
+            <span className="text-[14px] font-semibold text-fg" title={`Signal ${s.id}`}>
+              {s.name}
+            </span>
           )}
           {mixed && <DgEngine engine={s.engine} />}
-          {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
           <span className="ml-auto flex items-center gap-2">
             <DgSpark data={s.trend} w={62} h={16} color="var(--danger)" />
             <DgDelta delta={s.delta} />
@@ -497,9 +573,15 @@ function DgWatchCard({
           onClick={() => setOpen(!open)}
           className="block min-w-0 flex-1 px-[15px] py-[13px] text-left"
         >
+          {/* Name is the headline (#16); code moves to a title tooltip +
+              Details. The pillar stays a plain, quiet locator — it lives
+              INSIDE this toggle button, so it must NOT be Glossary-wrapped
+              (that would nest a button in a button); its definition is
+              exposed by a sibling icon affordance outside the button. */}
           <div className="flex flex-wrap items-center gap-x-[7px] gap-y-1">
-            <span className="font-mono text-[10.5px] font-bold text-warn">{s.id}</span>
-            <span className="text-[11px] font-semibold text-fg-muted">{s.name}</span>
+            <span className="text-[13px] font-semibold text-fg" title={`Signal ${s.id}`}>
+              {s.name}
+            </span>
             {mixed && <DgEngine engine={s.engine} />}
             {s.pillar && <DgTag>{PILLAR_LABELS[s.pillar] ?? s.pillar}</DgTag>}
             <span className="ml-auto flex items-center gap-2">
@@ -520,16 +602,35 @@ function DgWatchCard({
             </span>
           </div>
         </button>
-        {lookupTerm(s.id) && (
-          <span className="flex-shrink-0 pr-[13px] pt-[14px]">
-            <Glossary
-              termKey={s.id}
-              variant="wrap"
-              side="bottom"
-              className="text-fg-faint"
-            >
-              <span className="sr-only">{s.name}</span>
-            </Glossary>
+        {/* Definition affordances, SIBLINGS of the toggle button (never
+            nested). The pillar icon (#9) exposes the pillar definition the
+            in-button DgTag can't carry; the signal-name icon (#14) carries
+            the signal's own definition. Each renders only when a glossary
+            entry exists, so cards without defs stay clean. */}
+        {(s.pillar || lookupTerm(s.id)) && (
+          <span className="flex flex-shrink-0 items-center gap-2 pr-[13px] pt-[14px]">
+            {s.pillar && (
+              <Glossary
+                termKey={pillarTermKey(s.pillar)}
+                variant="icon"
+                side="bottom"
+                className="text-fg-faint"
+              >
+                <span className="sr-only">
+                  {PILLAR_LABELS[s.pillar] ?? s.pillar} pillar
+                </span>
+              </Glossary>
+            )}
+            {lookupTerm(s.id) && (
+              <Glossary
+                termKey={s.id}
+                variant="wrap"
+                side="bottom"
+                className="text-fg-faint"
+              >
+                <span className="sr-only">{s.name}</span>
+              </Glossary>
+            )}
           </span>
         )}
       </div>
@@ -563,11 +664,15 @@ function DgHealthyRow({
         onClick={() => setOpen(!open)}
         className="flex w-full min-w-0 items-center gap-2.5 px-4 py-[9px] text-left"
       >
-        <span className="w-[22px] flex-shrink-0 font-mono text-[10.5px] font-bold text-ok">
-          {s.id}
-        </span>
+        {/* Name is the headline (#16); the code moves to a title tooltip +
+            the Details panel. Healthy rows carry no pillar, so name leads. */}
         {mixed && <DgEngine engine={s.engine} />}
-        <span className="flex-1 truncate text-[12.5px] text-fg-secondary">{s.name}</span>
+        <span
+          className="flex-1 truncate text-[12.5px] font-medium text-fg"
+          title={`Signal ${s.id}`}
+        >
+          {s.name}
+        </span>
         <DgSpark data={s.trend} w={52} h={14} color="var(--ok)" />
         <span className="tnum w-6 text-right font-mono text-xs font-bold text-ok">
           {s.score?.toFixed(0) ?? "—"}
@@ -577,7 +682,7 @@ function DgHealthyRow({
         </span>
       </button>
       {open && (
-        <div className="px-4 pb-[11px] pl-12">
+        <div className="px-4 pb-[11px]">
           <p className="mb-[7px] text-xs leading-relaxed text-fg-secondary">{s.diagnostic}</p>
           <DgEvidence s={s} />
         </div>
@@ -964,6 +1069,9 @@ export function DiagnosticsTab({
         </span>
       </div>
 
+      {/* score legend — names the scale + draws the line to pacing (#3) */}
+      <DgScaleLegend />
+
       {/* phase breakdown (multi-plan projects) */}
       {pacing && pacing.phases && pacing.phases.length > 1 && (
         <PhaseBreakdownPanel
@@ -980,7 +1088,7 @@ export function DiagnosticsTab({
         title="Act now"
         meta={
           act.length || critAlerts.length
-            ? `${act.length} signal${act.length === 1 ? "" : "s"} off pace${
+            ? `${act.length} signal${act.length === 1 ? "" : "s"} need action${
                 critAlerts.length
                   ? ` + ${critAlerts.length} critical alert${critAlerts.length === 1 ? "" : "s"}`
                   : ""
@@ -1022,7 +1130,7 @@ export function DiagnosticsTab({
           >
             <CheckCircle2 className="h-[15px] w-[15px] flex-shrink-0 text-ok" />
             <span className="text-[13px] text-fg-secondary">
-              No signals off pace — nothing needs intervention today.
+              No signals need action, nothing to intervene on today.
             </span>
           </div>
         )
@@ -1034,7 +1142,7 @@ export function DiagnosticsTab({
           <DgZoneHead
             color="var(--warn)"
             title="Keep an eye on"
-            meta={`${watch.length} signal${watch.length === 1 ? "" : "s"} drifting${
+            meta={`${watch.length} signal${watch.length === 1 ? "" : "s"} to watch${
               softAlerts.length
                 ? ` · ${softAlerts.length} alert${softAlerts.length === 1 ? "" : "s"}`
                 : ""
@@ -1070,8 +1178,8 @@ export function DiagnosticsTab({
         <>
           <DgZoneHead
             color="var(--ok)"
-            title="On pace"
-            meta={`${strong.length} signals on pace — compact view`}
+            title="Strong"
+            meta={`${strong.length} signals strong, compact view`}
           />
           <div className="overflow-hidden rounded-md border-[1.5px] border-line-soft bg-surface-card">
             {/* -1px margins hide the rows' outer borders against the card edge */}
@@ -1084,17 +1192,43 @@ export function DiagnosticsTab({
         </>
       )}
 
-      {/* NOT REPORTING */}
+      {/* NOT REPORTING (#13) — plain-language "why this is quiet" copy.
+          The raw guard token is mapped to an honest sentence + a category
+          (Coming soon / Waiting on data / Not applicable); the signal name
+          leads and the code moves to a title tooltip (#16). */}
       {dead.length > 0 && (
-        <div className="mt-[22px] flex flex-wrap items-baseline gap-6 border-t border-line-soft pt-3.5">
-          <span className="label whitespace-nowrap text-[9.5px]">Not reporting</span>
-          <div className="flex flex-wrap gap-x-[22px] gap-y-1.5">
-            {dead.map((s) => (
-              <span key={`${s.engine}-${s.id}`} className="font-mono text-[10.5px] text-fg-faint">
-                <b className="text-fg-muted">{s.id}</b> {s.name} —{" "}
-                {(s.guard_reason || "guard failed").replace(/_/g, " ")}
-              </span>
-            ))}
+        <div className="mt-[22px] border-t border-line-soft pt-3.5">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="label whitespace-nowrap text-[9.5px]">Not reporting</span>
+            <span className="text-[10.5px] text-fg-faint">
+              These checks are quiet for now, not failing.
+            </span>
+          </div>
+          <div className="mt-2.5 flex flex-col gap-1.5">
+            {dead.map((s) => {
+              const { text, category } = guardCopy(s.guard_reason);
+              return (
+                <span
+                  key={`${s.engine}-${s.id}`}
+                  className="font-mono text-[10.5px] text-fg-faint"
+                  title={`Signal ${s.id}`}
+                >
+                  <span
+                    className={cn(
+                      "mr-1.5 font-bold uppercase tracking-[0.06em]",
+                      category === "pending"
+                        ? "text-[var(--info)]"
+                        : "text-fg-faint"
+                    )}
+                  >
+                    {GUARD_CATEGORY_LABEL[category]}
+                  </span>
+                  <span className="text-fg-muted">{s.name}</span>
+                  <span className="mx-1.5 text-fg-faint">·</span>
+                  {text}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
