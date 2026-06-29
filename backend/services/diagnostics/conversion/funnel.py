@@ -311,9 +311,9 @@ F3_MESSAGES = {
         "{scroll_suffix}"
     ),
     StatusBand.ACTION: (
-        "Hardly any visitors reach the form ({discovery}). Move the "
-        "form up the page, ideally above the fold, or restructure the "
-        "page around it.{scroll_suffix}"
+        "Hardly any visitors reach the form ({discovery}). Most are "
+        "leaving before they ever see it, so few get the chance to act "
+        "on it.{scroll_suffix}"
     ),
 }
 

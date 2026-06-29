@@ -216,18 +216,18 @@ A5_MESSAGES = {
     ),
     "EARLY": (
         "Attention is starting to fade ({slope:.1f}%/day over the last "
-        "{days} days){worst_suffix}. Early sign the creative is wearing "
-        "out. Have a refresh ready within the week."
+        "{days} days){worst_suffix}. An early sign the creative is "
+        "beginning to wear out."
     ),
     "MODERATE": (
         "Attention is fading ({slope:.1f}%/day over the last {days} "
-        "days){worst_suffix}. The audience is tiring of this creative. "
-        "Line up a refresh: money spent on a tired ad buys less and "
-        "less."
+        "days){worst_suffix}. The audience is tiring of this creative, "
+        "and spend on a tired ad buys less and less attention."
     ),
     "SEVERE": (
         "Attention is falling fast ({slope:.1f}%/day over {days} days)"
-        "{worst_suffix}. The creative is burnt out. Swap it now."
+        "{worst_suffix}. The creative looks burnt out, and spend on it "
+        "is buying less attention each day."
     ),
 }
 
