@@ -10,10 +10,12 @@
 import type { ReactNode } from "react";
 import { cn, platformLabel } from "@/lib/utils";
 import {
+  quartileCue,
   quartileRead,
   resolveCell,
   type CreativeBenches,
   type CreativeVerdict,
+  type CueMetric,
   type Lens,
   type LensCellInput,
   type LensId,
@@ -118,11 +120,14 @@ export function VerdictWord({
   value,
   bench,
   size = 9.5,
+  metric,
   className,
 }: {
   value: number | null | undefined;
   bench: QuartileBench | null | undefined;
   size?: number;
+  /** #17: when set, append a plain-language direction cue under the word. */
+  metric?: CueMetric;
   className?: string;
 }) {
   const q = quartileRead(value, bench);
@@ -139,15 +144,29 @@ export function VerdictWord({
       </span>
     );
   }
+  const cue = metric ? quartileCue(metric, q.word) : null;
+  if (!cue) {
+    return (
+      <span
+        className={cn(
+          "whitespace-nowrap font-mono font-bold tracking-[0.12em]",
+          className
+        )}
+        style={{ fontSize: size, color: q.color }}
+      >
+        {q.word}
+      </span>
+    );
+  }
   return (
-    <span
-      className={cn(
-        "whitespace-nowrap font-mono font-bold tracking-[0.12em]",
-        className
-      )}
-      style={{ fontSize: size, color: q.color }}
-    >
-      {q.word}
+    <span className={cn("flex flex-col gap-0.5", className)}>
+      <span
+        className="whitespace-nowrap font-mono font-bold tracking-[0.12em]"
+        style={{ fontSize: size, color: q.color }}
+      >
+        {q.word}
+      </span>
+      <span className="text-[9px] leading-[1.3] text-fg-muted">{cue}</span>
     </span>
   );
 }

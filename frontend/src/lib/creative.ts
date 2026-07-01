@@ -114,6 +114,63 @@ export function quartileRead(
   };
 }
 
+/* ── #17: per-metric direction cue for a quartile word ───────────── */
+
+export type CueMetric =
+  | "cpm"
+  | "cpc"
+  | "cpa"
+  | "ctr"
+  | "completion_rate"
+  | "frequency";
+
+const QUARTILE_CUES: Record<CueMetric, Record<QuartileWord, string>> = {
+  cpm: {
+    "TOP QUARTILE": "cheaper reach than most PB campaigns, worth a quick quality check",
+    "ABOVE MEDIAN": "cheaper reach than the PB median, worth a quick quality check",
+    "BELOW MEDIAN": "costlier reach than the PB median",
+    "BOTTOM QUARTILE": "costlier reach than most PB campaigns",
+  },
+  cpc: {
+    "TOP QUARTILE": "cheaper clicks than most PB campaigns",
+    "ABOVE MEDIAN": "cheaper clicks than the PB median",
+    "BELOW MEDIAN": "pricier clicks than the PB median",
+    "BOTTOM QUARTILE": "pricier clicks than most PB campaigns",
+  },
+  cpa: {
+    "TOP QUARTILE": "cheaper results than most PB campaigns",
+    "ABOVE MEDIAN": "cheaper results than the PB median",
+    "BELOW MEDIAN": "pricier results than the PB median",
+    "BOTTOM QUARTILE": "pricier results than most PB campaigns",
+  },
+  ctr: {
+    "TOP QUARTILE": "stronger click-through than most PB campaigns",
+    "ABOVE MEDIAN": "stronger click-through than the PB median",
+    "BELOW MEDIAN": "softer click-through than the PB median",
+    "BOTTOM QUARTILE": "softer click-through than most PB campaigns",
+  },
+  completion_rate: {
+    "TOP QUARTILE": "more of the video finished than most PB campaigns",
+    "ABOVE MEDIAN": "more finished than the PB median",
+    "BELOW MEDIAN": "fewer finished than the PB median",
+    "BOTTOM QUARTILE": "fewer finished than most PB campaigns",
+  },
+  frequency: {
+    "TOP QUARTILE": "light exposure, lots of room to build",
+    "ABOVE MEDIAN": "light exposure, room to build",
+    "BELOW MEDIAN": "heavy exposure, watch for fatigue",
+    "BOTTOM QUARTILE": "heavy exposure, fatigue risk",
+  },
+};
+
+export function quartileCue(
+  metric: CueMetric | null | undefined,
+  word: QuartileWord | null | undefined
+): string | null {
+  if (!metric || !word) return null;
+  return QUARTILE_CUES[metric]?.[word] ?? null;
+}
+
 /* ── Benchmarks → the metrics the creative surfaces read ─────────── */
 
 export interface CreativeBenches {
@@ -181,11 +238,11 @@ export function primaryKpi(objective: ObjectiveType): PrimaryKpi {
       lowerIsBetter: false,
       why:
         "This flight is bought for reach and attention, not clicks. " +
-        "Completed views set the rank: scroll-stop backs it up, frequency " +
+        "Completed views set the rank: hook rate backs it up, frequency " +
         "is the guardrail. Click metrics are shown for completeness, not " +
         "as a KPI.",
       stages:
-        "Stopped = 3-second views over impressions. Watched = completed " +
+        "Hook rate = 3-second views over impressions. Watched = completed " +
         "views. Clicked = click-through.",
     };
   }
@@ -197,7 +254,7 @@ export function primaryKpi(objective: ObjectiveType): PrimaryKpi {
       "This flight is bought for results, so dollars per result set the " +
       "rank. Attention metrics explain the price: they don't set it.",
     stages:
-      "Stopped = 3-second views over impressions. Watched = completed " +
+      "Hook rate = 3-second views over impressions. Watched = completed " +
       "views. Clicked = click-through. Converted = platform-attributed " +
       "cost per result.",
   };
@@ -443,7 +500,10 @@ export interface CreativeCall {
  * "Scale one. Swap one." — the page's opening line, generated from the
  * verdicts. Input should already be ranked (rankCreatives).
  */
-export function buildCreativeCall(judged: JudgedCreative[]): CreativeCall {
+export function buildCreativeCall(
+  judged: JudgedCreative[],
+  objective: ObjectiveType
+): CreativeCall {
   if (judged.length === 0) {
     return {
       headline: "No rotation yet.",
@@ -475,6 +535,19 @@ export function buildCreativeCall(judged: JudgedCreative[]): CreativeCall {
     js.length > 2
       ? `${js.length} creatives`
       : js.map(name).join(" and ");
+  const bestCostAmong = (js: JudgedCreative[]): string | null => {
+    const vals = js.map((j) => j.primaryValue).filter((v): v is number => v != null);
+    if (vals.length === 0) return null;
+    return formatMoney(Math.min(...vals));
+  };
+  const creditPhrase = (winners: JudgedCreative[]): string => {
+    const cost = objective !== "awareness" ? bestCostAmong(winners) : null;
+    const subj =
+      winners.length > 1
+        ? `${list(winners)} are earning their keep`
+        : `${list(winners)} is earning its keep`;
+    return cost ? `${cap(subj)}, delivering results from ${cost}` : cap(subj);
+  };
 
   if (judged.length === 1) {
     const j = judged[0];
@@ -496,46 +569,58 @@ export function buildCreativeCall(judged: JudgedCreative[]): CreativeCall {
     };
   }
 
-  const parts: string[] = [];
-  if (scale.length > 0) {
-    parts.push(
-      `${list(scale)} ${scale.length > 1 ? "earn" : "earns"} the next dollar.`
-    );
-  }
-  if (refresh.length > 0) {
-    parts.push(
-      refresh.length > 1
+  /* #23: assemble the call from independent clauses so the holds can lead
+     when there's no scale verdict. Every count/placeholder and the exact
+     prior wording is preserved — only the order changes. */
+  const scaleClause =
+    scale.length > 0
+      ? `${list(scale)} ${scale.length > 1 ? "earn" : "earns"} the next dollar.`
+      : null;
+  const refreshClause =
+    refresh.length > 0
+      ? refresh.length > 1
         ? `${list(refresh)} are fatigued and getting pricier by the sync: swap them.`
         : `${list(refresh)} is fatigued and getting pricier by the sync: swap it.`
-    );
-  }
-  if (hold.length > 0) {
-    parts.push(`${list(hold)} ${hold.length > 1 ? "hold" : "holds"}.`);
-  }
-  if (early.length > 0) {
-    parts.push(
-      `${list(early)} ${early.length > 1 ? "are" : "is"} too new to judge.`
-    );
-  }
-  const body = parts.join(" ");
+      : null;
+  const holdClause =
+    hold.length > 0
+      ? `${list(hold)} ${hold.length > 1 ? "hold" : "holds"}.`
+      : null;
+  const earlyClause =
+    early.length > 0
+      ? `${list(early)} ${early.length > 1 ? "are" : "is"} too new to judge.`
+      : null;
+  const join = (cs: (string | null)[]) => cs.filter(Boolean).join(" ");
 
-  if (scale.length > 0 && refresh.length > 0) {
-    return { headline: "Scale one. Swap one.", body };
-  }
-  if (refresh.length > 0) {
+  // scale + refresh: winner already leads — UNCHANGED
+  if (scale.length > 0 && refresh.length > 0)
     return {
-      headline:
-        refresh.length > 1 ? "Swap the tired ones." : "Swap the tired one.",
-      body,
+      headline: "Scale one. Swap one.",
+      body: join([scaleClause, refreshClause, holdClause, earlyClause]),
+    };
+  // scale only — UNCHANGED
+  if (scale.length > 0)
+    return {
+      headline: "Feed the leader.",
+      body: join([scaleClause, holdClause, earlyClause]),
+    };
+  // #23: no scale. Credit the holds first, then the swap (kept).
+  if (refresh.length > 0) {
+    if (hold.length > 0)
+      return {
+        headline: "The steady ones are holding. Refresh the rest.",
+        body: join([`${creditPhrase(hold)}.`, refreshClause, earlyClause]),
+      };
+    return {
+      headline: "Time to refresh.",
+      body: join([refreshClause, earlyClause]),
     };
   }
-  if (scale.length > 0) {
-    return { headline: "Feed the leader.", body };
-  }
+  // hold only
   return {
     headline: "Hold the rotation.",
     body:
-      body ||
+      join([hold.length > 0 ? `${creditPhrase(hold)}.` : null, earlyClause]) ||
       "Nothing is fatigued and nothing has broken away. Keep the split as is.",
   };
 }
@@ -617,8 +702,8 @@ export function lensesFor(objective: ObjectiveType): Lens[] {
       },
       {
         id: "hook",
-        label: "SCROLL-STOP",
-        explain: "Share of impressions that stopped the scroll for 3+ seconds.",
+        label: "HOOK RATE",
+        explain: "Share of impressions held for 3 seconds or more (the hook).",
       },
       {
         id: "engagement",
@@ -649,8 +734,8 @@ export function lensesFor(objective: ObjectiveType): Lens[] {
     },
     {
       id: "hook",
-      label: "SCROLL-STOP",
-      explain: "Share of impressions that stopped the scroll for 3+ seconds.",
+      label: "HOOK RATE",
+      explain: "Share of impressions held for 3 seconds or more (the hook).",
     },
     {
       id: "completion",
