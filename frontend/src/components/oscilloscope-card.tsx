@@ -4,8 +4,8 @@
  * The pacing instrument — the Signal Lab's Orbit, replacing the old
  * oscilloscope: this campaign is the core, and its line items orbit it.
  * On-pace lines hold their shell; drifters wobble; broken lines judder
- * off-orbit. Hover a body to read it (and solo its voice when sound is
- * on); click the stage for the 60-day trend + line table.
+ * off-orbit. Hover a body to read it; click the stage for the 60-day
+ * trend + line table.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -24,12 +24,9 @@ import { ChevronDown } from "lucide-react";
 import type { PacingResponse, PacingLine, PacingHistoryResponse } from "@/lib/api";
 import { api } from "@/lib/api";
 import { computeHealthScore, isLinePending } from "@/lib/oscilloscope";
-import { HealthAudio } from "@/lib/viz/audio-engine";
 import { lineSignalItems } from "@/lib/viz/health-core";
 import {
-  SignalSoundButton,
   SignalTooltip,
-  useOptInSound,
   useOrbitInstrument,
 } from "@/components/signals/instrument";
 import { formatPercent, platformLabel, cn } from "@/lib/utils";
@@ -238,22 +235,14 @@ export function OscilloscopeCard({
   const items = useMemo(() => lineSignalItems(pacing.lines), [pacing.lines]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const audioRef = useRef<HealthAudio | null>(null);
-  if (!audioRef.current) audioRef.current = new HealthAudio();
-  const safeAudioRef = audioRef as React.MutableRefObject<HealthAudio>;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [bounds, setBounds] = useState({ w: 0, h: 0 });
   const hoverRef = useRef<string | null>(null);
   hoverRef.current = hoverId;
-  const vizRef = useOrbitInstrument(canvasRef, itemsRef, hoverRef, safeAudioRef, true);
-  const { soundOn, toggle, secsLeft } = useOptInSound(safeAudioRef, itemsRef, 15);
+  const vizRef = useOrbitInstrument(canvasRef, itemsRef, hoverRef, true);
 
-  useEffect(() => {
-    safeAudioRef.current.solo(soundOn ? hoverId : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoverId, soundOn]);
   useEffect(() => {
     onHover?.(hoverId); // light up the matching line row below
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -326,9 +315,6 @@ export function OscilloscopeCard({
               {hov
                 ? `${hov.code} · ${hov.label} · ${hov.pct != null ? hov.pct.toFixed(0) + "%" : "no data"}`
                 : `${items.length} lines in flight · hover to read`}
-            </span>
-            <span onClick={(e) => e.stopPropagation()} className="inline-flex">
-              <SignalSoundButton soundOn={soundOn} toggle={toggle} secsLeft={secsLeft} />
             </span>
           </div>
         </div>
