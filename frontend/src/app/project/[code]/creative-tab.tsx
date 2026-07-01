@@ -179,16 +179,16 @@ function buildStages(
 
   if (video) {
     stages.push({
-      label: "STOPPED",
+      label: "HOOK RATE",
       value: cr.hook_rate,
       bench: benches.hook_rate,
       format: formatRate,
     });
   } else {
     stages.push({
-      label: "STOPPED",
+      label: "HOOK RATE",
       value: null,
-      na: "STATIC · NO HOOK SIGNAL",
+      na: "n/a (static)",
       format: formatRate,
     });
   }
@@ -441,7 +441,7 @@ function RotationCard({
         </div>
         <div>
           <div className="font-mono text-[8px] tracking-[0.1em] text-fg-faint">
-            FREQUENCY
+            FREQUENCY · LAST 8 DAYS
           </div>
           <Spark
             data={freqTrend}
@@ -1105,7 +1105,10 @@ export function CreativeTab({
     [rotation, objective, benches]
   );
   const pk = primaryKpi(objective);
-  const call = useMemo(() => buildCreativeCall(judged), [judged]);
+  const call = useMemo(
+    () => buildCreativeCall(judged, objective),
+    [judged, objective]
+  );
   const imbalance = useMemo(
     () => rotationImbalance(judged, objective, pk.label),
     [judged, objective, pk.label]
@@ -1276,11 +1279,13 @@ export function CreativeTab({
             <ReportTile
               label="Frequency"
               value={formatTimes(totals.frequency)}
+              sub={win === "7d" ? "last 7 days" : "flight to date"}
               verdict={
                 <VerdictWord
                   value={totals.frequency}
                   bench={benches.frequency}
                   size={8.5}
+                  metric="frequency"
                 />
               }
             />
@@ -1297,6 +1302,7 @@ export function CreativeTab({
                   value={totals.completion_rate}
                   bench={benches.completion_rate}
                   size={8.5}
+                  metric="completion_rate"
                 />
               }
             />
@@ -1320,7 +1326,12 @@ export function CreativeTab({
               label="CPM"
               value={totals.cpm != null ? formatMoney(totals.cpm) : "—"}
               verdict={
-                <VerdictWord value={totals.cpm} bench={benches.cpm} size={8.5} />
+                <VerdictWord
+                  value={totals.cpm}
+                  bench={benches.cpm}
+                  size={8.5}
+                  metric="cpm"
+                />
               }
             />
           </div>
@@ -1340,6 +1351,7 @@ export function CreativeTab({
                     value={totals.cpa}
                     bench={benches.cpa}
                     size={8.5}
+                    metric="cpa"
                   />
                 }
               />
@@ -1355,6 +1367,7 @@ export function CreativeTab({
                     value={totals.clicks > 0 ? totals.spend / totals.clicks : null}
                     bench={benches.cpc}
                     size={8.5}
+                    metric="cpc"
                   />
                 }
               />
@@ -1407,6 +1420,7 @@ export function CreativeTab({
                       value={totals.ctr}
                       bench={benches.ctr}
                       size={8.5}
+                      metric="ctr"
                     />
                   }
                 />
