@@ -40,8 +40,10 @@ import {
   formatMoney,
   formatRate,
   formatTimes,
+  isUnresolvedVariant,
   judgeCreative,
   lensesFor,
+  pickReportConversions,
   primaryKpi,
   rankCreatives,
   rotationImbalance,
@@ -102,9 +104,13 @@ function AdLevelAwaiting() {
 function AliasName({
   name,
   onRename,
+  showNameCta = false,
 }: {
   name: string;
   onRename: (value: string) => void;
+  /** #19: render a plain "Name this creative" trigger alongside the pencil,
+   *  for unresolved variants that need naming (reuses the same editor). */
+  showNameCta?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(name);
@@ -149,6 +155,14 @@ function AliasName({
       >
         <Pencil className="h-3 w-3" />
       </button>
+      {showNameCta && (
+        <button
+          onClick={() => setEditing(true)}
+          className="flex-shrink-0 whitespace-nowrap font-mono text-[9px] font-bold tracking-[0.06em] text-accent-ink transition-colors hover:text-fg"
+        >
+          Name this creative
+        </button>
+      )}
     </span>
   );
 }
@@ -301,6 +315,95 @@ function StageRow({ s }: { s: FunnelStage }) {
   );
 }
 
+/* ── #11: per-platform video drop-off — once watching, how far ───── */
+
+/**
+ * Retention read for a video creative, per platform. Anchored at the 25%
+ * mark on each platform (25% = 100 by construction) so platforms compare
+ * fairly regardless of how many people started the video on each. Renders
+ * nothing when no platform cell carries a 25% cohort.
+ */
+function VideoDropoff({
+  cells,
+}: {
+  /** matrixCells[cr.variant] — the current creative's per-platform row. */
+  cells: Record<string, CreativeMatrixCell> | undefined;
+}) {
+  if (!cells) return null;
+  const rows = Object.entries(cells).filter(
+    ([, cell]) => cell.video_q25 > 0
+  );
+  if (rows.length === 0) return null;
+
+  const marks: Array<{ label: string; get: (c: CreativeMatrixCell) => number }> =
+    [
+      { label: "25%", get: (c) => c.video_q25 },
+      { label: "50%", get: (c) => c.video_q50 },
+      { label: "75%", get: (c) => c.video_q75 },
+      { label: "100%", get: (c) => c.video_q100 },
+    ];
+
+  return (
+    <div className="mx-4 mt-3 rounded-sm bg-surface-sunken px-3 py-2.5">
+      <div className="font-mono text-[8px] tracking-[0.1em] text-fg-faint">
+        ONCE WATCHING, HOW FAR
+      </div>
+      <div className="mt-2 flex flex-col gap-3">
+        {rows.map(([platformId, cell]) => {
+          const base = cell.video_q25;
+          const finished = Math.round((cell.video_q100 / base) * 100);
+          return (
+            <div key={platformId}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-mono text-[9px] font-bold tracking-[0.08em] text-fg-secondary">
+                  {platformLabel(platformId)}
+                </span>
+                <span className="font-mono text-[8.5px] text-fg-faint">
+                  {formatNumberCompact(base)} reached 25%
+                </span>
+              </div>
+              <div className="mt-1.5 grid grid-cols-4 gap-1.5">
+                {marks.map((m) => {
+                  const retention = Math.round((m.get(cell) / base) * 100);
+                  return (
+                    <div key={m.label} className="flex flex-col items-center gap-1">
+                      <div className="flex h-[26px] w-full items-end justify-center">
+                        <div
+                          className="w-full rounded-xs bg-accent"
+                          style={{
+                            height: `${Math.max(2, retention)}%`,
+                            opacity: 0.28 + (retention / 100) * 0.55,
+                          }}
+                        />
+                      </div>
+                      <div className="tnum font-mono text-[9px] font-bold text-fg">
+                        {retention}%
+                      </div>
+                      <div className="font-mono text-[7.5px] tracking-[0.06em] text-fg-faint">
+                        {m.label}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-1 font-mono text-[8.5px] text-fg-muted">
+                Finished: {finished}% of its 25% viewers
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2.5 font-mono text-[8px] leading-[1.5] text-fg-faint">
+        Share of viewers who reached 25%, then how many stayed. Shown per
+        platform.
+      </div>
+      <div className="mt-0.5 font-mono text-[8px] leading-[1.5] text-fg-faint opacity-70">
+        Anchored at the 25% mark on each platform, so they compare fairly.
+      </div>
+    </div>
+  );
+}
+
 /* ── Best audience for a creative — the Audiences-page echo ──────── */
 
 /**
@@ -347,6 +450,7 @@ function RotationCard({
   benches,
   coverage,
   bestAud,
+  matrixCells,
   onTab,
   onRename,
 }: {
@@ -355,6 +459,9 @@ function RotationCard({
   benches: CreativeBenches;
   coverage: RotationCoverage | undefined;
   bestAud: MatrixAudience | null;
+  /** #11: this creative's per-platform matrix row (matrix.cells[variant]),
+   *  for the video drop-off read. */
+  matrixCells: Record<string, CreativeMatrixCell> | undefined;
   onTab: (tab: string) => void;
   onRename: (oldVariant: string, value: string) => void;
 }) {
@@ -378,6 +485,23 @@ function RotationCard({
   const reports = cr.platforms.filter((p) => covList.includes(p));
   const missing =
     covList.length > 0 ? cr.platforms.filter((p) => !covList.includes(p)) : [];
+
+  /* #19: an unresolved name gets the NEEDS A NAME chip and a reason built
+     here, where spend + impressions are formatted. Spend/impressions stay
+     visible and the card stays in the ranked list. */
+  const unresolved = isUnresolvedVariant(cr.variant);
+  const dimensionsOnly = /^\s*\d+\s*[x×]\s*\d+\s*$/.test(cr.variant);
+  const unresolvedReason = dimensionsOnly
+    ? `Its name came through as raw dimensions (${cr.variant}), so it has not been matched to an asset and is not graded. It has spent ${formatCurrencyCompact(
+        cr.spend
+      )} across ${formatNumberCompact(
+        cr.impressions
+      )} impressions. Give it a name to fold it into the rotation read.`
+    : `This creative has not been matched to a name yet, so it is not graded. It has spent ${formatCurrencyCompact(
+        cr.spend
+      )} across ${formatNumberCompact(
+        cr.impressions
+      )} impressions. Give it a name to fold it into the rotation read.`;
 
   return (
     <Card
@@ -404,7 +528,11 @@ function RotationCard({
           }
         />
         <div className="mt-3 flex items-center justify-between gap-2.5">
-          <AliasName name={cr.variant} onRename={(v) => onRename(cr.variant, v)} />
+          <AliasName
+            name={cr.variant}
+            onRename={(v) => onRename(cr.variant, v)}
+            showNameCta={unresolved}
+          />
           <CreativeVerdictChip verdict={j.verdict} />
         </div>
         <div className="mt-2 flex items-center gap-2">
@@ -417,7 +545,7 @@ function RotationCard({
           </span>
         </div>
         <p className="mt-2.5 min-h-[40px] text-xs leading-[1.55] text-fg-secondary">
-          {j.reason}
+          {unresolved ? unresolvedReason : j.reason}
         </p>
       </div>
 
@@ -426,6 +554,8 @@ function RotationCard({
           <StageRow key={s.label} s={s} />
         ))}
       </div>
+
+      {cr.type === "video" && <VideoDropoff cells={matrixCells} />}
 
       <div className="mx-4 mt-3 flex items-center gap-3.5 rounded-sm bg-surface-sunken px-3 py-2">
         <div>
@@ -641,7 +771,8 @@ function ReportTile({
   verdict,
   sub,
 }: {
-  label: string;
+  /** #5: widened to ReactNode so a label can carry a Glossary wrapper. */
+  label: React.ReactNode;
   value: string;
   verdict?: React.ReactNode;
   sub?: string;
@@ -670,6 +801,17 @@ const SCALE_METRIC_NOTE = (
     title="Scale metrics measure size, not quality: no benchmark applies"
   >
     SCALE METRIC
+  </span>
+);
+
+/* #5: the report-ready flag — platform-attributed conversions are the
+   single defensible figure for the client report. */
+const REPORT_THIS_NOTE = (
+  <span
+    className="font-mono text-[8.5px] tracking-[0.1em] text-accent-ink"
+    title="Platform-attributed conversions: the single defensible number for the client report. GA4 tracks a broader set of site key events separately."
+  >
+    REPORT THIS
   </span>
 );
 
@@ -774,7 +916,12 @@ function AfterTheClick({
             className="font-mono text-[10.5px] font-bold"
             style={{ color: arrivalTone }}
           >
-            → {arrival != null ? `${arrival.toFixed(0)}% arrive` : "—"}
+            →{" "}
+            {arrival != null
+              ? `${arrival.toFixed(0)}% arrive${
+                  arrival >= 100 ? " (over 100% is normal)" : ""
+                }`
+              : "—"}
           </div>
         </div>
         <FunnelBox
@@ -798,11 +945,11 @@ function AfterTheClick({
           label="Conversions (GA4)"
           value={formatNumberCompact(conversions)}
           sub={
-            platformConv != null
-              ? `Platforms report ${formatNumberCompact(
+            platformConv != null && platformConv > 0
+              ? `The platform figure (${formatNumberCompact(
                   Math.round(platformConv)
-                )}: cross-device double-count`
-              : undefined
+                )}) is the one for the report. GA4 counts a wider set of site key events, so the two will not match.`
+              : "GA4 counts a wider set of site key events than the platforms report, so these two will not match."
           }
         />
       </div>
@@ -1138,6 +1285,18 @@ export function CreativeTab({
   const cov = rotation.coverage;
   const covNames = (ids: string[]) => ids.map(platformLabel).join(" + ");
 
+  /* #5: which conversions number the report should quote. Rotation totals
+     carry the platform-attributed figure; GA4 is the broader site-events
+     count. When the platform number is present, it is the one to report. */
+  const platformConv = totals.conversions ?? perf?.total_conversions ?? 0;
+  const ga4Conv = ga4?.total_conversions ?? 0;
+  const reportConv = pickReportConversions(platformConv, ga4Conv, objective);
+  /* #5: the report-totals arrival read, so we can de-alarm ">100% arrive". */
+  const reportArrival =
+    perf?.total_clicks && perf.total_clicks > 0
+      ? (ga4?.total_sessions ?? 0) / perf.total_clicks * 100
+      : null;
+
   return (
     <div className="flex flex-col gap-4">
       {/* the call */}
@@ -1222,6 +1381,7 @@ export function CreativeTab({
               benches={benches}
               coverage={cov}
               bestAud={bestAudienceFor(j.creative.variant, objective, audMatrix)}
+              matrixCells={matrix?.cells[j.creative.variant]}
               onTab={onTab}
               onRename={handleRename}
             />
@@ -1340,7 +1500,11 @@ export function CreativeTab({
               <ReportTile
                 label="Conversions"
                 value={formatNumberCompact(Math.round(totals.conversions))}
-                verdict={SCALE_METRIC_NOTE}
+                verdict={
+                  reportConv.source === "platform"
+                    ? REPORT_THIS_NOTE
+                    : SCALE_METRIC_NOTE
+                }
               />
               <ReportTile
                 label="CPA"
@@ -1400,13 +1564,17 @@ export function CreativeTab({
               />
               {ga4?.has_ga4 ? (
                 <ReportTile
-                  label="Sessions (GA4)"
+                  label={
+                    <Glossary termKey="sessions_arrival" variant="icon">
+                      Sessions (GA4)
+                    </Glossary>
+                  }
                   value={formatNumberCompact(ga4.total_sessions)}
                   sub={
-                    perf?.total_clicks
-                      ? `${Math.round(
-                          (ga4.total_sessions / perf.total_clicks) * 100
-                        )}% of clicks arrive`
+                    reportArrival != null
+                      ? `${Math.round(reportArrival)}% of clicks arrive${
+                          reportArrival >= 100 ? " (over 100% is normal)" : ""
+                        }`
                       : undefined
                   }
                   verdict={SCALE_METRIC_NOTE}
