@@ -1,16 +1,10 @@
 "use client";
 
 /**
- * Shared Signal-instrument plumbing: the Orbit driver hook, the opt-in
- * sound hook, the Listen button, and the cursor-following readout card.
- *
- * Sound is strictly opt-in: silent until the Listen button is pressed
- * (tape click on/off), hovering a body solos its voice, and it always
- * switches itself off after a short countdown. The work tool never sings
- * uninvited.
+ * Shared Signal-instrument plumbing: the Orbit driver hook and the
+ * cursor-following readout card.
  */
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -18,8 +12,6 @@ import {
   type MutableRefObject,
   type RefObject,
 } from "react";
-import { Volume2, VolumeX } from "lucide-react";
-import { HealthAudio } from "@/lib/viz/audio-engine";
 import {
   COLORS,
   STATUS_WORD,
@@ -28,9 +20,6 @@ import {
   type SignalItem,
 } from "@/lib/viz/health-core";
 import { createOrbit, type OrbitInstance } from "@/lib/viz/viz-orbit";
-import { cn } from "@/lib/utils";
-
-const SIGNALS_VOICE = "tuneup";
 
 /* Drive an Orbit on a canvas — staged entrance: a quiet beat after load,
    the shells bloom outward from the core, then the bodies glide in slowly
@@ -39,7 +28,6 @@ export function useOrbitInstrument(
   canvasRef: RefObject<HTMLCanvasElement>,
   itemsRef: MutableRefObject<SignalItem[]>,
   hoverRef: MutableRefObject<string | null>,
-  audioRef: MutableRefObject<HealthAudio>,
   compact: boolean
 ): MutableRefObject<OrbitInstance | null> {
   const vizRef = useRef<OrbitInstance | null>(null);
@@ -82,7 +70,7 @@ export function useOrbitInstrument(
         focusId: null,
         hoverId: hoverRef.current,
         reduce,
-        audio: audioRef.current.levels(itemsRef.current),
+        audio: null,
       });
       raf = requestAnimationFrame(loop);
     };
@@ -95,99 +83,6 @@ export function useOrbitInstrument(
   }, []);
 
   return vizRef;
-}
-
-/* Opt-in sound with auto-off. */
-export function useOptInSound(
-  audioRef: MutableRefObject<HealthAudio>,
-  itemsRef: MutableRefObject<SignalItem[]>,
-  autoOffSecs: number
-) {
-  const [soundOn, setSoundOn] = useState(false);
-  const [offAt, setOffAt] = useState<number | null>(null);
-  const [, tick] = useState(0);
-
-  useEffect(() => {
-    if (offAt == null) return;
-    const iv = setInterval(() => {
-      if (performance.now() >= offAt) {
-        audioRef.current.setMuted(true, true);
-        setSoundOn(false);
-        setOffAt(null);
-      } else tick((n) => n + 1);
-    }, 200);
-    return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offAt]);
-
-  // leaving the view silences and tears down the voices
-  useEffect(
-    () => () => {
-      try {
-        audioRef.current.setMuted(true, false);
-        audioRef.current.stopAll();
-      } catch {
-        /* already torn down */
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
-
-  const toggle = useCallback(() => {
-    const a = audioRef.current;
-    if (soundOn) {
-      a.setMuted(true, true);
-      setSoundOn(false);
-      setOffAt(null);
-    } else {
-      a.engage();
-      a.setVoicing(SIGNALS_VOICE);
-      a.cruise(itemsRef.current); // straight to the cruise — no boot overture in the tool
-      a.setMuted(false, true);
-      setSoundOn(true);
-      setOffAt(performance.now() + autoOffSecs * 1000);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soundOn, autoOffSecs]);
-
-  const secsLeft =
-    offAt == null ? null : Math.max(0, Math.ceil((offAt - performance.now()) / 1000));
-  return { soundOn, toggle, secsLeft };
-}
-
-export function SignalSoundButton({
-  soundOn,
-  toggle,
-  secsLeft,
-}: {
-  soundOn: boolean;
-  toggle: () => void;
-  secsLeft: number | null;
-}) {
-  return (
-    <button
-      onClick={toggle}
-      title={
-        soundOn
-          ? `Stops itself in ${secsLeft}s — click to stop now`
-          : "Hear the signals — on pace runs steady, trouble sounds off"
-      }
-      className={cn(
-        "inline-flex flex-shrink-0 items-center gap-[7px] rounded-sm border-2 px-2.5 py-[5px] font-mono text-[10px] font-bold uppercase tracking-[0.1em] transition-colors duration-fast",
-        soundOn
-          ? "border-accent bg-accent text-on-accent"
-          : "border-line-soft bg-transparent text-fg-muted hover:border-line"
-      )}
-    >
-      {soundOn ? (
-        <Volume2 className="h-[13px] w-[13px]" />
-      ) : (
-        <VolumeX className="h-[13px] w-[13px]" />
-      )}
-      {soundOn ? "0:" + String(secsLeft ?? 0).padStart(2, "0") : "Listen"}
-    </button>
-  );
 }
 
 /* Cursor-following readout card for a hovered body. Measured after render

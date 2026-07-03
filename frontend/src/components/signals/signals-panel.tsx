@@ -5,16 +5,12 @@
  * Every active campaign orbits the platform core: healthy bodies hold
  * their shell, drifters wobble, critical ones judder off-orbit. Hover a
  * body to read it (and light up its flight row below); click to open it.
- * Sound is opt-in via the Listen button and always turns itself off.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Project } from "@/lib/api";
-import { HealthAudio } from "@/lib/viz/audio-engine";
 import { campaignSignalItems } from "@/lib/viz/health-core";
 import {
-  SignalSoundButton,
   SignalTooltip,
-  useOptInSound,
   useOrbitInstrument,
 } from "@/components/signals/instrument";
 import { Label } from "@/components/ui";
@@ -34,24 +30,15 @@ export function SignalsPanel({
   const items = useMemo(() => campaignSignalItems(projects), [projects]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const audioRef = useRef<HealthAudio | null>(null);
-  if (!audioRef.current) audioRef.current = new HealthAudio();
-  const safeAudioRef = audioRef as React.MutableRefObject<HealthAudio>;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [bounds, setBounds] = useState({ w: 0, h: 0 });
   const hoverRef = useRef<string | null>(null);
   hoverRef.current = hoverId;
-  const vizRef = useOrbitInstrument(canvasRef, itemsRef, hoverRef, safeAudioRef, false);
-  const { soundOn, toggle, secsLeft } = useOptInSound(safeAudioRef, itemsRef, 30);
+  const vizRef = useOrbitInstrument(canvasRef, itemsRef, hoverRef, false);
 
-  // hovering a body solos its voice — the stethoscope
-  useEffect(() => {
-    safeAudioRef.current.solo(soundOn ? hoverId : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoverId, soundOn]);
-  // …and lights up its flight row below
+  // lights up the hovered campaign's flight row below
   useEffect(() => {
     onHover?.(hoverId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -105,7 +92,6 @@ export function SignalsPanel({
             ? `${hov.code} · ${hov.label}${hov.pct != null ? ` · ${hov.pct.toFixed(1)}%` : " · no data"}`
             : "Hover to read · click to open"}
         </span>
-        <SignalSoundButton soundOn={soundOn} toggle={toggle} secsLeft={secsLeft} />
       </div>
       <div className="relative">
         <canvas
