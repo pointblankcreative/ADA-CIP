@@ -501,6 +501,9 @@ export function AudiencesTab({
   if (loading) {
     return (
       <div className="space-y-4">
+        <p className="text-xs text-fg-muted">
+          Loading audiences, pulling each audience&apos;s numbers takes a little while…
+        </p>
         <Card className="animate-pulse">
           <div className="h-9 w-72 rounded bg-surface-sunken" />
           <div className="mt-4 h-4 w-96 rounded bg-surface-sunken" />
