@@ -1117,6 +1117,9 @@ export function CreativeTab({
   if (loading) {
     return (
       <div className="space-y-4">
+        <p className="text-xs text-fg-muted">
+          Loading creative, the ad previews take a little while to come through…
+        </p>
         <Card className="animate-pulse">
           <div className="h-9 w-72 rounded bg-surface-sunken" />
           <div className="mt-4 h-4 w-96 rounded bg-surface-sunken" />
