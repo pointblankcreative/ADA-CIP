@@ -23,7 +23,7 @@ import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
 import { Label } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
-import { VerdictHero } from "@/components/project/verdict-hero";
+import { VerdictHero, type DiagRiskSummary } from "@/components/project/verdict-hero";
 import { ProjectionChart } from "@/components/project/projection-chart";
 import {
   cn,
@@ -35,6 +35,23 @@ import {
   severityVar,
 } from "@/lib/utils";
 import { formatAlertSource } from "@/lib/alert-labels";
+
+/** Roll the diagnostics the tab already holds into a worst-case risk count for
+ *  the verdict note (#4). Counts action/watch signals across engines. Returns
+ *  null when nothing is flagged (or diagnostics are empty / still loading), so
+ *  the note never shows noise. Names no signal or pillar by design. */
+function deriveDiagRisk(diagnostics: DiagnosticOutput[]): DiagRiskSummary | null {
+  let actionCount = 0;
+  let watchCount = 0;
+  for (const d of diagnostics) {
+    for (const s of d.signals) {
+      if (s.status === "ACTION") actionCount += 1;
+      else if (s.status === "WATCH") watchCount += 1;
+    }
+  }
+  if (actionCount === 0 && watchCount === 0) return null;
+  return { actionCount, watchCount };
+}
 
 export function SummaryTab({
   project,
@@ -73,6 +90,7 @@ export function SummaryTab({
 
   const f = useMemo(() => computeFlight(project), [project]);
   const v = useMemo(() => verdict(project, f), [project, f]);
+  const diagRisk = useMemo(() => deriveDiagRisk(diagnostics), [diagnostics]);
 
   if (loading) {
     return (
@@ -94,6 +112,7 @@ export function SummaryTab({
         f={f}
         v={v}
         asOf={pacing?.as_of_date ?? null}
+        diagRisk={diagRisk}
         onTab={onTab}
       />
 

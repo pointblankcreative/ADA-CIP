@@ -539,14 +539,91 @@ function IsDirectControl({
   lineId,
   currentlyDirect,
   isOverridden,
+  overrideValue,
   onIsDirectChange,
 }: {
   lineId?: string | null;
   currentlyDirect: boolean;
   isOverridden: boolean;
+  /** The line's current is_direct_override value (true/false/null). Captured as
+   *  the "prior" so a single Undo can restore it after a confirmed write. */
+  overrideValue: boolean | null;
   onIsDirectChange?: (lineId: string, value: boolean | null) => void;
 }) {
+  // The write persists the override AND re-paces the whole project, so it must
+  // not fire on a stray click. Gate it behind an explicit confirm, keep the
+  // control locked while the write is in flight, then offer a one-shot Undo.
+  type Phase = "idle" | "confirming" | "writing" | "done";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const pendingRef = useRef<boolean | null>(null); // value to write on confirm
+  const priorRef = useRef<boolean | null>(null); // value to restore on undo
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    []
+  );
+
   if (!lineId || !onIsDirectChange) return null;
+
+  if (phase === "confirming") {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.06em]">
+        <span className="text-fg-faint normal-case tracking-normal">
+          This re-paces the project now. You can undo it.
+        </span>
+        <button
+          type="button"
+          onClick={async () => {
+            setPhase("writing");
+            await onIsDirectChange(lineId, pendingRef.current);
+            setPhase("done");
+            timerRef.current = setTimeout(() => setPhase("idle"), 6000);
+          }}
+          className="rounded-xs border border-line-soft px-1.5 py-0.5 text-fg transition-colors hover:text-fg"
+        >
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={() => setPhase("idle")}
+          className="text-fg-faint underline transition-colors hover:text-fg"
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
+
+  if (phase === "writing") {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.06em]">
+        <span className="text-fg-faint">Working…</span>
+      </span>
+    );
+  }
+
+  if (phase === "done") {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.06em]">
+        <button
+          type="button"
+          onClick={async () => {
+            if (timerRef.current) clearTimeout(timerRef.current);
+            setPhase("writing");
+            await onIsDirectChange(lineId, priorRef.current);
+            setPhase("idle");
+          }}
+          className="rounded-xs border border-line-soft px-1.5 py-0.5 text-fg-muted transition-colors hover:text-fg"
+        >
+          Undo
+        </button>
+      </span>
+    );
+  }
+
+  // phase === "idle"
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.06em]">
       {isOverridden && (
@@ -556,12 +633,16 @@ function IsDirectControl({
       )}
       <button
         type="button"
-        onClick={() => onIsDirectChange(lineId, currentlyDirect ? false : true)}
+        onClick={() => {
+          pendingRef.current = currentlyDirect ? false : true;
+          priorRef.current = overrideValue;
+          setPhase("confirming");
+        }}
         className="rounded-xs border border-line-soft px-1.5 py-0.5 text-fg-muted transition-colors hover:text-fg"
         title={
           currentlyDirect
-            ? "Move into pacing (treat as self-serve)"
-            : "Move to direct buys (exclude from pacing)"
+            ? "Move into pacing as self-serve. Re-paces the project immediately. Reversible."
+            : "Move to direct buys. Re-paces the project immediately. Reversible."
         }
       >
         {currentlyDirect ? "Mark tracked" : "Mark direct"}
@@ -569,9 +650,13 @@ function IsDirectControl({
       {isOverridden && (
         <button
           type="button"
-          onClick={() => onIsDirectChange(lineId, null)}
+          onClick={() => {
+            pendingRef.current = null;
+            priorRef.current = overrideValue;
+            setPhase("confirming");
+          }}
           className="text-fg-faint underline transition-colors hover:text-fg"
-          title="Reset to auto-classification"
+          title="Return to auto-classification. Re-paces the project. Reversible."
         >
           reset
         </button>
@@ -633,6 +718,7 @@ function DirectBuysCard({
                   lineId={d.line_id}
                   currentlyDirect={true}
                   isOverridden={d.is_direct_override != null}
+                  overrideValue={d.is_direct_override ?? null}
                   onIsDirectChange={onIsDirectChange}
                 />
               </div>
@@ -690,12 +776,22 @@ function PacingLinesSection({
 }) {
   const phases = data.phases ?? [];
   const hasMultiplePhases = phases.length > 1;
+  // #24b: the bare numeric line-code chips clutter every pacing line. Hide them
+  // by default and let the user reveal them with an explicit header toggle.
+  const [showIds, setShowIds] = useState(false);
 
   if (!hasMultiplePhases) {
     return (
       <div>
         <div className="flex items-center gap-3">
           <Label className="text-fg-secondary">Line-by-Line Pacing</Label>
+          <button
+            type="button"
+            onClick={() => setShowIds((v) => !v)}
+            className="font-mono text-[10px] uppercase tracking-[0.06em] text-fg-muted transition-colors hover:text-fg"
+          >
+            {showIds ? "Hide IDs" : "Show IDs"}
+          </button>
           <div className="h-px flex-1 bg-line-soft" />
         </div>
         <div className="mt-3 space-y-3">
@@ -708,6 +804,7 @@ function PacingLinesSection({
               referenceDate={referenceDate}
               projectEnded={projectEnded}
               glow={sigHover === line.line_id}
+              showIds={showIds}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
               onIsDirectChange={onIsDirectChange}
@@ -738,6 +835,13 @@ function PacingLinesSection({
         <Label className="text-fg-secondary">
           Line-by-Line Pacing · {phases.length} phases
         </Label>
+        <button
+          type="button"
+          onClick={() => setShowIds((v) => !v)}
+          className="font-mono text-[10px] uppercase tracking-[0.06em] text-fg-muted transition-colors hover:text-fg"
+        >
+          {showIds ? "Hide IDs" : "Show IDs"}
+        </button>
         <div className="h-px flex-1 bg-line-soft" />
       </div>
       <div className="mt-3 space-y-6">
@@ -752,6 +856,7 @@ function PacingLinesSection({
             referenceDate={referenceDate}
             projectEnded={projectEnded}
             sigHover={sigHover}
+            showIds={showIds}
             onNameUpdate={onNameUpdate}
             onBundleStateChange={onBundleStateChange}
             onIsDirectChange={onIsDirectChange}
@@ -777,6 +882,7 @@ function PacingLinesSection({
                   referenceDate={referenceDate}
                   projectEnded={projectEnded}
                   glow={sigHover === line.line_id}
+                  showIds={showIds}
                   onNameUpdate={onNameUpdate}
                   onBundleStateChange={onBundleStateChange}
               onIsDirectChange={onIsDirectChange}
@@ -799,6 +905,7 @@ function PhaseGroup({
   referenceDate,
   projectEnded = false,
   sigHover,
+  showIds,
   onNameUpdate,
   onBundleStateChange,
   onIsDirectChange,
@@ -815,6 +922,8 @@ function PhaseGroup({
   projectEnded?: boolean;
   /** line_id hovered in the Pacing Signal orbit above. */
   sigHover?: string | null;
+  /** #24b: when true, reveal the numeric line-code chips (hidden by default). */
+  showIds: boolean;
   onNameUpdate: (lineId: string, newName: string) => void;
   onBundleStateChange: (
     bundleId: string,
@@ -875,6 +984,7 @@ function PhaseGroup({
               referenceDate={referenceDate}
               projectEnded={projectEnded}
               glow={sigHover === line.line_id}
+              showIds={showIds}
               onNameUpdate={onNameUpdate}
               onBundleStateChange={onBundleStateChange}
               onIsDirectChange={onIsDirectChange}
@@ -894,6 +1004,7 @@ function LineRow({
   referenceDate,
   projectEnded = false,
   glow = false,
+  showIds,
   onNameUpdate,
   onBundleStateChange,
   onIsDirectChange,
@@ -914,6 +1025,8 @@ function LineRow({
   /** This line is hovered in the Pacing Signal orbit — light the row in
    *  its status colour. */
   glow?: boolean;
+  /** #24b: when true, reveal the numeric line-code chips (hidden by default). */
+  showIds: boolean;
   onNameUpdate: (lineId: string, newName: string) => void;
   /** Called after a successful bundle Confirm/Reject/Clear API call so the
    *  parent state updates without a re-fetch. */
@@ -1119,11 +1232,14 @@ function LineRow({
                   </button>
                 </>
               )}
-              {line.line_code && <CodeChip>{line.line_code}</CodeChip>}
+              {showIds && line.line_code && (
+                <CodeChip>{line.line_code}</CodeChip>
+              )}
               <IsDirectControl
                 lineId={line.line_id}
                 currentlyDirect={false}
                 isOverridden={line.is_direct_override != null}
+                overrideValue={line.is_direct_override ?? null}
                 onIsDirectChange={onIsDirectChange}
               />
               {(bundleParent || bundleRejected) && bundleMemberCount > 0 && (
@@ -1301,7 +1417,7 @@ function LineRow({
                   className="flex items-center gap-2 pl-4 text-xs text-fg-secondary"
                 >
                   <span className="h-px w-3 bg-line" aria-hidden />
-                  {m.line_code && <CodeChip>{m.line_code}</CodeChip>}
+                  {showIds && m.line_code && <CodeChip>{m.line_code}</CodeChip>}
                   <span className="truncate">
                     {m.audience_name ||
                       lineDisplayName({

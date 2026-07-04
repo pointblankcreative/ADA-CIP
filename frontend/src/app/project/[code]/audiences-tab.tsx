@@ -49,6 +49,7 @@ import {
   Spark,
   WarnStrip,
 } from "@/components/perf/primitives";
+import { Glossary } from "@/components/glossary";
 import { Card } from "@/components/card";
 import { Eyebrow } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -72,6 +73,17 @@ function statusVar(s: AudienceStatus): string {
   return "var(--text-faint)";
 }
 
+/* Verdict WORD for the audience cell. STRONG/WATCH/ACT defer to the shared
+   diagnostic word; NO DATA does NOT — "No signal" reads as broken next to
+   live spend (UAT: Tom, Priya), so the word IS the honest reason. Audience-
+   cell-only; health-core statusWord/DIAGNOSTIC_WORD are untouched. */
+function audienceVerdictWord(read: AudienceRead): string {
+  if (read.status === "NO DATA") {
+    return read.noRead === "no-bench" ? "NO BENCHMARK" : "TOO EARLY";
+  }
+  return statusWord(read.status);
+}
+
 interface AudienceRead {
   status: AudienceStatus;
   needsDecision: boolean;
@@ -80,6 +92,11 @@ interface AudienceRead {
   /** Impression-weighted hook across this audience's cells — the
    *  contract doesn't carry an audience-level hook_rate. */
   hookRate: number | null;
+  /** For status === "NO DATA": "no-bench" = a primary value exists but PB
+   *  history has no benchmark to grade it; "thin" = not enough data yet.
+   *  Drives the verdict WORD and dossier note so "No signal" never reaches
+   *  the audience verdict cell. null for STRONG/WATCH/ACT. */
+  noRead: "no-bench" | "thin" | null;
 }
 
 function readAudience(
@@ -108,6 +125,9 @@ function readAudience(
     status = "WATCH";
   }
 
+  const noRead: AudienceRead["noRead"] =
+    status !== "NO DATA" ? null : primary != null ? "no-bench" : "thin";
+
   let hookNum = 0;
   let hookDen = 0;
   for (const cell of Object.values(cells ?? {})) {
@@ -125,6 +145,7 @@ function readAudience(
     latestFreq,
     freqHot,
     hookRate: hookDen > 0 ? hookNum / hookDen : null,
+    noRead,
   };
 }
 
@@ -148,7 +169,7 @@ function buildDossierRows(
   const rows: DossierRow[] = [];
   if (hookRate != null) {
     rows.push({
-      label: "HOOK",
+      label: "HOOK RATE",
       text: formatRate(hookRate),
       value: hookRate,
       bench: benches.hook_rate,
@@ -278,7 +299,13 @@ function Dossier({
               className="grid grid-cols-[78px_56px_1fr] items-center gap-2"
             >
               <span className="font-mono text-[8.5px] text-fg-faint">
-                {r.label}
+                {r.label === "HOOK RATE" ? (
+                  <Glossary termKey="hook_rate" variant="underline">
+                    {r.label}
+                  </Glossary>
+                ) : (
+                  r.label
+                )}
               </span>
               <span className="tnum font-mono text-xs font-bold text-fg">
                 {r.text ?? "—"}
@@ -293,6 +320,13 @@ function Dossier({
             </div>
           ))}
         </div>
+        {read.status === "NO DATA" && (
+          <div className="mt-2 font-mono text-[8.5px] leading-[1.4] text-fg-faint">
+            {read.noRead === "no-bench"
+              ? "No PB benchmark for this objective to grade against."
+              : "Not enough data yet to read this."}
+          </div>
+        )}
         {/* CTR-trend slot: the matrix contract doesn't carry a
             per-audience CTR series yet. When audiences[].ctr_trend
             lands, render a Spark here mirroring the frequency block. */}
@@ -316,7 +350,7 @@ function Dossier({
               )}
             >
               {read.latestFreq != null
-                ? `now ${formatTimes(read.latestFreq)}`
+                ? `${formatTimes(read.latestFreq)} last sync`
                 : "—"}
             </span>
           </div>
@@ -467,6 +501,9 @@ export function AudiencesTab({
   if (loading) {
     return (
       <div className="space-y-4">
+        <p className="text-xs text-fg-muted">
+          Loading audiences, pulling each audience&apos;s numbers takes a little while…
+        </p>
         <Card className="animate-pulse">
           <div className="h-9 w-72 rounded bg-surface-sunken" />
           <div className="mt-4 h-4 w-96 rounded bg-surface-sunken" />
@@ -724,7 +761,7 @@ export function AudiencesTab({
                         className="font-mono text-[8.5px] font-bold tracking-[0.1em]"
                         style={{ color: statusVar(read.status) }}
                       >
-                        {statusWord(read.status)}
+                        {audienceVerdictWord(read)}
                       </span>
                     </div>
                   </div>
@@ -760,7 +797,7 @@ export function AudiencesTab({
       </Card>
 
       <div className="font-mono text-[9px] leading-[1.7] text-fg-faint">
-        Search CTR isn&apos;t comparable to social. Hook = 3-second views over
+        Search CTR isn&apos;t comparable to social. Hook rate = 3-second views over
         impressions, weighted across the ad set&apos;s creatives. Verdict =
         the audience&apos;s {objective === "awareness" ? "completion" : "cost per result"}{" "}
         quartile vs PB history.

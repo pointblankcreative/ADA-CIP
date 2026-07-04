@@ -26,6 +26,7 @@ export function OrphanPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showDismissed, setShowDismissed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const load = async (includeDismissed: boolean) => {
     setLoading(true);
@@ -50,17 +51,39 @@ export function OrphanPanel() {
     return null;
   }
 
+  const topSpend = orphans.length
+    ? Math.max(...orphans.map((o) => o.total_spend))
+    : 0;
+
   return (
     <div className="mt-9">
       <div className="flex items-center gap-3">
-        <AlertCircle className="h-4 w-4 text-warn" />
-        <Label className="text-fg-secondary">Unconfigured Spend</Label>
+        <AlertCircle className="h-4 w-4 text-fg-muted" />
+        <Label className="text-fg-secondary">Unmapped Spend</Label>
         {hasOrphans && (
-          <span className="rounded-pill bg-tint-warn px-2 py-0.5 font-mono text-[11px] text-warn">
+          <span className="rounded-pill bg-surface-sunken px-2 py-0.5 font-mono text-[11px] text-fg-muted">
             {orphans.length}
           </span>
         )}
         <div className="h-px flex-1 bg-line-soft" />
+        {hasOrphans && !loading && (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+          >
+            {expanded ? (
+              <>
+                <EyeOff className="h-3.5 w-3.5" />
+                Hide
+              </>
+            ) : (
+              <>
+                <Eye className="h-3.5 w-3.5" />
+                Show all
+              </>
+            )}
+          </button>
+        )}
         <button
           onClick={() => setShowDismissed((v) => !v)}
           className="flex items-center gap-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
@@ -80,10 +103,12 @@ export function OrphanPanel() {
       </div>
 
       <p className="mt-2 text-xs text-fg-muted">
-        Active spend in these project codes hasn&apos;t been configured in ADA
-        yet. Configure to start tracking. Codes can be set aside by an admin —
-        dismissed codes stay hidden here but remain available under &ldquo;Show
-        dismissed,&rdquo; while archived codes are hidden everywhere.
+        Spend under these project codes isn&apos;t mapped to a live ADA
+        project, so it is not part of your active book and nothing here is
+        waiting on you. An admin maps a code by configuring it, or sets it
+        aside in the dismissed_orphans control table. Dismissed codes stay
+        hidden here but remain under &ldquo;Show dismissed,&rdquo; while
+        archived codes are hidden everywhere.
       </p>
 
       {error && (
@@ -92,25 +117,28 @@ export function OrphanPanel() {
         </div>
       )}
 
-      <div className="mt-3 grid items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3">
-        {loading ? (
-          Array.from({ length: 3 }).map((_, i) => (
-            <Card key={i} className="animate-pulse">
-              <div className="h-4 w-32 rounded bg-surface-sunken" />
-              <div className="mt-3 h-6 w-24 rounded bg-surface-sunken" />
-              <div className="mt-4 h-2 w-full rounded bg-surface-sunken" />
-            </Card>
-          ))
-        ) : !hasOrphans ? (
-          <p className="col-span-full text-sm text-fg-muted">
-            {showDismissed
-              ? "No dismissed orphans."
-              : "No unconfigured spend detected."}
-          </p>
-        ) : (
-          orphans.map((o) => <OrphanCard key={o.project_code} orphan={o} />)
-        )}
-      </div>
+      {loading ? (
+        <p className="mt-3 text-xs text-fg-muted">
+          Checking for unmapped spend…
+        </p>
+      ) : !hasOrphans ? (
+        <p className="mt-3 text-sm text-fg-muted">
+          {showDismissed ? "No dismissed orphans." : "No unmapped spend detected."}
+        </p>
+      ) : !expanded ? (
+        <p className="mt-3 text-xs text-fg-muted">
+          {orphans.length} unmapped code{orphans.length === 1 ? "" : "s"} ·{" "}
+          {formatCurrency(topSpend)} largest
+        </p>
+      ) : null}
+
+      {expanded && hasOrphans && (
+        <div className="mt-3 grid items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3">
+          {orphans.map((o) => (
+            <OrphanCard key={o.project_code} orphan={o} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -137,7 +165,7 @@ function OrphanCard({ orphan: o }: OrphanCardProps) {
             {o.dismissed ? (
               <StatusPill label="Dismissed" color="var(--done)" size="sm" dot={false} />
             ) : (
-              <StatusPill label="Unconfigured" color="var(--warn)" size="sm" />
+              <StatusPill label="Unmapped" color="var(--fg-muted)" size="sm" />
             )}
           </div>
           <p className="tnum mt-2 text-lg font-bold text-fg">

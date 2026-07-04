@@ -256,6 +256,7 @@ export default function FlightdeckPage() {
 function FlightdeckSkeleton() {
   return (
     <div className="space-y-3.5">
+      <p className="text-xs text-fg-muted">Loading your campaigns…</p>
       <Card className="animate-pulse">
         <div className="h-4 w-40 rounded bg-surface-sunken" />
         <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
