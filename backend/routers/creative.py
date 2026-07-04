@@ -223,11 +223,12 @@ def _alias_resolution(source: str) -> tuple[str, str]:
 
     variant_expr = f"""COALESCE(
                     {alias_col},
-                    TRIM(REGEXP_REPLACE(
+                    NULLIF(TRIM(REGEXP_REPLACE(
                         REGEXP_REPLACE({source}.ad_name,
                             r'^\\d{{5}}\\s*[-_]\\s*', ''),
                         r'\\s*[-_]?\\s*\\d+x\\d+\\s*$', ''
-                    ))
+                    )), ''),
+                    {source}.ad_name
                 )"""
     return alias_join, variant_expr
 
@@ -263,7 +264,11 @@ def _query_creative_platform_cells(
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
                 SUM(f.video_completions) AS video_completions,
-                SUM(f.video_views_3s) AS video_views_3s
+                SUM(f.video_views_3s) AS video_views_3s,
+                SUM(f.video_q25) AS video_q25,
+                SUM(f.video_q50) AS video_q50,
+                SUM(f.video_q75) AS video_q75,
+                SUM(f.video_q100) AS video_q100
             FROM {bq.table('fact_digital_daily')} f
             WHERE f.project_code = @project_code AND {date_clause}
                 AND f.ad_name IS NOT NULL AND f.ad_name != ''
@@ -300,6 +305,10 @@ def _query_creative_platform_cells(
             SUM(a.video_views) AS video_views,
             SUM(a.video_completions) AS video_completions,
             SUM(a.video_views_3s) AS video_views_3s,
+            SUM(a.video_q25) AS video_q25,
+            SUM(a.video_q50) AS video_q50,
+            SUM(a.video_q75) AS video_q75,
+            SUM(a.video_q100) AS video_q100,
             SUM(IF(ar.frequency IS NOT NULL, ar.frequency * a.impressions, NULL)) AS freq_weighted,
             SUM(IF(ar.frequency IS NOT NULL, a.impressions, NULL)) AS freq_impressions
         FROM aliased a
@@ -637,7 +646,7 @@ async def get_creative_rotation(
     by_variant: dict[str, dict] = {}
     totals_agg = _new_accumulator()
     for c in cells:
-        variant = c.get("creative_variant") or "Unknown"
+        variant = c.get("creative_variant") or "Unnamed creative"
         agg = by_variant.setdefault(variant, _new_accumulator())
         _accumulate(agg, c, hook_platforms, engagement_platforms)
         _accumulate(totals_agg, c, hook_platforms, engagement_platforms)
@@ -711,7 +720,7 @@ async def get_creative_rotation(
     primary_metric = "completion_rate" if objective == "awareness" else "cpa"
     trend_points: dict[str, dict[str, list[tuple[str, float | None]]]] = {}
     for r in daily_rows:
-        variant = r.get("creative_variant") or "Unknown"
+        variant = r.get("creative_variant") or "Unnamed creative"
         dk = _date_key(r["date"])
         series = trend_points.setdefault(
             variant, {"ctr": [], "frequency": [], "primary": []}
@@ -801,7 +810,7 @@ async def get_creative_matrix(project_code: str):
     variant_spend: dict[str, float] = {}
     matrix: dict[str, dict[str, CreativeMatrixCell]] = {}
     for c in cells:
-        variant = c.get("creative_variant") or "Unknown"
+        variant = c.get("creative_variant") or "Unnamed creative"
         pid = c["platform_id"]
         spend = _float(c.get("spend"))
         impressions = _int(c.get("impressions"))
@@ -833,6 +842,11 @@ async def get_creative_matrix(project_code: str):
             cpm=spend / impressions * 1000 if impressions > 0 else None,
             conversions=conversions,
             cpa=spend / conversions if conversions > 0 else None,
+            # #11: raw per-platform quartile sums (frontend draws the curve)
+            video_q25=_int(c.get("video_q25")),
+            video_q50=_int(c.get("video_q50")),
+            video_q75=_int(c.get("video_q75")),
+            video_q100=_int(c.get("video_q100")),
         )
 
     total_spend = sum(platform_spend.values())
@@ -1154,7 +1168,7 @@ async def get_audience_matrix(project_code: str):
     variant_spend: dict[str, float] = {}
     cells: dict[str, dict[str, AudienceMatrixCell]] = {}
     for c in cell_rows:
-        variant = c.get("creative_variant") or "Unknown"
+        variant = c.get("creative_variant") or "Unnamed creative"
         pid = c["platform_id"]
         aud_id = _audience_id(c.get("ad_set_name") or "", pid)
         spend = _float(c.get("spend"))

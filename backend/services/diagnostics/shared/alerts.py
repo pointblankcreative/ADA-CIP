@@ -19,6 +19,9 @@ from backend.services.diagnostics.models import (
     SignalResult,
     StatusBand,
 )
+from backend.services.diagnostics.shared.benchmarks import (
+    ALERT_LOW_COVERAGE_THRESHOLD,
+)
 
 
 def populate_signal_alerts(output: DiagnosticOutput) -> None:
@@ -130,9 +133,22 @@ def _build_signal_alert(
     # alert.type becomes alert_type = "diagnostic_signal_f1" etc.
     # Lowercased for consistency with other alert_type values in the
     # alerts table (e.g. "data_stale", "pacing_over").
+    #
+    # UAT #22 coverage gating: if this signal reports its own measured
+    # coverage and that coverage is below ALERT_LOW_COVERAGE_THRESHOLD, the
+    # evidence is too thin to page as urgent, so downgrade critical -> warning
+    # ("keep an eye on"). This changes only the stated severity, never whether
+    # the alert fires (_is_action_level decides that, untouched). No message
+    # stamp: the signal's own diagnostic text (embedded above) already carries
+    # the low-coverage caveat when coverage < A3_COVERAGE_NOTE_THRESHOLD.
+    severity = AlertSeverity.CRITICAL
+    coverage = signal.inputs.get("measurement_coverage")
+    if coverage is not None and coverage < ALERT_LOW_COVERAGE_THRESHOLD:
+        severity = AlertSeverity.WARNING
+
     return DiagnosticAlert(
         type=f"signal_{signal.id.lower()}",
-        severity=AlertSeverity.CRITICAL,
+        severity=severity,
         message="\n".join(body_lines),
         signal_id=signal.id,
     )
