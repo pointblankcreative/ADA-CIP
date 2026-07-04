@@ -94,6 +94,14 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     definition:
       "Placements booked directly off-platform, so no live spend feed reaches ADA. They count toward the total budget but not toward tracked spend or pacing.",
   },
+  sessions_arrival: {
+    key: "sessions_arrival",
+    label: "Clicks that arrive",
+    definition:
+      "A single click can lead to more than one session (a return visit, the session resuming, or the visitor coming back on another device), so sessions running above 100% of clicks is normal, not a tracking error. Clicks are counted differently on each platform.",
+    how: "GA4 sessions divided by paid clicks across the flight.",
+    unit: "% of paid clicks",
+  },
 
   /* ---- PRE-SEEDED entries (not wired yet; siblings register/override) ---- */
   pillar_distribution: {

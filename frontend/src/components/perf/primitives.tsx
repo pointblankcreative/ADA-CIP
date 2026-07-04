@@ -386,6 +386,15 @@ export function CreativeVerdictChip({
       </span>
     );
   }
+  if (verdict === "UNRESOLVED") {
+    /* Muted, not a verdict colour: this creative needs a name before it
+       can be graded. */
+    return (
+      <span className={cn(base, "border border-line-soft bg-surface-sunken text-fg-muted")}>
+        NEEDS A NAME
+      </span>
+    );
+  }
   return (
     <span className={cn(base, "border border-line bg-transparent text-fg-muted")}>
       HOLD

@@ -260,9 +260,45 @@ export function primaryKpi(objective: ObjectiveType): PrimaryKpi {
   };
 }
 
-/* ── Verdicts: SCALE / HOLD / REFRESH / EARLY ────────────────────── */
+/* ── #5: the report-ready conversions number ─────────────────────────
+   Platform-attributed conversions are the single defensible figure for a
+   client report; GA4 tracks a broader set of site key events separately.
+   This is a small honest selector — it does not blend, it declares which
+   number the report should quote. */
 
-export type CreativeVerdict = "SCALE" | "HOLD" | "REFRESH" | "EARLY";
+export function pickReportConversions(
+  platformConv: number,
+  ga4Conv: number,
+  objective: string
+): { value: number; source: "platform" | "ga4" | "none" } {
+  if (platformConv > 0) return { value: platformConv, source: "platform" };
+  if (ga4Conv > 0) return { value: ga4Conv, source: "ga4" };
+  return { value: 0, source: "none" };
+}
+
+/* ── #19: unresolved-creative guard ──────────────────────────────────
+   A variant whose name never resolved to a real asset: empty/whitespace,
+   the literal "Unknown", the "Unnamed creative" fallback, or a bare
+   dimensions string (e.g. "2160x3840"). These are not graded — they are
+   flagged as needing a name. */
+
+export function isUnresolvedVariant(name: string): boolean {
+  if (!name || !name.trim()) return true;
+  const n = name.trim();
+  if (/^unknown$/i.test(n)) return true;
+  if (/^unnamed creative$/i.test(n)) return true;
+  if (/^\s*\d+\s*[x×]\s*\d+\s*$/.test(n)) return true;
+  return false;
+}
+
+/* ── Verdicts: SCALE / HOLD / REFRESH / EARLY / UNRESOLVED ────────── */
+
+export type CreativeVerdict =
+  | "SCALE"
+  | "HOLD"
+  | "REFRESH"
+  | "EARLY"
+  | "UNRESOLVED";
 
 export interface JudgedCreative {
   creative: RotationCreative;
@@ -406,6 +442,24 @@ export function judgeCreative(
   const { value, bench } = primaryValueFor(cr, objective);
   const read = quartileRead(value, benches[bench]);
 
+  /* #19: an unresolved name is not graded. The card rebuilds the full
+     reason where spend/impressions are formatted (dimensions-only vs
+     generic); the neutral placeholder here keeps a sentence if the card
+     ever renders j.reason directly. */
+  if (isUnresolvedVariant(cr.variant)) {
+    return {
+      creative: cr,
+      verdict: "UNRESOLVED",
+      tone: "var(--text-muted)",
+      reason:
+        "This creative has not been matched to a name yet, so it is not " +
+        "graded. Give it a name to fold it into the rotation read.",
+      fatigued: false,
+      primaryValue: value,
+      primaryRead: read,
+    };
+  }
+
   if (underVolumeGuard(cr)) {
     return {
       creative: cr,
@@ -501,9 +555,13 @@ export interface CreativeCall {
  * verdicts. Input should already be ranked (rankCreatives).
  */
 export function buildCreativeCall(
-  judged: JudgedCreative[],
+  judgedAll: JudgedCreative[],
   objective: ObjectiveType
 ): CreativeCall {
+  /* #19: unresolved creatives carry no verdict and never appear in the
+     counts/lists — same exclusion EARLY gets, applied one level up so
+     every clause below is blind to them. */
+  const judged = judgedAll.filter((j) => j.verdict !== "UNRESOLVED");
   if (judged.length === 0) {
     return {
       headline: "No rotation yet.",
@@ -644,12 +702,16 @@ export function rotationImbalance(
   kpiLabel: string
 ): string | null {
   const ranked = rankCreatives(judged, objective).filter(
-    (j) => j.verdict !== "EARLY" && j.primaryValue != null
+    (j) =>
+      j.verdict !== "EARLY" &&
+      j.verdict !== "UNRESOLVED" &&
+      j.primaryValue != null
   );
   if (ranked.length < 2) return null;
   const top = ranked[0];
 
   const shares = judged
+    .filter((j) => j.verdict !== "UNRESOLVED")
     .map((j) => j.creative.spend_share)
     .filter((s) => s != null)
     .sort((a, b) => a - b);

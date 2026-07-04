@@ -441,6 +441,12 @@ export interface CreativeMatrixCell {
   cpm: number | null;
   conversions: number;
   cpa: number | null;
+  /** #11: per-platform video quartile view counts (raw SUMs; 0 on
+   *  non-video cells). Drive the per-platform drop-off read. */
+  video_q25: number;
+  video_q50: number;
+  video_q75: number;
+  video_q100: number;
 }
 
 export interface CreativeMatrixResponse {
