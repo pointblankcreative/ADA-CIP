@@ -4,9 +4,17 @@
 
 Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Looker. Centralises campaign monitoring, budget pacing, automated reporting, and client-facing dashboards for a political advertising agency running 5-15 concurrent campaigns across Meta, Google Ads, LinkedIn, StackAdapt, TikTok, Snapchat, and Perion/Hivestack (DOOH).
 
-## Section 2: Current Status (Updated 2026-06-12)
+## Section 2: Current Status (Updated 2026-07-05)
 
-**Phase:** Full UI overhaul SHIPPED TO STAGING (Claude Design exports 01-03 implemented), including the Creative/Audiences redesign and the Meta/StackAdapt creative-asset integration. **Production branch is substantially behind** — promote `main → production` once Frazer signs off staging.
+**Phase:** Full UI overhaul + a 24-ticket UAT round are **LIVE IN PRODUCTION** — `production` promoted to `2d3bef9` on 2026-07-05 (fast-forward, deploy run green: both health checks passed, IAM-lock + `--invoker-iam-check` steps succeeded). `main` (staging) and `production` are now in sync.
+
+### Shipped 2026-07-03 → 07-05 (main → production, promoted 2026-07-05)
+- **UAT round (PRs #97 + #98, 24 tickets):** diagnostics legibility (signal names lead, codes D3/A4 demoted to tooltips; a health-score legend that states it is *different from pacing*; a metric **glossary** primitive — `components/glossary.tsx` + `lib/glossary.ts` — with hover/focus popovers for pillars/cost-metrics/signals; honest "not reporting" copy via `guardCopy()` instead of raw tokens like `min_impressions_1000`); advisory engine voice (A5/F3 bodies observe, don't command — guarded by `tests/test_diagnostics_voice.py`); suggested moves carry an owning team (`SIGNAL_ACTIONS` → `SignalAction {action, owner, hedge?, platform?}`).
+- **Alerts truthfulness (#2/#22):** honest feed empty/error states + live Act-now count; coverage-gated severity (`ALERT_LOW_COVERAGE_THRESHOLD = 0.10` downgrades thin-evidence ACTION alerts critical→warning); `ack_note` column added to `cip.alerts` (migration `infrastructure/bigquery/migrations/2026-07-03_alerts_ack_note.sql`, applied out-of-band — fixed a feed 500; staging+prod share the single `cip` dataset so it is already live for both).
+- **Creative/Audiences (#5/#8/#10/#11/#17-23):** per-platform video 25/50/75/100 drop-off anchored at q25 (never `video_views`); one report-ready conversions figure + honest over-100% gloss; single "HOOK RATE" term + `n/a` static; unnamed-creative fallback keeps the raw token (backend `_alias_resolution` NULLIF); per-metric quartile direction cues.
+- **Flightdeck/pacing (#15/#21/#24):** `is_direct` toggle gains confirm + one-shot Undo + honest re-pace tooltips; line codes behind a Show IDs toggle; Listen/audio mode removed (Signals + oscilloscope); "Unmapped Spend" de-escalated + collapsed by default; self-serve vs direct-buy budget split on the verdict hero.
+- **Loading/intro (#12):** honest loading text; full-screen orbit-boot intro removed (`intro-provider.tsx` gutted to a no-op context shell; `orbit-intro.tsx` + `lib/viz/audio-engine.ts` now orphaned — safe to `git rm`).
+- **CI/GA4:** deploy.yml re-asserts `--invoker-iam-check` on every deploy (backend stays IAM-private); GA4 project attribution via `LEFT(session_campaign, LEN(code))`.
 
 ### Shipped 2026-06-11 → 06-12 (main/staging)
 - **Design system:** PB tokens (light default, dark-ready), Folsom/Inter/Chivo Mono via next/font (font variables MUST stay on `<html>`, not `<body>`), semantic Tailwind mapping, favicon set.
@@ -23,8 +31,8 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 ### Open items
 - **StackAdapt creative matching:** ~7 `no_match` statics — SA creative-library names ≠ Funnel ad names; match via SA campaign→ad relationship instead of creative name.
 - **pool_size/saturation null:** Meta refuses delivery estimates on ENDED ad sets; verify on the first live campaign (estimate circuit breaker stops after 6 consecutive refusals per run).
-- Promote `main → production`.
-- `performance-tab.tsx` retired but on disk (unimported) — delete when comfortable.
+- **Post-promotion verify-after (2026-07-05):** confirm `cip-sheets-reader` still holds `roles/run.invoker` on prod `cip-backend` after the new `--invoker-iam-check` enforcement, so the twice-daily scheduler sync (2:30 AM/PM) doesn't 403 — deploy.yml does NOT manage that binding (only `infrastructure/deploy.sh` does). Also confirm `GET /api/alerts/` = 200 on prod (ack_note present — should already be true via the shared `cip` dataset).
+- `performance-tab.tsx`, `orbit-intro.tsx`, `lib/viz/audio-engine.ts` retired but on disk (unimported) — `git rm` when comfortable.
 - Deferred: audience CTR-trend sparkline slot, per-row matrix narrative reads, dark-mode toggle, ESLint setup (repo has no config; `tsc --noEmit` is the type gate).
 - Carried from 2026-04: diagnostic threshold calibration pass, FFS wizard, Quality pillar (blocked on CRM), Asana backlog (tab confirmation UI, blurred creative underlay, client logos, client-level benchmarks).
 
@@ -32,8 +40,8 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 Pipeline Funnel.io → BigQuery for all 8 platforms; GA4 ingestion (the GA4 config dropdown lists properties present in `fact_ga4_daily` — a client property must be connected as a Funnel source to appear; GA4 ownership irrelevant). Diagnostic Signal Engine live for persuasion (D/A/R) + conversion (C/F), mixed campaigns dual-output; Quality pillar deferred (CRM). Convention: any file reading `media_plan_lines` more than once must register in `tests/test_plan_id_dedup_guard.py`.
 
 ### Verification recipes (Claude sandbox)
-- Backend: run pytest from a directory OUTSIDE the repo (the repo `.env` CORS list breaks pydantic-settings parsing): `cd /tmp && PYTHONPATH=$REPO python3 -m pytest $REPO/tests -q` (519 passing as of 2026-06-12).
-- Frontend: rsync to /tmp, `npm install --legacy-peer-deps` (`npm ci` broken: eslint 9 vs eslint-config-next), then `tsc --noEmit`. Full `next build` may be OOM-killed in the sandbox; tsc is the gate.
+- Backend: run pytest from a directory OUTSIDE the repo (the repo `.env` CORS list breaks pydantic-settings parsing). The **maintained** suite is `backend/tests`: `cd /tmp && PYTHONPATH=$REPO python3 -m pytest $REPO/backend/tests -q` (234 passing, 2026-07-05). NOTE: the top-level `$REPO/tests` tree has drifted — 530 pass / **14 stale failures** (duplicate `tests/test_pacing.py` + `tests/test_pacing_router_retro.py` + `tests/test_retrospective_mode.py` + `tests/test_media_plan_platform_map.py` mocks that predate the `_sync_in_progress` / is_direct / retro source changes already in prod — NOT regressions). Treat `backend/tests` as the gate; retire or reconcile the stale duplicates. Install deps with `python3 -m pip install -r $REPO/requirements.txt --ignore-installed` (PyJWT RECORD conflict otherwise).
+- Frontend: copy to /tmp (`cp -r $REPO/frontend/. /tmp/cip-fe/` — rsync may be absent), remove node_modules, `npm install --legacy-peer-deps` (`npm ci` broken: eslint 9 vs eslint-config-next), then `npx tsc --noEmit` (clean as of 2026-07-05). Full `next build` may be OOM-killed in the sandbox; tsc is the gate.
 
 ### Current Users
 Only Frazer so far. Goal is team-wide adoption on rollout.
