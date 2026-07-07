@@ -25,21 +25,46 @@ its string output {"awareness", "conversion", "mixed"} to `CampaignType`:
 
 from __future__ import annotations
 
+import re
+
 from backend.services.diagnostics.models import CampaignType, MediaPlanLine
 from backend.services.objective_classifier import classify_objective
+
+
+# Channel categories that are inherently direct-response, independent of the
+# objective/name keywords. A Google Search RSA is a conversion channel even when
+# its line objective is just "Search"; grading it on persuasion rules (e.g. the
+# D5 "delivering in bursts" signal) is meaningless. `channel_category` is the
+# reliable per-line signal — `platform_id` ("google_ads") can't tell Search from
+# Display. Values come from `media_plan_sync._channel_category()`.
+CONVERSION_CHANNELS = {"search"}
+
+# Text fallback for call sites that lack `channel_category` (daily/adset rows):
+# the word "search" in an objective/name marks a conversion channel. `\b` avoids
+# matching "research".
+_SEARCH_RE = re.compile(r"\bsearch\b", re.IGNORECASE)
+
+
+def _is_conversion_channel(channel_category: str | None) -> bool:
+    return bool(channel_category) and channel_category.strip().lower() in CONVERSION_CHANNELS
 
 
 # ── Primary API ────────────────────────────────────────────────────
 
 
 def classify_line(line: MediaPlanLine) -> CampaignType:
-    """Classify a single media plan line by its `objective` field.
+    """Classify a single media plan line.
 
-    Uses the shared `objective_classifier` keyword logic. If the line's
-    objective is ambiguous or missing, the classifier's "mixed" result is
-    coerced to PERSUASION (conservative default — persuasion signals don't
-    require conversion tracking to run, while conversion signals do).
+    Search is a direct-response channel regardless of the objective keyword, so
+    a line whose `channel_category` is "Search" is CONVERSION even when its
+    objective is bare (e.g. "Search"). Otherwise falls back to the shared
+    `objective_classifier` keyword logic: if the line's objective is ambiguous
+    or missing, the classifier's "mixed" result is coerced to PERSUASION
+    (conservative default — persuasion signals don't require conversion tracking
+    to run, while conversion signals do).
     """
+    if _is_conversion_channel(line.channel_category):
+        return CampaignType.CONVERSION
     obj = (line.objective or "").strip() or None
     return classify_objective_string(obj)
 
@@ -53,7 +78,16 @@ def classify_objective_string(
     Suitable for classifying `fact_digital_daily.campaign_objective` rows and
     `media_plan_lines.objective` values. Falls back to `campaign_name` keyword
     matching when `objective` is missing — mirrors `classify_objective()`.
+
+    Daily/adset call sites don't carry `channel_category`, so Search is detected
+    here from the text: an objective/name containing the word "search" is a
+    conversion channel (keeps mixed-project daily rows consistent with the
+    per-line partition, which uses `channel_category`).
     """
+    if (objective and _SEARCH_RE.search(objective)) or (
+        campaign_name and _SEARCH_RE.search(campaign_name)
+    ):
+        return CampaignType.CONVERSION
     label = classify_objective(objective, campaign_name)
     if label == "conversion":
         return CampaignType.CONVERSION
