@@ -93,8 +93,12 @@ reconciled — when it's empty, `tests/` becomes a hard gate again.
 The scripts assume the Mac (`ASANA_PAT`, `.venv`, `gh`/push-to-`main`). In a web session
 those are absent and `claim.py`/`handoff.py`/`promote.sh` exit on the missing token — drive
 Asana over the Asana MCP tools instead, `pip install -r requirements.txt` for the gate, and
-deliver every fix (even `auto` ones) as a push to the designated branch + a **draft PR** +
-an Asana handoff, since the session may not merge to `main`. See SKILL.md "Operating notes".
+push each fix to the designated branch. An `auto` ticket is then **merged to `main` via the
+GitHub MCP (`merge_pull_request`)** — the web equivalent of `promote.sh`, since a push to
+`main` is what deploys staging — followed by the `staged` Asana handoff; a `park` ticket is
+handed back as a **draft PR** (Ready For → Frazer), never merged. If the merge is refused
+(branch protection / token permission), it falls back to the draft-PR hand-off. Production is
+still never touched. See SKILL.md "Operating notes".
 
 ## Concurrency
 
