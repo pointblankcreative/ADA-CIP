@@ -38,10 +38,14 @@ from backend.services.diagnostics.shared.benchmarks import (
     A5_FATIGUE_SCORES,
     A5_FATIGUE_THRESHOLDS,
     A5_MIN_DAY_IMP_FRACTION,
+    A5_SATURATED_SCORE_CAP,
+    A5_SATURATION_RATIO_ELEVATED,
+    A5_SATURATION_RATIO_HIGH,
     ATTENTION_SIGNAL_WEIGHTS,
     MIN_PILLAR_COVERAGE,
     VIDEO_LENGTH_BENCHMARKS,
     get_a4_benchmark,
+    get_freq_band,
     infer_creative_format,
 )
 from backend.services.diagnostics.shared.guards import (
@@ -230,6 +234,42 @@ A5_MESSAGES = {
         "is buying less attention each day."
     ),
 }
+
+# Frequency overlay copy (AI-044). Appended to / substituted for the base
+# A5 body once campaign frequency is folded in. Kept separate from
+# A5_MESSAGES so the four base templates keep their {slope,days,worst_suffix}
+# contract (guarded by tests/test_diagnostics_voice.py). Voice stays
+# observational — these name the likely driver, they don't issue commands.
+
+# Substitutes the "isn't wearing out yet" NONE body when attention is holding
+# but the average person is already at/over the fatigue ceiling. Resolves the
+# core contradiction: the read no longer claims the creative is fresh.
+A5_HOLDING_SATURATED = (
+    "Attention per impression has held steady over the last {days} days, but "
+    "the average person has already seen this about {freq:.1f} times — around "
+    "the point where extra views tend to stop earning attention. The score "
+    "reflects that limited runway rather than a fresh creative.{worst_suffix}"
+)
+
+# Soft caveat appended to the NONE body when frequency is elevated but not yet
+# over the ceiling (still holding, but not much room left).
+A5_HOLDING_ELEVATED_SUFFIX = (
+    " That said, the average person has seen it about {freq:.1f} times, so "
+    "there's limited room left before frequency starts to bite."
+)
+
+# Driver reads appended to a fading (EARLY/MODERATE/SEVERE) body — the "why"
+# Frazer asked for: is this overexposure, or the idea itself running dry?
+A5_DRIVER_FREQUENCY = (
+    " The average person has now seen it about {freq:.1f} times — around the "
+    "point where extra views tend to stop landing — so this looks more like "
+    "frequency wearing the audience out than the idea itself running dry."
+)
+A5_DRIVER_IDEA = (
+    " The average person has seen it about {freq:.1f} times, still a "
+    "comfortable range, so the fade points at the creative idea itself "
+    "rather than overexposure."
+)
 
 
 # ── Internal helpers ────────────────────────────────────────────────
@@ -867,6 +907,63 @@ def compute_a4_focused_view(data: CampaignData) -> SignalResult:
 # ── Signal A5: Creative Fatigue Index ──────────────────────────────
 
 
+def _frequency_saturation(data: CampaignData) -> dict[str, Any] | None:
+    """Fold campaign frequency into the A5 verdict (AI-044).
+
+    Mirrors D2: for every platform reporting frequency, infer the creative
+    format and compare the platform's average frequency against that format's
+    fatigue ceiling (``FREQ_BANDS[fmt]["max"]``). Impression-weights the
+    average frequency and the saturation ratio across platforms so a
+    mixed-format campaign isn't judged against a single wrong band.
+
+    Frequency lives on PlatformMetrics (campaign-to-date AVG) — the same
+    population the Performance tab reports — not on DailyMetrics, which is
+    why A5's daily trend never saw it before.
+
+    Returns None when no platform reports frequency (keeps A5's historical
+    behaviour intact for data that predates frequency ingestion).
+
+    Note: impression-weighting can mask a badly-saturated low-spend platform
+    behind a healthy high-spend one — an accepted limitation D2 already
+    carries; the per-platform breakdown is exposed in inputs for review.
+    """
+    channel_cat_by_platform: dict[str, str | None] = {}
+    for line in data.media_plan:
+        if line.platform_id and line.platform_id not in channel_cat_by_platform:
+            channel_cat_by_platform[line.platform_id] = line.channel_category
+
+    rows: list[dict[str, Any]] = []
+    for p in data.platform_metrics:
+        if p.frequency <= 0 or p.impressions <= 0:
+            continue
+        fmt, _ = infer_creative_format(
+            p.platform_id, channel_cat_by_platform.get(p.platform_id)
+        )
+        ceiling = float(get_freq_band(fmt)["max"])
+        rows.append({
+            "platform_id": p.platform_id,
+            "frequency": round(p.frequency, 2),
+            "impressions": p.impressions,
+            "creative_format": fmt,
+            "fatigue_ceiling": ceiling,
+            "ratio": round(p.frequency / ceiling, 3) if ceiling > 0 else 0.0,
+        })
+
+    if not rows:
+        return None
+
+    total_imp = sum(r["impressions"] for r in rows)
+    avg_freq = sum(r["frequency"] * r["impressions"] for r in rows) / total_imp
+    ratio = sum(r["ratio"] * r["impressions"] for r in rows) / total_imp
+    worst = max(rows, key=lambda r: (r["ratio"], r["impressions"]))
+    return {
+        "avg_frequency": round(avg_freq, 2),
+        "ratio": round(ratio, 3),
+        "worst_platform": worst["platform_id"],
+        "platforms": rows,
+    }
+
+
 def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
     """A5: Creative Fatigue Index — per-platform trend of attention metric.
 
@@ -1002,6 +1099,24 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
     if data.flight.elapsed_days < 14:
         score = max(score, 65.0)
 
+    # Fold campaign frequency into the verdict (AI-044). A5's slope-only trend
+    # can read "fresh" while the average person has already seen the ad 7+
+    # times — a contradiction with the Performance tab. When attention is
+    # still holding (band NONE) but frequency is at/over the fatigue ceiling,
+    # cap the score into WATCH so the number stops claiming the creative is
+    # fresh. Applied AFTER the grace floor on purpose: a young-but-already-
+    # saturated flight must not be floored back up to 65.
+    freq_ctx = _frequency_saturation(data)
+    saturation_capped = False
+    if (
+        freq_ctx is not None
+        and overall_band == "NONE"
+        and freq_ctx["ratio"] >= A5_SATURATION_RATIO_HIGH
+    ):
+        if score > A5_SATURATED_SCORE_CAP:
+            score = A5_SATURATED_SCORE_CAP
+            saturation_capped = True
+
     status = status_band(score)
 
     # Anchor diagnostic on the worst-fatiguing platform when overall is
@@ -1020,12 +1135,39 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
             f"{worst['daily_change_pct']:.1f}%/day"
         )
 
-    template = A5_MESSAGES[overall_band]
-    diagnostic = template.format(
-        days=MIN_DAYS_FOR_FATIGUE,
-        slope=weighted_change,
-        worst_suffix=worst_suffix,
-    )
+    if saturation_capped:
+        # Attention is holding but the audience is already saturated — replace
+        # the "isn't wearing out yet" body so the read matches the capped score
+        # and no longer contradicts the frequency warning.
+        diagnostic = A5_HOLDING_SATURATED.format(
+            days=MIN_DAYS_FOR_FATIGUE,
+            freq=freq_ctx["avg_frequency"],
+            worst_suffix=worst_suffix,
+        )
+    else:
+        template = A5_MESSAGES[overall_band]
+        diagnostic = template.format(
+            days=MIN_DAYS_FOR_FATIGUE,
+            slope=weighted_change,
+            worst_suffix=worst_suffix,
+        )
+        # Name the likely driver of the fade (AI-044, Frazer's UAT ask):
+        # frequency-driven saturation vs. the creative idea being spent.
+        if freq_ctx is not None:
+            if overall_band != "NONE":
+                if freq_ctx["ratio"] >= A5_SATURATION_RATIO_ELEVATED:
+                    diagnostic += A5_DRIVER_FREQUENCY.format(
+                        freq=freq_ctx["avg_frequency"]
+                    )
+                else:
+                    diagnostic += A5_DRIVER_IDEA.format(
+                        freq=freq_ctx["avg_frequency"]
+                    )
+            elif freq_ctx["ratio"] >= A5_SATURATION_RATIO_ELEVATED:
+                # Holding, but frequency is climbing toward the ceiling.
+                diagnostic += A5_HOLDING_ELEVATED_SUFFIX.format(
+                    freq=freq_ctx["avg_frequency"]
+                )
 
     # Surface skipped platforms + metric-switch caveats for transparency
     notes: list[str] = []
@@ -1065,6 +1207,11 @@ def compute_a5_creative_fatigue(data: CampaignData) -> SignalResult:
             "platforms": platform_results,
             "skipped_platforms": skipped,
             "worst_platform": worst_pid,
+            # AI-044: campaign frequency folded into the verdict (None when no
+            # platform reports frequency). saturation_capped flags the NONE-
+            # band-but-saturated contradiction fix.
+            "frequency_context": freq_ctx,
+            "saturation_capped": saturation_capped,
             "note": (
                 "Platform-level trend proxy — per-creative fatigue requires "
                 "creative_variant_id in fact_digital_daily (pending)."
