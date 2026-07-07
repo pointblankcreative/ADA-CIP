@@ -1027,6 +1027,8 @@ function LongTablesDrawer({
                         "Spend",
                         "Impr.",
                         "CTR",
+                        "Outbound clicks",
+                        "Landing page views",
                         conv ? "Conv." : "VCR",
                         conv ? "CPA" : null,
                       ].filter(Boolean) as string[]
@@ -1071,6 +1073,16 @@ function LongTablesDrawer({
                       </td>
                       <td className="tnum py-[7px] pr-2.5 text-right font-mono text-fg-secondary">
                         {ad.ctr != null ? formatRate(ad.ctr) : "—"}
+                      </td>
+                      <td className="tnum py-[7px] pr-2.5 text-right font-mono text-fg-secondary">
+                        {ad.outbound_clicks != null
+                          ? formatNumberCompact(ad.outbound_clicks)
+                          : "—"}
+                      </td>
+                      <td className="tnum py-[7px] pr-2.5 text-right font-mono text-fg-secondary">
+                        {ad.landing_page_views != null
+                          ? formatNumberCompact(ad.landing_page_views)
+                          : "—"}
                       </td>
                       {conv ? (
                         <>

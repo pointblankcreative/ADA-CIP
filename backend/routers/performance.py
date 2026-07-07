@@ -211,6 +211,8 @@ async def get_adset_performance(
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
                 SUM(f.video_completions) AS video_completions,
+                SUM(f.outbound_clicks) AS outbound_clicks,
+                SUM(f.landing_page_views) AS landing_page_views,
                 COUNT(DISTINCT f.ad_id) AS ad_count
             FROM {bq.table('fact_digital_daily')} f
             WHERE f.project_code = @project_code AND {date_clause} {plat}
@@ -270,6 +272,8 @@ async def get_adset_performance(
             a.engagements,
             a.video_views,
             a.video_completions,
+            a.outbound_clicks,
+            a.landing_page_views,
             a.ad_count,
             SAFE_DIVIDE(a.spend, NULLIF(a.impressions, 0)) * 1000 AS cpm,
             SAFE_DIVIDE(a.spend, NULLIF(a.clicks, 0)) AS cpc,
@@ -325,6 +329,9 @@ async def get_adset_performance(
                 engagements=_int(r.get("engagements")),
                 video_views=_int(r.get("video_views")),
                 video_completions=_int(r.get("video_completions")),
+                # Meta ad-funnel steps (ADA 1215990005805822).
+                outbound_clicks=_int_or_none(r.get("outbound_clicks")),
+                landing_page_views=_int_or_none(r.get("landing_page_views")),
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
                 ctr=_float_or_none(r.get("ctr")),
@@ -394,7 +401,9 @@ async def get_creative_performance(
                 SUM(f.conversions) AS conversions,
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
-                SUM(f.video_completions) AS video_completions
+                SUM(f.video_completions) AS video_completions,
+                SUM(f.outbound_clicks) AS outbound_clicks,
+                SUM(f.landing_page_views) AS landing_page_views
             FROM {bq.table('fact_digital_daily')} f
             WHERE f.project_code = @project_code AND {date_clause} {plat}
                 AND f.ad_name IS NOT NULL AND f.ad_name != ''
@@ -427,6 +436,8 @@ async def get_creative_performance(
             SUM(engagements) AS engagements,
             SUM(video_views) AS video_views,
             SUM(video_completions) AS video_completions,
+            SUM(outbound_clicks) AS outbound_clicks,
+            SUM(landing_page_views) AS landing_page_views,
             SAFE_DIVIDE(SUM(spend), NULLIF(SUM(impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(spend), NULLIF(SUM(clicks), 0)) AS cpc,
             SAFE_DIVIDE(SUM(clicks), NULLIF(SUM(impressions), 0)) AS ctr,
@@ -456,6 +467,9 @@ async def get_creative_performance(
                 engagements=_int(r.get("engagements")),
                 video_views=_int(r.get("video_views")),
                 video_completions=_int(r.get("video_completions")),
+                # Meta ad-funnel steps (ADA 1215990005805822).
+                outbound_clicks=_int_or_none(r.get("outbound_clicks")),
+                landing_page_views=_int_or_none(r.get("landing_page_views")),
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
                 ctr=_float_or_none(r.get("ctr")),
@@ -497,6 +511,8 @@ async def get_ad_performance(
             SUM(f.engagements) AS engagements,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
+            SUM(f.outbound_clicks) AS outbound_clicks,
+            SUM(f.landing_page_views) AS landing_page_views,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
             SAFE_DIVIDE(SUM(f.clicks), NULLIF(SUM(f.impressions), 0)) AS ctr,
@@ -529,6 +545,9 @@ async def get_ad_performance(
                 engagements=_int(r.get("engagements")),
                 video_views=_int(r.get("video_views")),
                 video_completions=_int(r.get("video_completions")),
+                # Meta ad-funnel steps (ADA 1215990005805822).
+                outbound_clicks=_int_or_none(r.get("outbound_clicks")),
+                landing_page_views=_int_or_none(r.get("landing_page_views")),
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
                 ctr=_float_or_none(r.get("ctr")),
