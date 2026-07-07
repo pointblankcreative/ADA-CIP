@@ -1,0 +1,23 @@
+# Known-stale top-level tests/ failures, normalized to tests/<file>::<nodeid>.
+# These are duplicate pacing/retro/media-plan-map mocks that predate prod
+# changes (documented in CLAUDE.md, "the top-level $REPO/tests tree has drifted
+# — 14 stale failures ... NOT regressions"). gates.sh runs tests/ but fails the
+# build only on failures NOT in this list, so pre-existing rot doesn't park
+# every clean ticket. The authoritative suite (backend/tests) must be fully
+# green regardless. Delete lines here as the duplicates are reconciled; when
+# this file is empty the whole tests/ tree is a hard gate again.
+# Lines starting with # and blank lines are ignored.
+tests/test_media_plan_platform_map.py::test_synthesise_skips_unrecognised_at_warning_level
+tests/test_pacing.py::TestLineStatus::test_not_started_flight
+tests/test_pacing.py::TestLineStatus::test_pending_flight_started_today
+tests/test_pacing.py::TestLineStatus::test_active_flight
+tests/test_pacing.py::TestLineStatus::test_completed_flight
+tests/test_pacing.py::TestLineStatus::test_pause_restart_grace_period_survives_reactivation
+tests/test_pacing.py::TestBundleAwarePacing::test_bundle_child_emits_no_tracking_row
+tests/test_pacing.py::TestBundleAwarePacing::test_bundle_parent_aggregates_spend_across_members
+tests/test_pacing.py::TestBundleAwarePacing::test_bundle_parent_does_not_double_count_multi_code_adsets
+tests/test_pacing.py::TestBundleAwarePacing::test_standalone_line_uses_view_unnest_for_line_code_match
+tests/test_pacing_router_retro.py::test_compute_on_miss_serves_replay_lines
+tests/test_pacing_router_retro.py::test_empty_state_echoes_requested_date_and_earliest_snapshot
+tests/test_pacing_router_retro.py::test_replay_lines_sorted_like_stored_path
+tests/test_retrospective_mode.py::test_pacing_default_skip_writes_false_still_writes

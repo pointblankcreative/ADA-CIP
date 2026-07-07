@@ -19,8 +19,21 @@ def test_any_sql_file_parks():
     assert is_park_path("frontend/whatever.sql")  # a SQL file anywhere is a data change
 
 
-def test_diagnostics_engine_parks():
-    assert is_park_path("backend/services/diagnostics/engine.py")
+def test_diagnostics_engine_auto():
+    # Diagnostics engine unblocked 2026-07-07 (Frazer's request) — it now
+    # auto-promotes. Data/transform files and .sql still park (below).
+    assert not is_park_path("backend/services/diagnostics/engine.py")
+    decision, _ = classify(["backend/services/diagnostics/persuasion/attention.py"])
+    assert decision == "auto"
+
+
+def test_diagnostics_plus_sql_still_parks():
+    # A diagnostics change that also touches a migration still parks.
+    decision, _ = classify(
+        ["backend/services/diagnostics/engine.py",
+         "infrastructure/bigquery/migrations/2026-07-x.sql"]
+    )
+    assert decision == "park"
 
 
 def test_frontend_auto():

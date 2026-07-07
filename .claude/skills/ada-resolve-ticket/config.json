@@ -46,7 +46,8 @@
   "worktree_base": "/tmp/ada-worktrees",
   "revision_round_cap": 2,
   "park": {
-    "dirs": ["ingestion/", "infrastructure/bigquery/", "backend/services/diagnostics/", "scripts/"],
+    "_note": "diagnostics engine (backend/services/diagnostics/) was moved from park -> auto on 2026-07-07 at Frazer's request; he runs this skill only when comfortable auto-promoting engine changes. Residual guards remain: data-moving/transform files below, any .sql, and a ticket body that explicitly asks for review (see claim.py _notes_force_park).",
+    "dirs": ["ingestion/", "infrastructure/bigquery/", "scripts/"],
     "files": [
       "backend/services/transformation.py",
       "backend/services/media_plan_sync.py",
@@ -56,7 +57,7 @@
     "suffixes": [".sql"]
   },
   "auto": {
-    "dirs": ["frontend/", "backend/routers/", "backend/models/", "backend/middleware/", "tests/", "backend/tests/", "docs/"],
+    "dirs": ["frontend/", "backend/routers/", "backend/models/", "backend/middleware/", "backend/services/diagnostics/", "tests/", "backend/tests/", "docs/"],
     "files": ["backend/config.py"]
   }
 }

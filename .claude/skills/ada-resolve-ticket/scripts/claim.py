@@ -31,6 +31,25 @@ PATH_RE = re.compile(
     r"[A-Za-z0-9_.\-/]+\.[A-Za-z0-9]+"
 )
 
+# Explicit human "stop before staging" flags in a ticket body. Even when every
+# touched file is auto-eligible, a ticket that asks for review must still park
+# (learning from AI-044: the diagnostics engine is now auto-promotable, but its
+# body said "needs Frazer review before STG" — that intent must win). Kept
+# deliberately narrow so it only fires on a deliberate flag, not casual prose.
+FORCE_PARK_RE = re.compile(
+    r"(?:needs?\s+(?:frazer|your|human)\s+review\s+before\s+(?:stg|staging|promot)"
+    r"|review\s+before\s+(?:stg|staging)"
+    r"|do\s*not\s+auto[-\s]?promote"
+    r"|don'?t\s+auto[-\s]?promote"
+    r"|park\s+(?:this|for\s+review))",
+    re.I,
+)
+
+
+def notes_force_park(notes: str) -> bool:
+    """True if the ticket body explicitly asks to stop for review before STG."""
+    return bool(FORCE_PARK_RE.search(notes or ""))
+
 
 def parse_declared_files(notes: str):
     """Extract repo-relative file paths a ticket says it touches: any path-like
@@ -117,6 +136,12 @@ def main(argv=None):
             st = cfg["asana"]["fields"]["status"]
             a.set_enum_field(gid, st["gid"], st["in_progress"])
             decision, reasons = area.classify(files)
+            # An explicit "review before staging" flag in the body overrides an
+            # auto verdict — a human deliberately asked to be the gate.
+            if decision == "auto" and notes_force_park(t.get("notes", "")):
+                decision = "park"
+                reasons = ["ticket body explicitly asks for review before "
+                           "staging"] + reasons
             print(json.dumps({
                 "status": "CLAIMED",
                 "ticket_gid": gid,
