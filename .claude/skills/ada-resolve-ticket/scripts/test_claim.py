@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Dependency-free tests for claim.py pure helpers (also pytest-compatible)."""
-from claim import filter_candidates, parse_declared_files
+from claim import filter_candidates, notes_force_park, parse_declared_files
 
 CFG = {"asana": {"fields": {
     "ready_for": {"gid": "RF", "agent": "AGENT", "frazer": "FRAZER"},
@@ -67,6 +67,18 @@ def test_filter_orders_priority_then_resume_first():
     got = [t["gid"] for t in filter_candidates(tasks, CFG)]
     # High before Low; within High, the in-progress resume before the new one
     assert got == ["hi_resume", "hi_new", "low"]
+
+
+def test_notes_force_park_detects_review_flag():
+    assert notes_force_park("A5 text renders in Slack, so this needs Frazer "
+                            "review before STG.")
+    assert notes_force_park("Note: review before staging please.")
+    assert notes_force_park("Do not auto-promote — client-facing copy.")
+
+
+def test_notes_force_park_ignores_ordinary_prose():
+    assert not notes_force_park("Rewrite the diagnostic copy in plain language.")
+    assert not notes_force_park("")
 
 
 def run_all():

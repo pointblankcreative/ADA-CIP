@@ -427,6 +427,23 @@ A5_FATIGUE_THRESHOLDS = {
 # that would otherwise dominate a low-volume series.
 A5_MIN_DAY_IMP_FRACTION = 0.05
 
+# A5 frequency overlay (AI-044). A5's slope-only trend can read a creative
+# "fresh" while the average person has already seen it 7+ times — a direct
+# contradiction with the Performance tab. We fold campaign frequency into the
+# verdict by comparing the impression-weighted average frequency against each
+# platform's creative-format fatigue ceiling (FREQ_BANDS[fmt]["max"], the same
+# ceiling D2 uses). ``ratio`` below is (avg frequency ÷ that ceiling):
+#   ratio ≥ HIGH      the average person is at/over the fatigue ceiling
+#   ratio ≥ ELEVATED  approaching it (limited runway left)
+A5_SATURATION_RATIO_HIGH = 1.0
+A5_SATURATION_RATIO_ELEVATED = 0.75
+
+# When attention is still holding (fatigue band NONE) but frequency is already
+# saturated (ratio ≥ HIGH), the "fresh" score is misleading. Cap it into the
+# WATCH band so the number stops contradicting the frequency warning. Mid-WATCH
+# (40–69): a watch-level concern driven by saturation, not by a measured slope.
+A5_SATURATED_SCORE_CAP = 55.0
+
 
 # ── Resonance Signal Weights ──────────────────────────────────────
 

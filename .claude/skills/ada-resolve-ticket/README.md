@@ -2,7 +2,7 @@
 
 An autonomous, concurrency-safe loop that drains the ADA "Ready For: Agent" queue in
 Asana. One Claude Code session resolves one ticket end to end (propose, review, build,
-review, then auto-promote a frontend-only fix to staging or park it for you with a
+review, then auto-promote an eligible fix to staging or park it for you with a
 question), then stops. A thin outer loop fires one fresh session per ticket, so context
 never overflows and several sessions can run at once without colliding.
 
@@ -66,12 +66,35 @@ Status Completed and Stage Launch, and flips Ready For -> Frazer for your prod s
 
 ## Autonomy boundary
 
-Frontend and isolated-backend fixes auto-promote to staging. Anything touching BigQuery,
-schema, ingestion, transform code, or an unrecognised zone parks for you. The rule lives in
-`config.json` (`park` / `auto` lists) and is deliberately conservative: unknown zone parks.
-Plain version: frontend sails, anything that can move data or change schema stops. (The
-"Buy Type" ticket touches `media_plan_sync.py`, so it correctly parks, exactly as its own
-body already flags.)
+Frontend, isolated-backend, and (since 2026-07-07) diagnostics-engine fixes auto-promote to
+staging. Anything touching BigQuery, schema, ingestion, transform code, or an unrecognised
+zone parks for you. The rule lives in `config.json` (`park` / `auto` lists) and is
+deliberately conservative: unknown zone parks. Plain version: frontend + the diagnostics
+engine sail, anything that can move data or change schema stops. (The "Buy Type" ticket
+touches `media_plan_sync.py`, so it correctly parks, exactly as its own body already flags.)
+
+`backend/services/diagnostics/` was moved from park → auto at Frazer's request — he runs
+the skill only when he's comfortable auto-promoting engine changes. Two safety valves remain
+for that zone: a diagnostics change that also touches a `.sql`/transform file still parks,
+and any ticket whose body says "needs review before staging" (or "do not auto-promote")
+parks regardless of file zone via `claim.py`'s `notes_force_park` — diagnostic strings render
+in Slack alert bodies, so that's the hook for copy that wants a human read first.
+
+### Gate baseline
+
+`backend/tests` is the authoritative suite and must be fully green. The top-level `tests/`
+tree carries documented stale failures (`scripts/known_stale_tests.txt`); `gates.sh` runs it
+but fails only on failures *outside* that baseline, so pre-existing rot doesn't park clean
+tickets. Trim entries from that file (or empty it) as the duplicate pacing/retro tests are
+reconciled — when it's empty, `tests/` becomes a hard gate again.
+
+### Running under Claude Code on the web
+
+The scripts assume the Mac (`ASANA_PAT`, `.venv`, `gh`/push-to-`main`). In a web session
+those are absent and `claim.py`/`handoff.py`/`promote.sh` exit on the missing token — drive
+Asana over the Asana MCP tools instead, `pip install -r requirements.txt` for the gate, and
+deliver every fix (even `auto` ones) as a push to the designated branch + a **draft PR** +
+an Asana handoff, since the session may not merge to `main`. See SKILL.md "Operating notes".
 
 ## Concurrency
 

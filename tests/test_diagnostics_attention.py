@@ -312,6 +312,103 @@ def test_a5_declining_trend_flags_fatigue():
     assert result.inputs["fatigue_band"] in {"EARLY", "MODERATE", "SEVERE"}
 
 
+# ── A5 × frequency overlay (AI-044) ─────────────────────────────────
+
+
+def _flat_thruplay_dailies(start: date, n: int = 14) -> list[DailyMetrics]:
+    """Flat attention rate → NONE fatigue band."""
+    return [
+        DailyMetrics(
+            date=start + timedelta(days=i),
+            platform_id="facebook",
+            impressions=100_000,
+            video_views_3s=30_000,
+            thruplay=10_000,
+        )
+        for i in range(n)
+    ]
+
+
+def _declining_thruplay_dailies(start: date) -> list[DailyMetrics]:
+    """Sharply declining attention rate → EARLY/MODERATE/SEVERE."""
+    counts = [15_000, 13_000, 11_000, 9_500, 8_000, 6_500, 5_000,
+              4_500, 4_000, 3_500, 3_000, 2_500, 2_000, 1_500]
+    return [
+        DailyMetrics(
+            date=start + timedelta(days=i),
+            platform_id="facebook",
+            impressions=100_000,
+            video_views_3s=30_000,
+            thruplay=counts[i],
+        )
+        for i in range(14)
+    ]
+
+
+def test_a5_holding_but_saturated_frequency_caps_score():
+    """The core contradiction: attention per impression is flat (NONE band)
+    but the average person has already seen the ad 8x on a social-video
+    platform (fatigue ceiling 8). A5 must stop reading 'fresh'."""
+    p = _healthy_video_platform()
+    p.frequency = 8.0  # ratio = 8 / FREQ_BANDS["video_short"]["max"](8) = 1.0
+    start = date(2026, 4, 1)
+    result = compute_a5_creative_fatigue(
+        _campaign([p], daily_metrics=_flat_thruplay_dailies(start), elapsed=14)
+    )
+    assert result.guard_passed is True
+    assert result.inputs["fatigue_band"] == "NONE"
+    assert result.inputs["saturation_capped"] is True
+    assert result.inputs["frequency_context"]["ratio"] >= 1.0
+    # Score is no longer STRONG/"fresh" — it lands in WATCH.
+    assert result.score is not None and result.score < 70
+    assert result.status == StatusBand.WATCH
+    # The read no longer claims the creative is fresh; it names the frequency.
+    assert "isn't wearing out" not in result.diagnostic
+    assert "seen this about" in result.diagnostic
+
+
+def test_a5_declining_trend_high_frequency_names_frequency_driver():
+    """Fading + saturated frequency → driver read points at overexposure."""
+    p = _healthy_video_platform()
+    p.frequency = 8.0  # saturated (ratio 1.0)
+    start = date(2026, 4, 1)
+    result = compute_a5_creative_fatigue(
+        _campaign([p], daily_metrics=_declining_thruplay_dailies(start),
+                  elapsed=14, total=30)
+    )
+    assert result.inputs["fatigue_band"] in {"EARLY", "MODERATE", "SEVERE"}
+    assert "frequency wearing the audience out" in result.diagnostic
+
+
+def test_a5_declining_trend_low_frequency_names_idea_driver():
+    """Fading at low frequency → driver read points at the creative idea."""
+    p = _healthy_video_platform()
+    p.frequency = 2.0  # ratio = 2 / 8 = 0.25 — well within band
+    start = date(2026, 4, 1)
+    result = compute_a5_creative_fatigue(
+        _campaign([p], daily_metrics=_declining_thruplay_dailies(start),
+                  elapsed=14, total=30)
+    )
+    assert result.inputs["fatigue_band"] in {"EARLY", "MODERATE", "SEVERE"}
+    assert "creative idea itself" in result.diagnostic
+
+
+def test_a5_without_frequency_data_verdict_unchanged():
+    """Regression: no frequency reported (frequency=0) → overlay is inert and
+    the historical verdict/read is preserved."""
+    p = _healthy_video_platform()  # frequency defaults to 0
+    start = date(2026, 4, 1)
+    result = compute_a5_creative_fatigue(
+        _campaign([p], daily_metrics=_declining_thruplay_dailies(start),
+                  elapsed=14, total=30)
+    )
+    assert result.inputs["frequency_context"] is None
+    assert result.inputs["saturation_capped"] is False
+    # No driver sentence appended.
+    assert "seen it about" not in result.diagnostic
+    assert "seen this about" not in result.diagnostic
+
+
 # ── Pillar rollup ───────────────────────────────────────────────────
 
 

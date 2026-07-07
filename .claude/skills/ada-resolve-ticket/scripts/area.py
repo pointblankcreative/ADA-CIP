@@ -8,14 +8,19 @@ backend zone. If any file is a BigQuery / schema / ingestion / transform path, o
 lands in an unrecognised zone, the ticket parks. Frontend-only sails; anything
 that can move data or change schema stops for a human.
 
+The diagnostics engine (backend/services/diagnostics/) was moved from park ->
+auto on 2026-07-07 at Frazer's request — he runs this skill only when he's
+comfortable auto-promoting engine changes. Data-moving/transform files, any
+.sql, and unrecognised zones still park; a ticket whose body explicitly asks
+for review before staging also parks (see claim.py _notes_force_park).
+
 Defaults below mirror config.json (the production source of truth); they are
 duplicated here only so the module is self-contained and unit-testable.
 """
 from __future__ import annotations
 
 DEFAULT_PARK = {
-    "dirs": ["ingestion/", "infrastructure/bigquery/",
-             "backend/services/diagnostics/", "scripts/"],
+    "dirs": ["ingestion/", "infrastructure/bigquery/", "scripts/"],
     "files": ["backend/services/transformation.py",
               "backend/services/media_plan_sync.py",
               "backend/services/daily_job.py",
@@ -24,7 +29,8 @@ DEFAULT_PARK = {
 }
 DEFAULT_AUTO = {
     "dirs": ["frontend/", "backend/routers/", "backend/models/",
-             "backend/middleware/", "tests/", "backend/tests/", "docs/"],
+             "backend/middleware/", "backend/services/diagnostics/",
+             "tests/", "backend/tests/", "docs/"],
     "files": ["backend/config.py"],
 }
 
