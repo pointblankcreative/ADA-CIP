@@ -6,6 +6,11 @@ unrecognised id and _synthesise_lines_from_mp silently dropped both rows
 ($3,750 of planned spend) at DEBUG level. Fixed 2026-06-04: "programmatic"
 maps to stackadapt (post-Hivestack, programmatic == StackAdapt at PB) and the
 skip log is WARNING level.
+
+Note: the legacy "perion"/"hivestack" PLATFORM_MAP aliases were removed. DOOH is
+now bought through StackAdapt, and those aliases used to force a legacy label to
+platform_id "perion" — a feed pacing never reads. "Hivestack" now slugifies to
+"hivestack" via the fallback (out of PLATFORM_MAP.values(), so is_direct=True).
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ def test_existing_aliases_unchanged():
     assert _normalise_platform("StackAdapt") == "stackadapt"
     assert _normalise_platform("Meta (Facebook, Instagram)") == "meta"
     assert _normalise_platform("Google Ads") == "google_ads"
-    assert _normalise_platform("Hivestack") == "perion"
+    assert _normalise_platform("Hivestack") == "hivestack"
     assert _normalise_platform(None) is None
 
 

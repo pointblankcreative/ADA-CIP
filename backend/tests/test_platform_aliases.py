@@ -30,9 +30,12 @@ def test_existing_aliases_unchanged():
     assert _normalise_platform("Facebook, Instagram & Threads\nMeta") == "meta"
     assert _normalise_platform("Programmatic (Native)") == "stackadapt"
     assert _normalise_platform("Open Internet") == "stackadapt"
-    # The literal Perion/Hivestack aliases are left intact for legacy labels.
+    # The legacy Perion/Hivestack PLATFORM_MAP aliases were removed. "Perion"
+    # still slugifies to "perion" via the fallback, but "Hivestack" now slugifies
+    # to "hivestack" (neither is in PLATFORM_MAP.values(), so legacy DOOH lines
+    # become is_direct=True — direct-buy context, not paced against an empty feed).
     assert _normalise_platform("Perion") == "perion"
-    assert _normalise_platform("Hivestack") == "perion"
+    assert _normalise_platform("Hivestack") == "hivestack"
 
 
 def test_direct_booking_labels_stay_unrecognised():
