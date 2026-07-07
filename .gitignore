@@ -40,6 +40,8 @@ frontend/.env.local
 !tsconfig.json
 !tsconfig.*.json
 !frontend/components.json
+# ADA resolver config (no secrets; ASANA_PAT is env-only)
+!.claude/skills/ada-resolve-ticket/config.json
 
 # Terraform
 infrastructure/terraform/.terraform/

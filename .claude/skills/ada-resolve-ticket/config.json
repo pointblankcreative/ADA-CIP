@@ -1,0 +1,61 @@
+{
+  "_notes": "ADA ticket-resolver config. Scripts derive the repo root from the skill's own location (<repo>/.claude/skills/ada-resolve-ticket/), override with env ADA_REPO. All commands run on Frazer's Mac under Claude Code, not in any sandbox.",
+  "github": {
+    "repo": "pointblankcreative/ADA-CIP",
+    "staging_branch": "main",
+    "production_branch": "production"
+  },
+  "gcp": {
+    "project": "point-blank-ada",
+    "region": "northamerica-northeast1",
+    "staging_services": { "backend": "cip-backend-staging", "frontend": "cip-frontend-staging" },
+    "production_services": { "backend": "cip-backend", "frontend": "cip-frontend" }
+  },
+  "asana": {
+    "base_url": "https://app.asana.com/api/1.0",
+    "pat_env": "ASANA_PAT",
+    "project_gid": "1215988273595218",
+    "fields": {
+      "ready_for": { "gid": "1216308984626884", "agent": "1216308984626886", "frazer": "1216308984626885" },
+      "status": { "gid": "1215988107013691", "not_started": "1215988107013692", "in_progress": "1215988107013693", "completed": "1215988107013694" },
+      "priority": { "gid": "1215988107013686", "high": "1215988107013687", "medium": "1215988107013688", "low": "1215988107013689" }
+    },
+    "sections": {
+      "ready_in_staging": "1215988107013673",
+      "backlog": "1215988107013754",
+      "planning": "1215988273595220",
+      "execution": "1215988107013672",
+      "complete_in_production": "1215988331209931"
+    }
+  },
+  "gates": {
+    "frontend_typecheck": "cd \"$WT/frontend\" && npx tsc --noEmit",
+    "backend_pytest": "cd /tmp && PYTHONPATH=\"$WT\" \"$REPO/.venv/bin/python\" -m pytest \"$WT/tests\" \"$WT/backend/tests\" -q"
+  },
+  "deploy": {
+    "staging_trigger": "push-to-main",
+    "merge_method": "gh",
+    "note": "Pushing/merging to main triggers .github/workflows/deploy.yml -> cip-backend-staging + cip-frontend-staging (~7 min). Production is a separate manual push to the 'production' branch and is NEVER done by the resolver."
+  },
+  "staging_urls": {
+    "_fill": "Populate once: gcloud run services describe cip-backend-staging --project point-blank-ada --region northamerica-northeast1 --format 'value(status.url)' (and cip-frontend-staging). Left blank -> the smoke agent reports the URL is needed rather than guessing.",
+    "backend": "",
+    "frontend": ""
+  },
+  "worktree_base": "/tmp/ada-worktrees",
+  "revision_round_cap": 2,
+  "park": {
+    "dirs": ["ingestion/", "infrastructure/bigquery/", "backend/services/diagnostics/", "scripts/"],
+    "files": [
+      "backend/services/transformation.py",
+      "backend/services/media_plan_sync.py",
+      "backend/services/daily_job.py",
+      "backend/services/creative_assets.py"
+    ],
+    "suffixes": [".sql"]
+  },
+  "auto": {
+    "dirs": ["frontend/", "backend/routers/", "backend/models/", "backend/middleware/", "tests/", "backend/tests/", "docs/"],
+    "files": ["backend/config.py"]
+  }
+}
