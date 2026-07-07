@@ -81,7 +81,9 @@ export function KpiCard({
   title,
   big = false,
 }: KpiCardProps) {
-  const fmt = benchmark?.format ?? ((v: number) => (v ?? 0).toFixed(2));
+  const fmt =
+    benchmark?.format ??
+    ((v: number) => (v == null || Number.isNaN(v) ? "—" : v.toFixed(2)));
 
   return (
     <Card title={title} className="p-4">

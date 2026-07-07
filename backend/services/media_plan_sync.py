@@ -46,14 +46,16 @@ PLATFORM_MAP = {
     "tiktok": "tiktok",
     "snapchat": "snapchat",
     "snap": "snapchat",
-    "perion": "perion",
-    "hivestack": "perion",
     # DOOH is now bought through StackAdapt (Perion's DOOH supply was retired at
     # PB). Both the short "DOOH" tag and the spelled-out "Digital Out Of Home"
     # label (26023, $3,500) therefore route to StackAdapt — a recognised
     # self-serve feed — so DOOH lines stay is_direct=FALSE and (post the pacing
-    # trackability swap) pace once StackAdapt DOOH spend flows. The literal
-    # "perion"/"hivestack" aliases above are left intact for any legacy label.
+    # trackability swap) pace once StackAdapt DOOH spend flows. The legacy
+    # "perion"/"hivestack" aliases were removed — they used to force those
+    # labels to platform_id "perion", which never has fact_digital_daily rows
+    # (Perion DOOH lives in fact_dooh_daily, which pacing does not read), so a
+    # legacy line paced to $0 forever. They now fall through to slugify and
+    # become is_direct=TRUE (direct-buy budget context, excluded from pacing).
     "dooh": "stackadapt",
     "digital out of home": "stackadapt",
     "pinterest": "pinterest",
@@ -2591,7 +2593,14 @@ def _is_traditional_media(platform: str | None, platform_id: str | None) -> bool
     if not platform:
         return False
     plower = platform.strip().lower()
-    return any(kw in plower for kw in _TRADITIONAL_KEYWORDS)
+    # Word-boundary match so a keyword only fires as a whole word — otherwise
+    # "ooh" matches inside "dooh" and mislabels a DOOH (StackAdapt self-serve)
+    # line as traditional. Multi-word keywords ("out of home", "direct mail",
+    # "tv spot") still match as phrases.
+    return any(
+        re.search(r"\b" + re.escape(kw) + r"\b", plower)
+        for kw in _TRADITIONAL_KEYWORDS
+    )
 
 
 def _apply_audience_overrides(mtl: bigquery.Client, project_code: str) -> None:
