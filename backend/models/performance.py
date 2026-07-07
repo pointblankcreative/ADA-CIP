@@ -129,6 +129,12 @@ class AdSetRow(BaseModel):
     engagements: int = 0
     video_views: int = 0
     video_completions: int = 0
+    # Meta ad-funnel steps (ADA 1215990005805822). Off-platform link clicks
+    # and landing-page views. None on platforms that don't report them
+    # (every non-Meta/Pinterest block casts them NULL in the transform) and
+    # on pre-backfill history — an honest "not reporting", not a fake 0.
+    outbound_clicks: int | None = None
+    landing_page_views: int | None = None
     cpm: float | None = None
     cpc: float | None = None
     ctr: float | None = None
@@ -163,6 +169,12 @@ class AdRow(BaseModel):
     engagements: int = 0
     video_views: int = 0
     video_completions: int = 0
+    # Meta ad-funnel steps (ADA 1215990005805822). Off-platform link clicks
+    # and landing-page views. None on platforms that don't report them
+    # (every non-Meta/Pinterest block casts them NULL in the transform) and
+    # on pre-backfill history — an honest "not reporting", not a fake 0.
+    outbound_clicks: int | None = None
+    landing_page_views: int | None = None
     cpm: float | None = None
     cpc: float | None = None
     ctr: float | None = None
@@ -191,6 +203,12 @@ class CreativeVariantRow(BaseModel):
     engagements: int = 0
     video_views: int = 0
     video_completions: int = 0
+    # Meta ad-funnel steps (ADA 1215990005805822). Off-platform link clicks
+    # and landing-page views. None on platforms that don't report them
+    # (every non-Meta/Pinterest block casts them NULL in the transform) and
+    # on pre-backfill history — an honest "not reporting", not a fake 0.
+    outbound_clicks: int | None = None
+    landing_page_views: int | None = None
     cpm: float | None = None
     cpc: float | None = None
     ctr: float | None = None

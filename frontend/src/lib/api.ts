@@ -290,6 +290,8 @@ export interface AdSetRow {
   engagements: number;
   video_views: number;
   video_completions: number;
+  outbound_clicks: number | null;
+  landing_page_views: number | null;
   cpm: number | null;
   cpc: number | null;
   ctr: number | null;
@@ -323,6 +325,8 @@ export interface AdRow {
   engagements: number;
   video_views: number;
   video_completions: number;
+  outbound_clicks: number | null;
+  landing_page_views: number | null;
   cpm: number | null;
   cpc: number | null;
   ctr: number | null;
@@ -350,6 +354,8 @@ export interface CreativeVariantRow {
   engagements: number;
   video_views: number;
   video_completions: number;
+  outbound_clicks: number | null;
+  landing_page_views: number | null;
   cpm: number | null;
   cpc: number | null;
   ctr: number | null;
