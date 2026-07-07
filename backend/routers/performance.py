@@ -37,6 +37,27 @@ def _int_or_none(v) -> int | None:
     return int(v) if v is not None else None
 
 
+def _display_ad_name(
+    ad_name: str | None, platform_id: str, ad_set_name: str | None
+) -> str | None:
+    """Fill blank Google Ads creative names (root cause of ADA 1215990183023573).
+
+    Google responsive search ads report a null ad_name, so every Google row
+    in the Creative "Long Tables" drawer renders blank and the ads can't be
+    told apart. The RSA headline assets aren't carried into fact_digital_daily
+    (that would need an ingestion change), so we label the row from the ad
+    group we DO carry: 'Responsive search ad — <ad group>'. Only fills a
+    genuinely blank name — a real ad_name is always kept — and only for
+    google_ads, so every other platform is inert.
+    """
+    if ad_name and ad_name.strip():
+        return ad_name
+    if platform_id == "google_ads":
+        group = (ad_set_name or "").strip()
+        return f"Responsive search ad — {group}" if group else "Responsive search ad"
+    return ad_name
+
+
 PLATFORM_NAMES = {
     "meta": "Meta",
     "google_ads": "Google Ads",
@@ -494,7 +515,9 @@ async def get_ad_performance(
         ads=[
             AdRow(
                 ad_id=r.get("ad_id"),
-                ad_name=r.get("ad_name"),
+                ad_name=_display_ad_name(
+                    r.get("ad_name"), r["platform_id"], r.get("ad_set_name")
+                ),
                 ad_set_name=r.get("ad_set_name"),
                 platform_id=r["platform_id"],
                 campaign_name=r.get("campaign_name"),
