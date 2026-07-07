@@ -135,13 +135,15 @@ IAP is configured on Cloud Run. API requests from the frontend need to include t
 
 All bugs and features are tracked in Asana. When working on a task, update the Asana ticket with your progress.
 
-- **Project:** CIP — Campaign Intelligence Platform
-- **Project GID:** `1213881933598770`
-- **Section for Brightwater work:** GID `1213878198552357` (but tickets currently in default section `1213881933598771`)
-- **Build Phase custom field GID:** `1213906940579551`, Brightwater option GID: `1213906940579553`
-- **URL:** https://app.asana.com/1/9281551468324/project/1213881933598770/list
+- **Project:** ADA Campaign Intelligence Platform
+- **Project GID:** `1215988273595218`
+- **URL:** https://app.asana.com/1/9281551468324/project/1215988273595218/list
+- **Custom fields:** Priority `1215988107013686` (High/Medium/Low) · Status `1215988107013691` (Not started/In progress/Completed) · Stage `1215988107013696` (Backlog/Planning/Execution/Launch/Complete In Production) · Ready For `1216308984626884` (🤖 Agent `1216308984626886` / 👨🏻‍💻 Frazer `1216308984626885`)
+- **Sections:** Phase 0: Backlog `1215988107013754` · Phase 1: Planning `1215988273595220` · Phase 2: Execution `1215988107013672` · Phase 3: Ready In Staging `1215988107013673` · Phase 4: Complete In Production `1215988331209931`
+- **Ticket-resolver skill:** `.claude/skills/ada-resolve-ticket/` drains the "Ready For: 🤖 Agent" queue on this board (one ticket per session; `config.json` holds the GIDs above).
+- **Retired board:** `1213881933598770` ("CIP — Campaign Intelligence Platform") is defunct as of 2026-06 — its ticket/field/section GIDs (including the dated lists below) no longer resolve; kept only as historical context.
 
-### Open Tickets (as of 2026-04-20)
+### Open Tickets (as of 2026-04-20 — retired board `1213881933598770`, GIDs no longer valid)
 
 **Feature backlog:**
 - `1213988918905284` — [FEATURE] Interactive tab confirmation UI for media plan sync — two-step preview/confirm flow
