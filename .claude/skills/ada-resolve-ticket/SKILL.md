@@ -70,7 +70,7 @@ Delegate to **ada-reviewer** with the diff (`git -C <worktree> diff origin/main`
 
 ### 8. Smoke
 Delegate to **ada-smoke**. It cookie-less-curls staging and checks the fix.
-- `PASS` -> run `python3 "$SKILL_DIR/scripts/handoff.py" staged --gid <ticket_gid> --message-file "$RUN/summary.txt"` (write a 4-6 line summary first). This moves the ticket to **Ready In Staging**, sets Status = Completed, and flips Ready For -> Frazer for the prod promote.
+- `PASS` -> run `python3 "$SKILL_DIR/scripts/handoff.py" staged --gid <ticket_gid> --message-file "$RUN/summary.txt"` (write a 4-6 line summary first). This moves the ticket to **Ready In Staging**, sets Status = Completed and Stage = Launch, and flips Ready For -> Frazer for the prod promote.
 - `FAIL` -> **Park** with `smoke.md` ("deployed to staging but smoke failed; not reverting"). Do not try to fix staging.
 
 ### 9. Close-out

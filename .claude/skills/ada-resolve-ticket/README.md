@@ -58,11 +58,11 @@ where in the pipeline it sits.
 | Agent | Not started | new: the loop will pick it up |
 | Agent | In progress | being worked now, or a resume you just handed back |
 | Frazer | In progress | parked mid-flight: a comment on the ticket asks you something |
-| Frazer | Completed (+ section "Phase 3: Ready In Staging") | shipped to staging; only your prod promote remains |
+| Frazer | Completed (+ section "Phase 3: Ready In Staging", Stage "Launch") | shipped to staging; only your prod promote remains |
 
 The claim step sets Status -> In progress. Park flips Ready For -> Frazer and leaves a
 self-contained question. A successful ship moves the ticket to "Ready In Staging", sets
-Status Completed, and flips Ready For -> Frazer for your prod sign-off.
+Status Completed and Stage Launch, and flips Ready For -> Frazer for your prod sign-off.
 
 ## Autonomy boundary
 

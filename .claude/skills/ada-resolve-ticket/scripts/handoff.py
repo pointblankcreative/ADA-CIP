@@ -10,8 +10,9 @@ to avoid shell-quoting multi-line park comments.
                                       Frazer, Status stays In progress, post the
                                       question, ledger=parked (area stays reserved).
   staged  --gid G [--message-file F]  Move to 'Ready In Staging', Status=Completed,
-                                      Ready For -> Frazer (only your prod promote is
-                                      left), drop the ledger claim, post a summary.
+                                      Stage=Launch, Ready For -> Frazer (only your prod
+                                      promote is left), drop the ledger claim, post a
+                                      summary.
   comment --gid G --message-file F    Post a comment only.
   release --gid G                     Drop the ledger claim (clean abort / recovery).
 """
@@ -62,6 +63,7 @@ def main(argv=None):
     secs = cfg["asana"]["sections"]
     a = Asana(common.asana_pat(cfg), cfg["asana"]["base_url"])
     rf, st = fields["ready_for"], fields["status"]
+    stage = fields.get("stage")  # optional; older configs may omit it
 
     if args.cmd == "comment":
         a.add_comment(args.gid, _msg(args.message_file))
@@ -87,6 +89,10 @@ def main(argv=None):
             a.add_comment(args.gid, _msg(args.message_file))
         a.move_to_section(secs["ready_in_staging"], args.gid)
         a.set_enum_field(args.gid, st["gid"], st["completed"])
+        if stage and stage.get("launch"):
+            # keep the Stage field in step with the section move: Ready In Staging is
+            # built + deployed to staging, awaiting the prod promote -> Stage "Launch".
+            a.set_enum_field(args.gid, stage["gid"], stage["launch"])
         a.set_enum_field(args.gid, rf["gid"], rf["frazer"])  # only prod promote remains
         with Ledger.locked() as led:
             led.remove(args.gid)
