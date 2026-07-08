@@ -1,5 +1,14 @@
 """Creative surface — S7 tickets #11 and #19 (backend half).
 
+ADA 1216199318518420 (format-aware CTR grading) — appended below:
+  A structurally-no-click placement (DOOH: its platform reports no clicks
+  column at all, clicks IS NULL on every row) must not be graded on CTR. The
+  four CTR-producing sites now key off a `clicks_reported` tally
+  (COUNTIF(clicks IS NOT NULL)): ctr is None when nothing reported clicks,
+  and 0.0 when clicks were reported as zero (a click-capable placement that
+  genuinely earned none — the broken-tracking case that MUST still surface).
+
+
 #11  Per-platform video quartiles: the creative × platform CELL rows the
      frontend matrix renders must carry the four raw quartile completion
      sums (video_q25..q100) so the frontend can draw a per-platform
@@ -201,3 +210,163 @@ class TestUnnamedFallback:
         src = inspect.getsource(creative)
         assert 'or "Unknown"' not in src
         assert src.count('or "Unnamed creative"') == 4
+
+
+# ── ADA 1216199318518420: format-aware CTR (clicks_reported gate) ─────
+#
+# Four CTR-producing surfaces must agree on ONE structural signal:
+#   1. rotation KPIs      → _rate_kpis
+#   2. creative × platform → get_creative_matrix cell
+#   3. audience row        → get_audience_matrix row
+#   4. audience × creative → get_audience_matrix cell
+# DOOH (no clicks column reported anywhere) ⇒ ctr None; a click-capable
+# placement that reported zero clicks ⇒ ctr 0.0 (bottom-quartile flag kept).
+import asyncio
+
+
+def _cell(**over):
+    """A creative × platform cell dict as _query_creative_platform_cells
+    yields it. Defaults are past the 1,000-impression rate guard."""
+    base = {
+        "creative_variant": "Creative",
+        "platform_id": "meta",
+        "spend": 500.0,
+        "impressions": 5000,
+        "clicks": 0,
+        "clicks_reported": 0,
+        "conversions": 0.0,
+        "engagements": 0,
+        "video_views": 0,
+        "video_completions": 0,
+        "video_views_3s": 0,
+        "video_q25": 0,
+        "video_q50": 0,
+        "video_q75": 0,
+        "video_q100": 0,
+    }
+    base.update(over)
+    return base
+
+
+class TestClicksReportedSql:
+    """The structural signal is threaded inner (COUNTIF) → outer (SUM) in
+    every fact-reading query, mirroring the existing two-level SUM pattern."""
+
+    @patch("backend.routers.creative.bq")
+    def test_platform_cells_query_carries_clicks_reported(self, mock_bq):
+        from backend.routers import creative
+
+        calls = _patch_bq(mock_bq)
+        alias_join, variant_expr = creative._alias_resolution("ad_agg")
+        creative._query_creative_platform_cells(
+            "26023", "1=1", [], alias_join, variant_expr
+        )
+        sql = calls[-1]
+        assert "COUNTIF(f.clicks IS NOT NULL) AS clicks_reported_rows" in sql
+        assert "SUM(a.clicks_reported_rows) AS clicks_reported" in sql
+
+
+class TestRateKpisCtrGate:
+    """Site #1 — the rotation rollup (_rate_kpis is a pure fn over an
+    accumulator, so we assert its ctr directly)."""
+
+    def _ctr(self, clicks, clicks_reported, impressions=5000):
+        from backend.routers import creative
+
+        agg = creative._new_accumulator()
+        agg["impressions"] = impressions
+        agg["clicks"] = clicks
+        agg["clicks_reported"] = clicks_reported
+        return creative._rate_kpis(agg, set(), set())["ctr"]
+
+    def test_dooh_no_clicks_column_nulls_ctr(self):
+        # No row ever reported a clicks value → no click path → no CTR grade.
+        assert self._ctr(clicks=0, clicks_reported=0) is None
+
+    def test_reported_zero_clicks_keeps_zero_ctr(self):
+        # UAT REGRESSION GUARD: a click-capable placement that reported 0
+        # clicks on real volume still reads a real 0.00% (bottom quartile),
+        # so broken tracking / a dead link is never silently softened.
+        assert self._ctr(clicks=0, clicks_reported=4) == 0.0
+
+    def test_normal_clicks_unchanged(self):
+        assert self._ctr(clicks=50, clicks_reported=4) == 50 / 5000
+
+
+class TestCreativeMatrixCtrGate:
+    """Site #2 — the creative × platform matrix cell."""
+
+    @patch("backend.routers.creative._query_creative_platform_cells")
+    @patch("backend.routers.creative.bq")
+    def test_dooh_cell_null_reported_zero_keeps_zero(self, mock_bq, mock_cells):
+        from backend.routers import creative
+
+        _patch_bq(mock_bq)
+        mock_cells.return_value = [
+            _cell(creative_variant="DOOH Static", platform_id="stackadapt",
+                  clicks=0, clicks_reported=0),
+            _cell(creative_variant="Display Static", platform_id="meta",
+                  clicks=0, clicks_reported=4),
+            _cell(creative_variant="Feed Static", platform_id="google",
+                  clicks=50, clicks_reported=4),
+        ]
+        resp = asyncio.run(creative.get_creative_matrix("26023"))
+        assert resp.cells["DOOH Static"]["stackadapt"].ctr is None
+        assert resp.cells["Display Static"]["meta"].ctr == 0.0
+        assert resp.cells["Feed Static"]["google"].ctr == 50 / 5000
+
+
+class TestAudienceMatrixCtrGate:
+    """Sites #3 (audience row) and #4 (audience × creative cell)."""
+
+    def _dispatch(self, sql, params=None):
+        # Route each query by a distinguishing substring so order can't
+        # break the test. Everything not asserted on returns [].
+        if "adset_metrics AS" in sql:  # aud_sql (rollup rows)
+            return [
+                {"platform_id": "stackadapt", "ad_set_name": "DOOH Boards",
+                 "spend": 500.0, "impressions": 5000, "clicks": 0,
+                 "clicks_reported": 0, "conversions": 0.0, "engagements": 0,
+                 "video_views": 0, "video_completions": 0, "video_views_3s": 0,
+                 "freq_weighted": None, "freq_impressions": 0},
+                {"platform_id": "meta", "ad_set_name": "Prospecting",
+                 "spend": 500.0, "impressions": 5000, "clicks": 0,
+                 "clicks_reported": 4, "conversions": 0.0, "engagements": 0,
+                 "video_views": 0, "video_completions": 0, "video_views_3s": 0,
+                 "freq_weighted": None, "freq_impressions": 0},
+            ]
+        if "GROUP BY a.creative_variant, a.platform_id, a.ad_set_name" in sql:
+            # cell_sql (audience × creative cells)
+            return [
+                {"creative_variant": "DOOH Static", "platform_id": "stackadapt",
+                 "ad_set_name": "DOOH Boards", "spend": 500.0,
+                 "impressions": 5000, "clicks": 0, "clicks_reported": 0,
+                 "conversions": 0.0, "engagements": 0, "video_views": 0,
+                 "video_completions": 0, "video_views_3s": 0},
+                {"creative_variant": "Display Static", "platform_id": "meta",
+                 "ad_set_name": "Prospecting", "spend": 500.0,
+                 "impressions": 5000, "clicks": 0, "clicks_reported": 4,
+                 "conversions": 0.0, "engagements": 0, "video_views": 0,
+                 "video_completions": 0, "video_views_3s": 0},
+            ]
+        return []
+
+    @patch("backend.routers.creative.bq")
+    def test_audience_row_and_cell_ctr_gate(self, mock_bq):
+        from backend.routers import creative
+
+        _patch_bq(mock_bq)
+        mock_bq.run_query.side_effect = self._dispatch
+
+        resp = asyncio.run(creative.get_audience_matrix("26023"))
+
+        rows = {a.name: a for a in resp.audiences}
+        # Site #3 — audience rows
+        assert rows["DOOH Boards"].ctr is None
+        assert rows["Prospecting"].ctr == 0.0
+
+        # Site #4 — audience × creative cells (keyed by audience id → variant)
+        dooh_aud = creative._audience_id("DOOH Boards", "stackadapt")
+        disp_aud = creative._audience_id("Prospecting", "meta")
+        assert resp.cells[dooh_aud]["DOOH Static"].ctr is None
+        assert resp.cells[disp_aud]["Display Static"].ctr == 0.0
