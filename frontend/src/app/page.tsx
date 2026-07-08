@@ -44,10 +44,10 @@ export default function FlightdeckPage() {
   // campaign code hovered in the Signals orbit — glows the matching row
   const [signalHover, setSignalHover] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = async (refresh = false) => {
     setLoading(true);
     try {
-      const data = await api.projects.list();
+      const data = await api.projects.list({ refresh });
       setProjects(data);
       setError(null);
     } catch (e) {
@@ -60,7 +60,7 @@ export default function FlightdeckPage() {
   };
 
   useEffect(() => {
-    load();
+    load(false);
   }, []);
 
   const onOpen = (code: string) => router.push(`/project/${code}`);
@@ -145,7 +145,7 @@ export default function FlightdeckPage() {
           <Btn
             variant="outline"
             size="sm"
-            onClick={load}
+            onClick={() => load(true)}
             disabled={loading}
             icon={
               <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />

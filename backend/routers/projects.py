@@ -1,16 +1,58 @@
+import time
+
 from fastapi import APIRouter, HTTPException, Query
 
+from backend.config import settings
 from backend.models.projects import ProjectSummary, ProjectDetail
 from backend.services import bigquery_client as bq
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
+def _now() -> float:
+    # monotonic (not wall-clock) so a system-clock adjustment can't wedge the
+    # TTL. Tests monkeypatch this seam for a deterministic clock.
+    return time.monotonic()
+
+
+# In-process, per-endpoint TTL cache for the project pacing rollup. The list
+# cache is keyed by the two query-affecting params; the detail cache by
+# project_code. Each value is (stored_at_monotonic, payload). TTL comes from
+# settings.projects_cache_ttl_seconds; TTL <= 0 disables caching entirely.
+_LIST_CACHE: dict[tuple, tuple[float, list[ProjectSummary]]] = {}
+_DETAIL_CACHE: dict[str, tuple[float, ProjectDetail]] = {}
+
+
+# CONVENTION: the list/detail rollup reads fact_digital_daily, budget_tracking,
+# media_plan_lines/media_plans/project_media_plans, dim_projects, and dim_clients.
+# ANY router endpoint that writes one of those — directly or via run_transformation /
+# run_pacing_* / run_daily_pipeline / sync_media_plan — MUST call one of these after
+# the write returns, or the project list/detail cache will serve stale numbers.
+def invalidate_project(code: str) -> None:
+    """Evict a project's detail entry and the whole list rollup (the list
+    aggregates this project's numbers, so any list key may be affected)."""
+    _DETAIL_CACHE.pop(code, None)
+    _LIST_CACHE.clear()
+
+
+def invalidate_all() -> None:
+    _DETAIL_CACHE.clear()
+    _LIST_CACHE.clear()
+
+
 @router.get("/", response_model=list[ProjectSummary])
 async def list_projects(
     status: str | None = Query(None, description="Filter by project status"),
     include_recently_ended: bool = Query(True, description="Include projects completed within the last 14 days"),
+    refresh: bool = Query(False, description="Bypass the cache and force a fresh query"),
 ):
+    ttl = settings.projects_cache_ttl_seconds
+    cache_key = (status, include_recently_ended)
+    if ttl > 0 and not refresh:
+        entry = _LIST_CACHE.get(cache_key)
+        if entry is not None and _now() - entry[0] < ttl:
+            return entry[1]
+
     status_clause = "AND p.status = @status" if status else ""
     if not status and include_recently_ended:
         status_clause = (
@@ -103,7 +145,7 @@ async def list_projects(
     params = [bq.string_param("status", status)] if status else None
     rows = bq.run_query(sql, params)
 
-    return [
+    result = [
         ProjectSummary(
             project_code=r["project_code"],
             project_name=r["project_name"],
@@ -125,10 +167,22 @@ async def list_projects(
         )
         for r in rows
     ]
+    if ttl > 0:
+        _LIST_CACHE[cache_key] = (_now(), result)
+    return result
 
 
 @router.get("/{project_code}", response_model=ProjectDetail)
-async def get_project(project_code: str):
+async def get_project(
+    project_code: str,
+    refresh: bool = Query(False, description="Bypass the cache and force a fresh query"),
+):
+    ttl = settings.projects_cache_ttl_seconds
+    if ttl > 0 and not refresh:
+        entry = _DETAIL_CACHE.get(project_code)
+        if entry is not None and _now() - entry[0] < ttl:
+            return entry[1]
+
     # AI-001: same project-level pacing_percentage rollup as list_projects,
     # scoped to a single project_code. See the long-form comment on
     # list_projects above for the conservative-estimate ethos and the
@@ -216,7 +270,7 @@ async def get_project(project_code: str):
         raise HTTPException(404, f"Project {project_code} not found")
 
     r = rows[0]
-    return ProjectDetail(
+    result = ProjectDetail(
         project_code=r["project_code"],
         project_name=r["project_name"],
         client_id=r.get("client_id"),
@@ -243,3 +297,6 @@ async def get_project(project_code: str):
         created_at=r.get("created_at"),
         updated_at=r.get("updated_at"),
     )
+    if ttl > 0:
+        _DETAIL_CACHE[project_code] = (_now(), result)
+    return result
