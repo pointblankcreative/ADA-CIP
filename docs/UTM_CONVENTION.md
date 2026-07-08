@@ -53,6 +53,8 @@ Keep these consistent — GA4 dimensions are case-sensitive, so always lowercase
 | StackAdapt | `stackadapt` | `native` / `display` |
 | TikTok | `tiktok` | `paid_social` |
 | Snapchat | `snapchat` | `paid_social` |
+| Reddit | `reddit` | `paid_social` |
+| OOH / QR / vanity | placement ID (see §7) | `ooh` |
 
 ---
 
@@ -118,6 +120,13 @@ utm_source=tiktok&utm_medium=paid_social&utm_campaign=__CAMPAIGN_NAME__&utm_term
 utm_source=snapchat&utm_medium=paid_social&utm_campaign={{campaign.name}}&utm_term={{adSquad.name}}&utm_content={{campaign.id}}-{{adSquad.id}}-{{ad.id}}
 ```
 
+### Reddit
+Reddit Ads **URL parameters** (dynamic macros); click ID `rdt_cid`:
+```
+utm_source=reddit&utm_medium=paid_social&utm_campaign={{CAMPAIGN_NAME}}&utm_term={{AD_GROUP_NAME}}&utm_content={{CAMPAIGN_ID}}-{{AD_GROUP_ID}}-{{AD_ID}}
+```
+> Verify exact macro token casing against Reddit's current help docs before launch.
+
 ### LinkedIn ⚠️
 LinkedIn has **no dynamic URL macros.** UTMs must be **hardcoded per creative**. Build the
 string manually — put the real numeric campaign/campaign-group/creative IDs into
@@ -132,7 +141,63 @@ This is the highest-risk platform for tagging errors — use a URL builder and d
 
 ---
 
-## 5. Rules & gotchas
+## 5. Offline: OOH, QR codes, and vanity URLs
+
+Offline placements break the macro model — there is no ad platform to substitute IDs, no
+click event, and no guarantee the visitor's landing-page session is ever tracked (bounce
+before load, tracking blockers, mistyped URLs). So attribution here rides on a **PB-owned
+redirect (short-link) service**, not on the ad platform.
+
+```
+QR encodes  →  <pb-short-domain>/r/{slug}  →  [log the hit server-side]  →  302 to the full UTM-tagged URL
+vanity typed →  <pb-short-domain>/{vanity}  →  [log the hit server-side]  →  302 to the full UTM-tagged URL
+```
+
+Why the redirect:
+1. **The redirect log is the guaranteed count.** Every scan / type-in is recorded
+   server-side even if the visitor never reaches (or is never tracked on) the landing page.
+   GA4 adds the ones who load and convert; the two are joined in the warehouse.
+2. **Dynamic QR** — the QR encodes the *slug*, not the final URL, so the destination is
+   editable without reprinting and every scan is logged.
+3. The **"direct via vanity"** marker falls out of the UTMs the redirect appends.
+
+### Tagging scheme (hardcoded at generation time)
+
+| Parameter | Value |
+|---|---|
+| `utm_source` | placement ID — `bus-shelter-king-st`, `flyer-batch-3` |
+| `utm_medium` | `ooh` |
+| `utm_campaign` | campaign name (project-code prefix, per convention) |
+| `utm_content` | **`{mechanism}-{slug}`**, mechanism ∈ `qr` \| `vanity` — the "direct via vanity" flag |
+| `utm_term` | optional — creative / design variant |
+
+Example landing URLs the redirect 302s to:
+```
+…?utm_source=bus-shelter-king-st&utm_medium=ooh&utm_campaign=26011-GOTV&utm_content=qr-bus-king-st
+…?utm_source=vote-flyer&utm_medium=ooh&utm_campaign=26011-GOTV&utm_content=vanity-vote
+```
+
+> If QR vs vanity should be a top-level split in GA4's own channel grouping, promote the
+> mechanism to `utm_medium` (`qr` / `vanity`) instead. We default to `ooh` + mechanism-in-
+> content to stay consistent with the platform convention — ADA joins in the warehouse, so
+> GA4's default channel grouping isn't load-bearing.
+
+### Proposed redirect service (not yet built — see §8)
+
+Fits ADA's existing stack (FastAPI + BigQuery + Cloud Run):
+
+- **`cip.short_links`** — `slug`, `destination_url` (UTMs baked in), `campaign_code`,
+  `placement`, `mechanism` (`qr`\|`vanity`), `created_at`, `active`.
+- **`cip.link_hits`** — `slug`, `ts`, `ua`, `ip_hash`, `referrer` (one row per scan/type-in).
+- **`GET /r/{slug}`** — look up, log a hit, `302` to `destination_url`.
+- **Admin endpoint** — mint a slug from campaign code + placement metadata, return the
+  QR as PNG/SVG.
+- **Dashboard** — scans / type-ins over time per placement, joined to GA4
+  sessions / conversions by the shared UTMs.
+
+---
+
+## 6. Rules & gotchas
 
 1. **Lowercase `source` and `medium`.** GA4 string dimensions are case-sensitive.
 2. **Never join on names.** `campaign` / `term` are display-only; the join is always
@@ -148,7 +213,7 @@ This is the highest-risk platform for tagging errors — use a URL builder and d
 
 ---
 
-## 6. Relationship to the current codebase (⚠️ migration note)
+## 7. Relationship to the current codebase (⚠️ migration note)
 
 The GA4 attribution code shipped **before** this convention and assumes a **different**
 `utm_content` format. Adopting this doc requires a code change — it is **not** purely additive.
@@ -171,3 +236,15 @@ Until that code change ships, this doc is the **target** convention; the live at
 still expects the old project-prefixed format. Do not roll out the new tags to production
 campaigns before the `ga4.py` content-layer rewrite lands, or project attribution on the
 content layer will silently fall through to the campaign-name fallback.
+
+---
+
+## 8. Build status
+
+This document is the **spec**. The following pieces are **not yet implemented**:
+
+1. **`ga4.py` content-layer rewrite** (§7) — required before any new-format tags roll out.
+2. **Redirect / short-link service** (§5) for QR + vanity attribution — proposed
+   architecture only; no tables, endpoints, or dashboard exist yet.
+
+Both are tracked as follow-up work, not part of the doc PR that introduced this file.
