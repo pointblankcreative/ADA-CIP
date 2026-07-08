@@ -260,6 +260,11 @@ def _query_creative_platform_cells(
                 SUM(f.spend) AS spend,
                 SUM(f.impressions) AS impressions,
                 SUM(f.clicks) AS clicks,
+                -- Structural click-path signal: count rows that actually
+                -- reported a clicks value. A no-click format (DOOH) reports
+                -- clicks NULL on every row → 0 here → ctr nulled downstream,
+                -- distinct from a click-capable placement that earned zero.
+                COUNTIF(f.clicks IS NOT NULL) AS clicks_reported_rows,
                 SUM(f.conversions) AS conversions,
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
@@ -300,6 +305,7 @@ def _query_creative_platform_cells(
             SUM(a.spend) AS spend,
             SUM(a.impressions) AS impressions,
             SUM(a.clicks) AS clicks,
+            SUM(a.clicks_reported_rows) AS clicks_reported,
             SUM(a.conversions) AS conversions,
             SUM(a.engagements) AS engagements,
             SUM(a.video_views) AS video_views,
@@ -380,9 +386,13 @@ def _rate_kpis(
         or agg["video_views_3s"] > 0
     )
 
+    # Null CTR when the placement's platform never reported a clicks column
+    # at all (clicks_reported == 0, e.g. DOOH) — it has no click path and a
+    # 0.00% "bottom quartile" grade would be structurally unearnable. A
+    # click-capable placement that reported zero clicks keeps ctr == 0.0.
     ctr = (
         agg["clicks"] / impressions
-        if guard_ok and impressions > 0 else None
+        if guard_ok and impressions > 0 and agg["clicks_reported"] > 0 else None
     )
     # "Null if no 3s data": video creatives only, and only where 3s views
     # actually landed on a reporting platform.
@@ -419,7 +429,8 @@ def _rate_kpis(
 
 def _new_accumulator() -> dict:
     return {
-        "spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0,
+        "spend": 0.0, "impressions": 0, "clicks": 0, "clicks_reported": 0,
+        "conversions": 0.0,
         "video_views": 0, "video_completions": 0, "video_views_3s": 0,
         "hook_3s": 0, "hook_impressions": 0,
         "eng_engagements": 0, "eng_impressions": 0,
@@ -440,6 +451,7 @@ def _accumulate(
     agg["spend"] += _float(cell.get("spend"))
     agg["impressions"] += imp
     agg["clicks"] += _int(cell.get("clicks"))
+    agg["clicks_reported"] += _int(cell.get("clicks_reported"))
     agg["conversions"] += _float(cell.get("conversions"))
     agg["video_views"] += _int(cell.get("video_views"))
     agg["video_completions"] += _int(cell.get("video_completions"))
@@ -819,6 +831,7 @@ async def get_creative_matrix(project_code: str):
 
         guard_ok = impressions >= MIN_RATE_IMPRESSIONS
         clicks = _int(c.get("clicks"))
+        clicks_reported = _int(c.get("clicks_reported"))
         conversions = _float(c.get("conversions"))
         vv = _int(c.get("video_views"))
         vc = _int(c.get("video_completions"))
@@ -838,7 +851,10 @@ async def get_creative_matrix(project_code: str):
                 if guard_ok and pid in engagement_platforms and impressions > 0
                 else None
             ),
-            ctr=clicks / impressions if guard_ok and impressions > 0 else None,
+            ctr=(
+                clicks / impressions
+                if guard_ok and impressions > 0 and clicks_reported > 0 else None
+            ),
             cpm=spend / impressions * 1000 if impressions > 0 else None,
             conversions=conversions,
             cpa=spend / conversions if conversions > 0 else None,
@@ -958,6 +974,8 @@ async def get_audience_matrix(project_code: str):
                 SUM(f.spend) AS spend,
                 SUM(f.impressions) AS impressions,
                 SUM(f.clicks) AS clicks,
+                -- Structural click-path signal (see _query_creative_platform_cells).
+                COUNTIF(f.clicks IS NOT NULL) AS clicks_reported_rows,
                 SUM(f.conversions) AS conversions,
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
@@ -998,6 +1016,7 @@ async def get_audience_matrix(project_code: str):
             SUM(m.spend) AS spend,
             SUM(m.impressions) AS impressions,
             SUM(m.clicks) AS clicks,
+            SUM(m.clicks_reported_rows) AS clicks_reported,
             SUM(m.conversions) AS conversions,
             SUM(m.engagements) AS engagements,
             SUM(m.video_views) AS video_views,
@@ -1066,6 +1085,8 @@ async def get_audience_matrix(project_code: str):
                 SUM(f.spend) AS spend,
                 SUM(f.impressions) AS impressions,
                 SUM(f.clicks) AS clicks,
+                -- Structural click-path signal (see _query_creative_platform_cells).
+                COUNTIF(f.clicks IS NOT NULL) AS clicks_reported_rows,
                 SUM(f.conversions) AS conversions,
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
@@ -1090,6 +1111,7 @@ async def get_audience_matrix(project_code: str):
             SUM(a.spend) AS spend,
             SUM(a.impressions) AS impressions,
             SUM(a.clicks) AS clicks,
+            SUM(a.clicks_reported_rows) AS clicks_reported,
             SUM(a.conversions) AS conversions,
             SUM(a.engagements) AS engagements,
             SUM(a.video_views) AS video_views,
@@ -1136,7 +1158,8 @@ async def get_audience_matrix(project_code: str):
                 impressions=impressions,
                 ctr=(
                     _int(r.get("clicks")) / impressions
-                    if guard_ok and impressions > 0 else None
+                    if guard_ok and impressions > 0
+                    and _int(r.get("clicks_reported")) > 0 else None
                 ),
                 completion_rate=vc / vv if guard_ok and vv > 0 else None,
                 engagement_rate=(
@@ -1174,6 +1197,7 @@ async def get_audience_matrix(project_code: str):
         spend = _float(c.get("spend"))
         impressions = _int(c.get("impressions"))
         clicks = _int(c.get("clicks"))
+        clicks_reported = _int(c.get("clicks_reported"))
         conversions = _float(c.get("conversions"))
         vv = _int(c.get("video_views"))
         vc = _int(c.get("video_completions"))
@@ -1196,7 +1220,10 @@ async def get_audience_matrix(project_code: str):
                 if guard_ok and pid in engagement_platforms and impressions > 0
                 else None
             ),
-            ctr=clicks / impressions if guard_ok and impressions > 0 else None,
+            ctr=(
+                clicks / impressions
+                if guard_ok and impressions > 0 and clicks_reported > 0 else None
+            ),
             conversions=conversions,
             cpa=spend / conversions if conversions > 0 else None,
         )
