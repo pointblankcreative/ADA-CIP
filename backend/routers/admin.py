@@ -10,6 +10,7 @@ from backend.models.projects import (
     ProjectCreateRequest,
     ProjectUpdateRequest,
 )
+from backend.routers import projects as projects_router
 from backend.services import bigquery_client as bq
 from backend.services.daily_job import run_daily_pipeline
 from backend.services.media_plan_sync import (
@@ -81,6 +82,10 @@ async def api_run_transformation(mode: str = "daily"):
     mode: "daily" (last 7 days, default) or "full" (all history).
     """
     result = run_transformation(mode)
+    # A full/daily transformation reloads fact_digital_daily (total_spend and the
+    # grouped metrics the project rollup reads) for every project, so evict the
+    # whole cache. (fact_adset_daily below is NOT in the rollup — not hooked.)
+    projects_router.invalidate_all()
     return result
 
 
@@ -114,6 +119,8 @@ async def api_sync_media_plan(
     # calls don't leave the data invisible to downstream queries.
     _ensure_plan_registered(project_code, sheet_id)
     result = sync_media_plan(sheet_id=sheet_id, project_code=project_code, tab_name=tab_name)
+    # Sync rewrote media_plan_lines (budget + direct split) — drop stale rollup.
+    projects_router.invalidate_project(project_code)
     return result
 
 
@@ -121,6 +128,8 @@ async def api_sync_media_plan(
 async def daily_run():
     """Trigger the full daily pipeline: transform → pacing → alerts."""
     result = run_daily_pipeline()
+    # Stage 2 re-paces every project (rewrites budget_tracking) — drop all rollup.
+    projects_router.invalidate_all()
     return result
 
 
@@ -330,6 +339,9 @@ async def admin_create_project(req: ProjectCreateRequest):
     else:
         sync_result = {"status": "skipped"}
 
+    # A new dim_projects row enters the list rollup — drop all rollup.
+    projects_router.invalidate_all()
+
     return {
         "status": "created",
         "project_code": req.project_code,
@@ -403,6 +415,9 @@ async def admin_update_project(project_code: str, req: ProjectUpdateRequest):
             sync_result = {"status": "error", "message": str(e)}
     else:
         sync_result = None
+
+    # Edited dim_projects (name/dates/status/budget) ± re-synced the plan.
+    projects_router.invalidate_project(project_code)
 
     return {
         "status": "updated",
@@ -567,6 +582,9 @@ async def admin_add_project_plan(project_code: str, body: ProjectPlanCreate):
             logger.warning("Auto-sync after add-plan failed for %s/%s: %s", project_code, sheet_id, e)
             sync_result = {"status": "error", "message": str(e)}
 
+    # Activating a plan changes the project's budget/direct sum.
+    projects_router.invalidate_project(project_code)
+
     return {
         "status": "added",
         "project_code": project_code,
@@ -611,6 +629,8 @@ async def admin_update_project_plan(
         """,
         params,
     )
+    # Re-ordering/relabelling/toggling a plan can change the active budget sum.
+    projects_router.invalidate_project(project_code)
     return {
         "status": "updated",
         "project_code": project_code,
@@ -640,6 +660,8 @@ async def admin_remove_project_plan(
             """,
             [bq.string_param("pc", project_code), bq.string_param("sheet_id", sheet_id)],
         )
+        # Removing a plan changes the project's budget/direct sum.
+        projects_router.invalidate_project(project_code)
         return {
             "status": "deleted",
             "project_code": project_code,
@@ -655,6 +677,8 @@ async def admin_remove_project_plan(
         """,
         [bq.string_param("pc", project_code), bq.string_param("sheet_id", sheet_id)],
     )
+    # Deactivating a plan changes the project's budget/direct sum.
+    projects_router.invalidate_project(project_code)
     return {
         "status": "retired",
         "project_code": project_code,
@@ -666,7 +690,10 @@ async def admin_remove_project_plan(
 @router.post("/projects/{project_code}/sync-all")
 async def admin_sync_all_plans(project_code: str):
     """Sync every active media plan for ``project_code`` in display order."""
-    return sync_all_for_project(project_code)
+    result = sync_all_for_project(project_code)
+    # Re-syncing every plan rewrites media_plan_lines (budget + direct split).
+    projects_router.invalidate_project(project_code)
+    return result
 
 
 @router.get("/ingestion-log")
@@ -800,6 +827,10 @@ async def update_line_is_direct(line_id: str, body: IsDirectOverrideUpdate):
             "Re-pace after is_direct override failed for %s: %s",
             row.get("project_code"), e,
         )
+
+    # The override flipped the direct/self-serve split and re-paced the project
+    # (rewriting budget_tracking) — drop the stale rollup so the next read is fresh.
+    projects_router.invalidate_project(row["project_code"])
 
     return {
         "status": "updated",

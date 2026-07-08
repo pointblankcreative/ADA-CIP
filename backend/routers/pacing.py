@@ -13,6 +13,7 @@ from backend.models.pacing import (
     PhaseSummary,
     UntrackedPlatformSpend,
 )
+from backend.routers import projects as projects_router
 from backend.services import bigquery_client as bq
 from backend.services.pacing import run_all_active, run_pacing_for_project
 
@@ -708,6 +709,8 @@ async def run_pacing():
     endpoint shipped in ADAC-51 commit 5.
     """
     result = run_all_active(date.today())
+    # Bulk re-pace rewrote budget_tracking across the board — drop all rollup.
+    projects_router.invalidate_all()
     return result
 
 
@@ -715,4 +718,6 @@ async def run_pacing():
 async def run_pacing_single(project_code: str):
     """Trigger pacing calculation for a single project as of today."""
     result = run_pacing_for_project(project_code, date.today())
+    # Re-pace rewrote this project's budget_tracking — drop its stale rollup.
+    projects_router.invalidate_project(project_code)
     return result

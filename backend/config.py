@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Projects rollup cache — in-process TTL (seconds) for the project
+    # list/detail pacing rollup in routers/projects.py. Data only moves twice
+    # daily (2:30 AM/PM PT sync) and mutations invalidate synchronously, so a
+    # short TTL is conservatively correct. Set to 0 to disable caching entirely.
+    projects_cache_ttl_seconds: int = 60
+
     # Alert charts — GCS bucket holding the spend PNGs embedded in pacing alerts
     # as Slack image blocks. Empty disables charts entirely: alerts still send,
     # just without images (graceful degradation).

@@ -888,8 +888,14 @@ export interface RetrospectiveResponse {
 
 export const api = {
   projects: {
-    list: () => apiFetch<Project[]>("/api/projects/"),
-    get: (code: string) => apiFetch<Project>(`/api/projects/${code}`),
+    list: (opts?: { refresh?: boolean }) =>
+      apiFetch<Project[]>(
+        `/api/projects/${opts?.refresh ? "?refresh=true" : ""}`
+      ),
+    get: (code: string, refresh?: boolean) =>
+      apiFetch<Project>(
+        `/api/projects/${code}${refresh ? "?refresh=true" : ""}`
+      ),
   },
   pacing: {
     get: (code: string, asOfDate?: string) =>
