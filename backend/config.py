@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # retires versions roughly two years after release.
     meta_api_version: str = "v23.0"
 
+    # StackAdapt reach/frequency direct feed (ADA 1215990005858637). Kept in
+    # its OWN dataset (same region as `cip`) so Funnel's contract stays clean;
+    # the daily ETL (services/stackadapt_rf_sync.py) MERGEs into
+    # stackadapt_reach_frequency there. The dataset lives in the same region as
+    # `cip`, so the join back to cip.fact_* stays in-region.
+    stackadapt_dataset: str = "cip_stackadapt"
+    stackadapt_rf_table_name: str = "stackadapt_reach_frequency"
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
@@ -68,6 +76,14 @@ class Settings(BaseSettings):
     @property
     def bigquery_table(self) -> str:
         return f"{self.gcp_project_id}.{self.bigquery_dataset}"
+
+    @property
+    def stackadapt_rf_table(self) -> str:
+        """Fully-qualified StackAdapt reach/frequency table id."""
+        return (
+            f"{self.gcp_project_id}.{self.stackadapt_dataset}."
+            f"{self.stackadapt_rf_table_name}"
+        )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

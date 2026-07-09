@@ -251,6 +251,32 @@ def run_daily_pipeline() -> dict:
             "error": str(e),
         }
 
+    # ── Stage 1e: StackAdapt Reach/Frequency (Asana 1215990005858637) ──
+    # Pulls dedup reach/frequency from StackAdapt's own reachFrequency API into
+    # cip_stackadapt.stackadapt_reach_frequency (Funnel's SA reach/freq is a
+    # 1-day per-creative field that overcounts 7-10x). Best-effort by design:
+    # run_sync never raises and no-ops when STACKADAPT_API_KEY is unset, so this
+    # stage can't take the pipeline down.
+    logger.info("=== Daily Pipeline: Stage 1e — StackAdapt Reach/Frequency ===")
+    try:
+        from backend.services.stackadapt_rf_sync import run_sync as run_stackadapt_rf_sync
+
+        t1e = time.time()
+        rf_result = run_stackadapt_rf_sync()
+        results["stages"]["stackadapt_rf"] = {
+            "status": rf_result.get("status", "unknown"),
+            "campaigns": rf_result.get("campaigns", 0),
+            "rows_upserted": rf_result.get("rows_upserted", 0),
+            "grains": rf_result.get("grains", {}),
+            "elapsed_seconds": round(time.time() - t1e, 1),
+        }
+    except Exception as e:
+        logger.warning("StackAdapt R&F sync failed (non-critical): %s", e, exc_info=True)
+        results["stages"]["stackadapt_rf"] = {
+            "status": "error",
+            "error": str(e),
+        }
+
     # ── Stage 2: Pacing ─────────────────────────────────────────────
     logger.info("=== Daily Pipeline: Stage 2 — Pacing ===")
     try:
