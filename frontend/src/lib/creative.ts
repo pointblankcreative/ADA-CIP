@@ -315,8 +315,10 @@ export interface JudgedCreative {
   primaryRead: QuartileRead | null;
 }
 
-/** Volume guard: below this, no judgment is rendered. */
-const VOLUME_MIN_IMPRESSIONS = 1000;
+/** Volume guard: below this, no judgment is rendered. Exported so the
+ *  creative-tab drop-off lead-in can gate its share-of-impressions read on
+ *  the same floor the backend nulls the sibling rates at (MIN_RATE_IMPRESSIONS). */
+export const VOLUME_MIN_IMPRESSIONS = 1000;
 const VOLUME_MIN_SPEND = 100;
 /** Latest frequency above this reads as fatigue. */
 const FATIGUE_FREQUENCY = 4;
