@@ -47,6 +47,7 @@ import {
   primaryKpi,
   rankCreatives,
   rotationImbalance,
+  VOLUME_MIN_IMPRESSIONS,
   type CreativeBenches,
   type JudgedCreative,
   type LensId,
@@ -318,10 +319,13 @@ function StageRow({ s }: { s: FunnelStage }) {
 /* ── #11: per-platform video drop-off — once watching, how far ───── */
 
 /**
- * Retention read for a video creative, per platform. Anchored at the 25%
- * mark on each platform (25% = 100 by construction) so platforms compare
- * fairly regardless of how many people started the video on each. Renders
- * nothing when no platform cell carries a 25% cohort.
+ * Retention read for a video creative, per platform. A lead-in carries the
+ * pre-25% loss — hook (3-second views) and the share of impressions still
+ * there at the 25% mark, both as shares of impressions, so the early
+ * scroll-away is in the same block. The four bars below then re-anchor at each
+ * platform's 25% mark (25% = 100 by construction) so platforms compare fairly
+ * regardless of how many people started the video on each. Renders nothing
+ * when no platform cell carries a 25% cohort.
  */
 function VideoDropoff({
   cells,
@@ -346,21 +350,42 @@ function VideoDropoff({
   return (
     <div className="mx-4 mt-3 rounded-sm bg-surface-sunken px-3 py-2.5">
       <div className="font-mono text-[8px] tracking-[0.1em] text-fg-faint">
-        ONCE WATCHING, HOW FAR
+        THE DROP-OFF · HOOK TO FINISH
       </div>
       <div className="mt-2 flex flex-col gap-3">
         {rows.map(([platformId, cell]) => {
           const base = cell.video_q25;
           const finished = Math.round((cell.video_q100 / base) * 100);
+          const hook = cell.hook_rate;
+          // Share of impressions still there at the 25% mark. Gated on the same
+          // 1,000-impression floor the backend nulls the sibling rates at, so a
+          // thin cell never shows an extreme reach beside an honestly-nulled
+          // hook. formatRate renders "—" when either read is held back.
+          const reach25 =
+            cell.impressions >= VOLUME_MIN_IMPRESSIONS
+              ? cell.video_q25 / cell.impressions
+              : null;
           return (
             <div key={platformId}>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="font-mono text-[9px] font-bold tracking-[0.08em] text-fg-secondary">
                   {platformLabel(platformId)}
                 </span>
+                {/* Pre-25% lead-in: two independent shares of impressions with a
+                    neutral separator. Hook (3s views) and the 25% mark come from
+                    different platform events and need not be monotonic, so this
+                    reads as two numbers — never a subtracted "drop". */}
                 <span className="font-mono text-[8.5px] text-fg-faint">
-                  {formatNumberCompact(base)} reached 25%
+                  <span className="text-fg-secondary">Hook {formatRate(hook)}</span>{" "}
+                  ·{" "}
+                  <span className="text-fg-secondary">
+                    at 25% {formatRate(reach25)}
+                  </span>{" "}
+                  of impressions
                 </span>
+              </div>
+              <div className="mt-1.5 font-mono text-[7.5px] tracking-[0.06em] text-fg-faint">
+                Once watching · of the {formatNumberCompact(base)} who reached 25%
               </div>
               <div className="mt-1.5 grid grid-cols-4 gap-1.5">
                 {marks.map((m) => {
@@ -394,11 +419,12 @@ function VideoDropoff({
         })}
       </div>
       <div className="mt-2.5 font-mono text-[8px] leading-[1.5] text-fg-faint">
-        Share of viewers who reached 25%, then how many stayed. Shown per
-        platform.
+        Lead-in is share of impressions — hooked at 3 seconds, then still there
+        at the 25% mark. The bars then show how many stayed. Shown per platform.
       </div>
       <div className="mt-0.5 font-mono text-[8px] leading-[1.5] text-fg-faint opacity-70">
-        Anchored at the 25% mark on each platform, so they compare fairly.
+        The bars re-anchor at the 25% mark on each platform, so they compare
+        fairly.
       </div>
     </div>
   );
