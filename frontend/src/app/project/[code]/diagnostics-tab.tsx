@@ -40,6 +40,7 @@ import {
 import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
 import { Glossary } from "@/components/glossary";
+import { GlossaryHint } from "@/components/glossary-hint";
 import { Btn, Eyebrow, Label } from "@/components/ui";
 import { lookupTerm } from "@/lib/glossary";
 import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
@@ -1081,6 +1082,11 @@ export function DiagnosticsTab({
 
       {/* score legend — names the scale + draws the line to pacing (#3) */}
       <DgScaleLegend />
+
+      {/* one-time, dismissible hint that underlined terms are explainable
+          (ADA 1216090177105300) — sits just above the signal cards where the
+          glossary-wrapped codes, pillars, and terms all live. */}
+      <GlossaryHint className="mt-3" />
 
       {/* phase breakdown (multi-plan projects) */}
       {pacing && pacing.phases && pacing.phases.length > 1 && (
