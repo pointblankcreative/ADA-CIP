@@ -43,6 +43,12 @@ class PlatformBreakdown(BaseModel):
     conversions: float = 0
     reach: int | None = None
     frequency: float | None = None
+    # StackAdapt R&F direct feed (ADA 1215990005858637). `reach`/`frequency`
+    # carry the primary INDIVIDUAL numbers; these carry the additive HOUSEHOLD
+    # ("residential") figures where StackAdapt reports them (from 2026-06-03).
+    # None for every other platform and for pre-household SA history.
+    reach_household: int | None = None
+    frequency_household: float | None = None
     video_views: int | None = None
     video_completions: int | None = None
     engagements: int | None = None
@@ -63,6 +69,11 @@ class CampaignRow(BaseModel):
     ctr: float | None = None
     reach: int | None = None
     frequency: float | None = None
+    # StackAdapt R&F direct feed (ADA 1215990005858637) — additive household
+    # ("residential") reach/frequency; None for every other platform. See
+    # PlatformBreakdown for the individual-vs-household contract.
+    reach_household: int | None = None
+    frequency_household: float | None = None
     video_views: int | None = None
     video_completions: int | None = None
     vcr: float | None = None
@@ -100,6 +111,13 @@ class PerformanceResponse(BaseModel):
     conversion_cpa: float | None = None
     total_reach_adset: int | None = None
     avg_frequency_adset: float | None = None
+    # StackAdapt R&F direct feed (ADA 1215990005858637) — headline HOUSEHOLD
+    # ("residential") reach/frequency rolled up from the SA-direct feed. Only
+    # populated when StackAdapt is active on the project and has household data
+    # (from 2026-06-03); None otherwise. Individual stays the primary
+    # total_reach_adset / avg_frequency_adset.
+    total_reach_household: int | None = None
+    avg_frequency_household: float | None = None
     reach_platforms: list[str] = []
     reach_note: str | None = None
     high_frequency_warning: str | None = None

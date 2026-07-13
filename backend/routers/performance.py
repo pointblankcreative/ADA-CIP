@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Query
 from google.cloud import exceptions as gcp_exceptions
 
+from backend.config import settings
 from backend.models.performance import (
     AdPerformanceResponse,
     AdRow,
@@ -91,23 +92,80 @@ CLICKS_DEFINITION_FALLBACK = "Platform-reported clicks."
 # AI-120 Option D stopgap (fixes the v1 surface of AI-111 + AI-112):
 # StackAdapt "reach" via Funnel.io is a 1-day per-creative reach field, not
 # deduplicated multi-day reach (wrong by 7-10x), and StackAdapt frequency is
-# hardcoded 0.0 upstream. Until the post-launch StackAdapt direct-API
-# supplement lands (which will restore true reach + frequency), these
-# platforms are excluded from EVERY reach/frequency aggregate and their
-# per-row reach/frequency values are nulled so the frontend renders an
-# em-dash (AI-029 unsupported-platform pattern). Spend / impressions /
-# clicks stay Funnel-sourced and are NOT affected.
-# Removal is one line: empty this set once the direct-API supplement ships.
+# hardcoded 0.0 upstream. Funnel's StackAdapt R&F is therefore excluded from
+# EVERY reach/frequency aggregate (its per-row Funnel reach/frequency is never
+# surfaced). Spend / impressions / clicks stay Funnel-sourced and are NOT
+# affected.
+#
+# Stage 2 (ADA 1215990005858637) does NOT empty this set — Funnel's SA reach
+# stays garbage and must never surface. Instead the SQL still nulls the Funnel
+# column and a SEPARATE Python-side fill layer (`_stackadapt_direct_rf`) below
+# supplies the REAL StackAdapt reach/frequency from the direct StackAdapt
+# reachFrequency API feed (`cip_stackadapt.stackadapt_reach_frequency`),
+# current calendar-month bucket, joined on campaign_id.
 RF_EXCLUDED_PLATFORMS = {"stackadapt"}
 
-# Note text appended to reach_note when an excluded platform is active.
+# Note appended when StackAdapt is active but the direct feed has no current-
+# month row yet (not synced) — honest "not reporting" rather than a fake 0.
 RF_EXCLUDED_NOTE = "StackAdapt reach/frequency hidden pending direct API integration."
+
+# Note appended when the StackAdapt direct feed DID supply current-month R&F.
+SA_DIRECT_NOTE = (
+    "StackAdapt reach/frequency are dedup per calendar month from StackAdapt's "
+    "API (individual; household where available since 2026-06-03); not summable "
+    "across months or audiences."
+)
+
+# /adsets is campaign-grain honest: the SA-direct feed reports reach per
+# campaign, never per audience, so adset rows stay nulled with this note.
+SA_ADSET_NOTE = (
+    "StackAdapt reports reach per campaign, not per audience — see the Summary tab."
+)
 
 
 def _rf_excluded_param():
     """Array query param for `platform_id NOT IN UNNEST(@rf_excluded)` /
     `IF(platform_id IN UNNEST(@rf_excluded), NULL, ...)` clauses (AI-120)."""
     return bq.array_param("rf_excluded", "STRING", sorted(RF_EXCLUDED_PLATFORMS))
+
+
+def _stackadapt_direct_rf(campaign_ids: list[str]) -> dict[str, dict]:
+    """Current-month StackAdapt-direct reach/frequency per campaign_id.
+
+    Reads the direct StackAdapt reachFrequency feed
+    (`settings.stackadapt_rf_table`, ADA 1215990005858637) for the current
+    calendar-month bucket (period_days=30, period_start=DATE_TRUNC(month)) and
+    keys it by campaign_id — which equals fact_digital_daily.campaign_id for
+    StackAdapt rows (validated 2026-07-13). Returns {} on empty input or any
+    error, so a missing/broken feed degrades to the honest "not reporting"
+    stopgap note instead of failing the whole performance response.
+
+    {campaign_id: {reach, frequency, reach_household, frequency_household}} —
+    reach/frequency are the INDIVIDUAL (primary) numbers; household is additive.
+    """
+    if not campaign_ids:
+        return {}
+    try:
+        sql = f"""
+            SELECT campaign_id,
+                   reach_individual AS reach,
+                   frequency_individual AS frequency,
+                   reach_household,
+                   frequency_household
+            FROM `{settings.stackadapt_rf_table}`
+            WHERE period_days = 30
+              AND period_start = DATE_TRUNC(CURRENT_DATE(), MONTH)
+              AND campaign_id IN UNNEST(@campaign_ids)
+        """
+        rows = bq.run_query(
+            sql, [bq.array_param("campaign_ids", "STRING", campaign_ids)]
+        )
+        return {str(r["campaign_id"]): r for r in rows if r.get("campaign_id")}
+    except (gcp_exceptions.GoogleCloudError, gcp_exceptions.NotFound) as e:
+        logger.warning(
+            "StackAdapt R&F direct read failed: %s", e, exc_info=True
+        )
+        return {}
 
 
 def _date_filter(start_date: str | None, end_date: str | None) -> tuple[str, list]:
@@ -308,9 +366,11 @@ async def get_adset_performance(
         names = [PLATFORM_NAMES.get(p, p) for p in reach_ok if p not in no_reach]
         if names:
             note = "Reach from " + ", ".join(names) + ". Not additive across audiences."
-    # AI-120: explain the missing StackAdapt R&F cells when it's active here.
+    # AI-120 / ADA 1215990005858637: the SA-direct feed is campaign-grain, so
+    # adset rows never carry per-audience StackAdapt reach — explain that here
+    # (the real per-campaign numbers live on the Summary tab).
     if any(r["platform_id"] in RF_EXCLUDED_PLATFORMS for r in rows):
-        note = f"{note} {RF_EXCLUDED_NOTE}" if note else RF_EXCLUDED_NOTE
+        note = f"{note} {SA_ADSET_NOTE}" if note else SA_ADSET_NOTE
     return AdSetPerformanceResponse(
         project_code=project_code,
         start_date=date.fromisoformat(start_date) if start_date else None,
@@ -729,12 +789,9 @@ async def get_performance(
         ORDER BY spend DESC
     """
     platform_rows = bq.run_query(platform_sql, base_params)
-
-    # AI-120: when an R&F-excluded platform (StackAdapt) is active on the
-    # project, tell the user why its reach/frequency is missing. Existing
-    # note text is preserved; this only appends.
-    if any(r["platform_id"] in RF_EXCLUDED_PLATFORMS for r in platform_rows):
-        reach_note = f"{reach_note} {RF_EXCLUDED_NOTE}" if reach_note else RF_EXCLUDED_NOTE
+    # AI-120 / ADA 1215990005858637: the StackAdapt reach_note append is
+    # deferred until AFTER the SA-direct fill below — the wording depends on
+    # whether the direct feed actually returned current-month numbers.
 
     # ── campaign-level detail ───────────────────────────────────────
     campaign_sql = f"""
@@ -764,6 +821,82 @@ async def get_performance(
         ORDER BY spend DESC
     """
     campaign_rows = bq.run_query(campaign_sql, base_params)
+
+    # ── StackAdapt reach/frequency direct fill (ADA 1215990005858637) ─
+    # Funnel's SA reach/frequency stay excluded from every SQL aggregate
+    # above (garbage 1-day per-creative field, nulled by @rf_excluded). Here
+    # we FILL the real numbers from the direct StackAdapt reachFrequency feed
+    # (current calendar-month bucket) keyed on campaign_id. Funnel stays the
+    # source of truth for spend / impressions / clicks — never touched.
+    sa_campaign_ids = [
+        r["campaign_id"] for r in campaign_rows
+        if r.get("platform_id") in RF_EXCLUDED_PLATFORMS and r.get("campaign_id")
+    ]
+    sa_direct = _stackadapt_direct_rf(sa_campaign_ids)
+    sa_present = any(
+        r["platform_id"] in RF_EXCLUDED_PLATFORMS for r in platform_rows
+    )
+
+    # Platform-level SA rollup from the campaigns that matched the direct feed.
+    # reach = MAX individual reach across matched SA campaigns — a conservative
+    # floor that matches the diagnostics engine's cross-campaign MAX convention
+    # (SUM would overstate audience overlap); frequency = reach-weighted average.
+    sa_reach: int | None = None
+    sa_freq: float | None = None
+    sa_reach_hh: int | None = None
+    sa_freq_hh: float | None = None
+    if sa_direct:
+        _reach_vals = [
+            v for v in (_int_or_none(d.get("reach")) for d in sa_direct.values())
+            if v
+        ]
+        if _reach_vals:
+            sa_reach = max(_reach_vals)
+        _fn = _fd = 0.0
+        for d in sa_direct.values():
+            rr, ff = _float(d.get("reach")), _float(d.get("frequency"))
+            if rr > 0 and ff > 0:
+                _fn += ff * rr
+                _fd += rr
+        if _fd > 0:
+            sa_freq = _fn / _fd
+        _hh_vals = [
+            v for v in
+            (_int_or_none(d.get("reach_household")) for d in sa_direct.values())
+            if v
+        ]
+        if _hh_vals:
+            sa_reach_hh = max(_hh_vals)
+        _hn = _hd = 0.0
+        for d in sa_direct.values():
+            rr, ff = _float(d.get("reach_household")), _float(d.get("frequency_household"))
+            if rr > 0 and ff > 0:
+                _hn += ff * rr
+                _hd += rr
+        if _hd > 0:
+            sa_freq_hh = _hn / _hd
+
+    # Fold SA into the headline Reach/Frequency KPI (fact_adset_daily rollup)
+    # so the Reach tile lights up for StackAdapt(-only) projects. Reach across
+    # platforms is non-additive → take the MAX; only adopt SA frequency when
+    # no adset-grain frequency exists.
+    if sa_reach:
+        total_reach_adset = max(total_reach_adset or 0, sa_reach)
+        if avg_frequency_adset is None:
+            avg_frequency_adset = sa_freq
+    # Household headline is SA-only (no other platform reports it).
+    total_reach_household = sa_reach_hh
+    avg_frequency_household = sa_freq_hh
+
+    # SA is now a reach contributor → the F1 provenance block folds it into
+    # metric_platforms["reach"/"frequency"] and available_metrics.
+    if sa_direct:
+        reach_platforms = sorted(set(reach_platforms) | RF_EXCLUDED_PLATFORMS)
+
+    # Reach-note wording depends on whether the direct feed answered.
+    if sa_present:
+        _sa_note = SA_DIRECT_NOTE if sa_direct else RF_EXCLUDED_NOTE
+        reach_note = f"{reach_note} {_sa_note}" if reach_note else _sa_note
 
     # ── objective classification ────────────────────────────────────
     media_plan_objectives = _load_media_plan_objectives(project_code)
@@ -958,6 +1091,8 @@ async def get_performance(
         conversion_cpa=conversion_cpa,
         total_reach_adset=total_reach_adset,
         avg_frequency_adset=avg_frequency_adset,
+        total_reach_household=total_reach_household,
+        avg_frequency_household=avg_frequency_household,
         reach_platforms=reach_platforms,
         reach_note=reach_note,
         high_frequency_warning=high_frequency_warning,
@@ -1020,11 +1155,19 @@ async def get_performance(
                 clicks=_int(r["clicks"]),
                 clicks_all=_int_or_none(r.get("clicks_all")),  # AI-102
                 conversions=_float(r["conversions"]),
-                # AI-120: NULL R&F for excluded platforms (em-dash in UI).
-                reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                # AI-120 / ADA 1215990005858637: Funnel's SA R&F stays nulled;
+                # the SA row instead carries the platform-level SA-direct rollup
+                # (sa_reach/sa_freq, None when the feed had no current-month row).
+                reach=(sa_reach if r["platform_id"] in RF_EXCLUDED_PLATFORMS
                        else _int_or_none(r.get("reach"))),
-                frequency=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                frequency=(sa_freq if r["platform_id"] in RF_EXCLUDED_PLATFORMS
                            else _float_or_none(r.get("frequency"))),
+                reach_household=(sa_reach_hh
+                                 if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                                 else None),
+                frequency_household=(sa_freq_hh
+                                     if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                                     else None),
                 video_views=_int_or_none(r.get("video_views")),
                 video_completions=_int_or_none(r.get("video_completions")),
                 engagements=_int_or_none(r.get("engagements")),
@@ -1045,11 +1188,35 @@ async def get_performance(
                 cpm=_float_or_none(r.get("cpm")),
                 cpc=_float_or_none(r.get("cpc")),
                 ctr=_float_or_none(r.get("ctr")),
-                # AI-120: NULL R&F for excluded platforms (em-dash in UI).
-                reach=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
-                       else _int_or_none(r.get("reach"))),
-                frequency=(None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
-                           else _float_or_none(r.get("frequency"))),
+                # AI-120 / ADA 1215990005858637: Funnel's SA R&F stays nulled;
+                # SA campaigns fill from the direct feed keyed on campaign_id
+                # (None when that campaign isn't synced yet — honest em-dash).
+                reach=(
+                    _int_or_none(sa_direct[r["campaign_id"]].get("reach"))
+                    if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                    and r.get("campaign_id") in sa_direct
+                    else (None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                          else _int_or_none(r.get("reach")))
+                ),
+                frequency=(
+                    _float_or_none(sa_direct[r["campaign_id"]].get("frequency"))
+                    if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                    and r.get("campaign_id") in sa_direct
+                    else (None if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                          else _float_or_none(r.get("frequency")))
+                ),
+                reach_household=(
+                    _int_or_none(sa_direct[r["campaign_id"]].get("reach_household"))
+                    if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                    and r.get("campaign_id") in sa_direct
+                    else None
+                ),
+                frequency_household=(
+                    _float_or_none(sa_direct[r["campaign_id"]].get("frequency_household"))
+                    if r["platform_id"] in RF_EXCLUDED_PLATFORMS
+                    and r.get("campaign_id") in sa_direct
+                    else None
+                ),
                 video_views=_int_or_none(r.get("video_views")),
                 video_completions=_int_or_none(r.get("video_completions")),
                 vcr=_float_or_none(r.get("vcr")),

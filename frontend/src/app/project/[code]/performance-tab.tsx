@@ -250,6 +250,19 @@ export function PerformanceTab({ code }: { code: string }) {
     (d) => d.reach_adset != null && d.reach_adset > 0,
   );
 
+  // Reach tile subtitle: provenance note plus the StackAdapt household
+  // ("residential") reach where the direct feed reports it (ADA
+  // 1215990005858637). `total_reach_*` stays the primary individual number.
+  const reachSub =
+    [
+      metricNote(data, "reach"),
+      data.total_reach_household != null && data.total_reach_household > 0
+        ? `Household reach ${formatNumber(data.total_reach_household)}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined;
+
   const chartData = data.daily.map((d) => ({
     ...d,
     dateLabel: d.date.slice(5),
@@ -326,13 +339,13 @@ export function PerformanceTab({ code }: { code: string }) {
               <KpiCard
                 label="Reach"
                 value={formatNumber(data.total_reach_adset)}
-                sub={metricNote(data, "reach")}
+                sub={reachSub}
               />
             ) : has(data, "reach") && data.total_reach ? (
               <KpiCard
                 label="Reach"
                 value={formatNumber(data.total_reach)}
-                sub={metricNote(data, "reach")}
+                sub={reachSub}
               />
             ) : (
               <KpiCard

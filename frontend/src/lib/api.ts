@@ -208,6 +208,12 @@ export interface PlatformBreakdown {
   conversions: number;
   reach?: number | null;
   frequency?: number | null;
+  /** StackAdapt R&F direct feed (ADA 1215990005858637): additive HOUSEHOLD
+   *  ("residential") reach/frequency. `reach`/`frequency` are the primary
+   *  individual numbers; these are non-null only for StackAdapt (from
+   *  2026-06-03). */
+  reach_household?: number | null;
+  frequency_household?: number | null;
   video_views?: number | null;
   video_completions?: number | null;
   engagements?: number | null;
@@ -227,6 +233,10 @@ export interface CampaignRow {
   cpm?: number;
   reach?: number | null;
   frequency?: number | null;
+  /** StackAdapt R&F direct feed (ADA 1215990005858637): additive HOUSEHOLD
+   *  reach/frequency; non-null only for StackAdapt campaigns. */
+  reach_household?: number | null;
+  frequency_household?: number | null;
   video_views?: number | null;
   video_completions?: number | null;
   vcr?: number | null;
@@ -264,6 +274,12 @@ export interface PerformanceResponse {
   conversion_cpa?: number | null;
   total_reach_adset?: number | null;
   avg_frequency_adset?: number | null;
+  /** StackAdapt R&F direct feed (ADA 1215990005858637): headline HOUSEHOLD
+   *  ("residential") reach/frequency, non-null only when StackAdapt is active
+   *  and has household data. Individual stays the primary total_reach_adset /
+   *  avg_frequency_adset. */
+  total_reach_household?: number | null;
+  avg_frequency_household?: number | null;
   reach_platforms?: string[];
   reach_note?: string | null;
   high_frequency_warning?: string | null;

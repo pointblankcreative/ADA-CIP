@@ -30,6 +30,7 @@ Custom-built platform for Point Blank Creative Inc. replacing Funnel.io and Look
 
 ### Open items
 - **StackAdapt creative matching:** ~7 `no_match` statics — SA creative-library names ≠ Funnel ad names; match via SA campaign→ad relationship instead of creative name.
+- **StackAdapt R&F direct feed (ADA 1215990005858637):** Stage 1 (ETL + `cip_stackadapt.stackadapt_reach_frequency`, PR #112) and Stage 2 (read-path FILL in `performance.py` + diagnostics engine SA source swap + household/individual model split) shipped. Funnel's SA reach stays excluded from every SQL aggregate; the real numbers come from the direct feed's current calendar-month bucket. Remaining: ±2% reconciliation vs the StackAdapt R&F report on the first live campaign; frontend household surface is currently just the Reach-KPI household sub-line (deeper per-campaign household display deferred).
 - **pool_size/saturation null:** Meta refuses delivery estimates on ENDED ad sets; verify on the first live campaign (estimate circuit breaker stops after 6 consecutive refusals per run).
 - **Post-promotion verify-after (2026-07-05):** confirm `cip-sheets-reader` still holds `roles/run.invoker` on prod `cip-backend` after the new `--invoker-iam-check` enforcement, so the twice-daily scheduler sync (2:30 AM/PM) doesn't 403 — deploy.yml does NOT manage that binding (only `infrastructure/deploy.sh` does). Also confirm `GET /api/alerts/` = 200 on prod (ack_note present — should already be true via the shared `cip` dataset).
 - `performance-tab.tsx`, `orbit-intro.tsx`, `lib/viz/audio-engine.ts` retired but on disk (unimported) — `git rm` when comfortable.
@@ -210,6 +211,11 @@ WHERE plan_id LIKE 'plan-25042%' AND audience_name LIKE '%Quantcast%';
 ## Section 9: Data Sources
 
 Raw Funnel.io passthrough data lives in `point-blank-ada.core_funnel_export.funnel_data` (US region). This table has 1,463 columns with platform-specific suffixes and ~800K rows from Oct 2023 to present. The transformation layer reads from this table cross-region and writes to normalized tables in the `cip` dataset.
+
+### Reach/Frequency source of truth
+> **Reach/Frequency source of truth.** Spend, impressions, and clicks always come from Funnel (`fact_digital_daily` / `fact_adset_daily`). Reach and frequency come from Funnel's 7-day platform fields for every platform EXCEPT StackAdapt. For StackAdapt, reach and frequency come from the direct StackAdapt `reachFrequency` API feed in `cip_stackadapt.stackadapt_reach_frequency` (joined on `Campaign_ID__StackAdapt`), because Funnel's `Unique_impressions_1_Day_Creative__StackAdapt` is a 1-day per-creative field that overcounts true dedup reach by 7–10×. StackAdapt reports dedup reach only in fixed calendar buckets (daily/weekly/monthly); the campaign headline is the **current calendar-month** bucket, never a summed flight-to-date figure (reach is non-additive). Reach is stored and shown as individual and household ("residential") separately (never collapsed); household data exists only from 2026-06-03 onward. Never reintroduce the Funnel StackAdapt reach/frequency columns into any user-facing aggregate.
+
+Read-path implementation (Stage 2, ADA 1215990005858637): `backend/routers/performance.py` keeps the Funnel-side SQL R&F exclusion (`RF_EXCLUDED_PLATFORMS = {"stackadapt"}` stays) and adds a Python-side FILL layer (`_stackadapt_direct_rf`) that supplies the SA numbers from the direct feed; `backend/services/diagnostics/engine.py` overrides the StackAdapt `adset_bucket` entries with the current-month feed so D1/D2/D3/D4 score SA-only campaigns on real dedup reach.
 
 ## Section 10: Alert Thresholds (Defaults)
 
