@@ -149,6 +149,24 @@ async def api_creative_assets_sync(force: bool = False):
     return run_sync(force=force)
 
 
+@router.post("/stackadapt-rf/sync")
+async def api_stackadapt_rf_sync(force: bool = False):
+    """Trigger the StackAdapt reach/frequency direct feed (Asana
+    1215990005858637): StackAdapt reachFrequency GraphQL → BigQuery
+    (cip_stackadapt.stackadapt_reach_frequency).
+
+    Also runs inside the daily pipeline (Stage 1e); this endpoint is the
+    manual lever. Pulls daily/weekly/monthly calendar-bucket reach for every
+    tracked StackAdapt campaign and MERGE-upserts them. No-ops when
+    STACKADAPT_API_KEY isn't configured. `force` is accepted for parity with
+    the creative-assets route; the sync always refreshes the recent buckets, so
+    it currently has no additional effect.
+    """
+    from backend.services.stackadapt_rf_sync import run_sync
+
+    return run_sync()
+
+
 @router.get("/data-freshness")
 async def data_freshness():
     """Check when each platform's data was last loaded."""
