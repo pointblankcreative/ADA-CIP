@@ -513,9 +513,19 @@ function DgActCard({
             </span>
             <span className="mx-1.5 text-fg-faint">→</span>
             <span className="font-semibold text-fg-secondary">{s.action.action}</span>
-            <span className="ml-1.5 whitespace-nowrap rounded-xs border border-line bg-surface-sunken px-1.5 py-0.5 text-[11px] font-medium text-fg-muted">
-              {OWNER_LABELS[s.action.owner]}
-            </span>
+            {/* Owner pill (AI, owner-tag key): the tag names the team that
+                PERFORMS the move, not necessarily the viewer. Wrapped in a
+                Glossary so a junior can hover to learn whether it's theirs to
+                do or to route/escalate. Safe here — this is a <p>, not a
+                button, so no nested-button issue. */}
+            <Glossary
+              termKey={`owner_${s.action.owner.toLowerCase()}`}
+              variant="wrap"
+            >
+              <span className="ml-1.5 whitespace-nowrap rounded-xs border border-line bg-surface-sunken px-1.5 py-0.5 text-[11px] font-medium text-fg-muted">
+                {OWNER_LABELS[s.action.owner]}
+              </span>
+            </Glossary>
             {s.action.hedge && (
               <span className="text-fg-faint"> ({s.action.hedge})</span>
             )}

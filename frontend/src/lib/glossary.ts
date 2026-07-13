@@ -256,6 +256,45 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     aliases: ["F5"],
   },
 
+  /* ---- OWNER TAG entries (AI, owner-tag key) ----
+     The pills on a suggested move (Media team, Trading desk, …) name the
+     team that PERFORMS the move, not whether it is the viewer's to do. A
+     junior buyer reading "Media team" couldn't tell if that meant them or
+     the trading desk, so each pill leads with "who performs this move" and
+     spells out that the tag names the doer, not necessarily you — route or
+     escalate rather than act. diagnostics-tab.tsx wraps the pill in
+     <Glossary termKey={`owner_${owner.toLowerCase()}`}>. */
+  owner_media: {
+    key: "owner_media",
+    label: "Media team",
+    definition:
+      "Who performs this move: the team that plans and runs the buy — budgets, pacing, audiences. The tag names the doer, not necessarily you; route or escalate if it isn't your desk.",
+  },
+  owner_trading: {
+    key: "owner_trading",
+    label: "Trading desk",
+    definition:
+      "Who performs this move: the programmatic trading desk — DSP buys, deals, and inventory quality. The tag names the doer, not necessarily you; route or escalate if it isn't your desk.",
+  },
+  owner_creative: {
+    key: "owner_creative",
+    label: "Creative team",
+    definition:
+      "Who performs this move: the team that makes and rotates the ads. The tag names the doer, not necessarily you; hand it over if it isn't yours.",
+  },
+  owner_web: {
+    key: "owner_web",
+    label: "Web team",
+    definition:
+      "Who performs this move: the team that owns landing pages, tags, and forms. The tag names the doer, not necessarily you; route it if the page isn't yours to change.",
+  },
+  owner_client: {
+    key: "owner_client",
+    label: "Client",
+    definition:
+      "Who performs this move: the client's own team, for steps off our platforms. The tag names the doer, not necessarily you; flag it for them rather than acting.",
+  },
+
   /* ---- PRE-SEEDED entries (not wired yet; siblings register/override) ---- */
   pillar_distribution: {
     key: "pillar_distribution",
