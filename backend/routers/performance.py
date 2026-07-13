@@ -38,6 +38,35 @@ def _int_or_none(v) -> int | None:
     return int(v) if v is not None else None
 
 
+def _vcr_sql(prefix: str = "", *, presummed: bool = False) -> str:
+    """SQL for the canonical Video Completion Rate (ADA 1215989989043460).
+
+    Completion = the deepest quartile a platform actually reports
+    (``video_q100`` — 100% on Meta/Google/Reddit/Pinterest, 95% on
+    StackAdapt) ÷ the canonical "video start". The start is the 3-second
+    intentional view (``video_views_3s``), falling back to the 25% quartile
+    where a platform carries quartiles but no 3-second signal — the SAME
+    start the diagnostics A1 engine scores completion on
+    (`persuasion/attention.py::_platform_video_starts`).
+
+    This replaces the old ``video_completions ÷ video_views`` ratio, whose
+    numerator was Meta ThruPlay (~15s, "not a real complete") and whose
+    denominator counted every autoplay scroll-past — roughly 4x the real
+    start on Meta — so it read alarmingly low and matched no platform's own
+    completion figure. Capped at 1.0 so quartile-vs-start reporting quirks
+    can never surface a completion rate above 100%.
+
+    `presummed=True` when `prefix` points at a CTE that already SUM'd the
+    columns (e.g. "a."); otherwise the columns are SUM'd inline.
+    """
+    q100 = f"{prefix}video_q100"
+    start = f"COALESCE(NULLIF({prefix}video_views_3s, 0), {prefix}video_q25)"
+    if not presummed:
+        q100 = f"SUM({q100})"
+        start = f"SUM({start})"
+    return f"LEAST(SAFE_DIVIDE({q100}, NULLIF({start}, 0)), 1.0)"
+
+
 def _display_ad_name(
     ad_name: str | None, platform_id: str, ad_set_name: str | None
 ) -> str | None:
@@ -269,6 +298,9 @@ async def get_adset_performance(
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
                 SUM(f.video_completions) AS video_completions,
+                SUM(f.video_views_3s) AS video_views_3s,
+                SUM(f.video_q25) AS video_q25,
+                SUM(f.video_q100) AS video_q100,
                 SUM(f.outbound_clicks) AS outbound_clicks,
                 SUM(f.landing_page_views) AS landing_page_views,
                 COUNT(DISTINCT f.ad_id) AS ad_count
@@ -336,7 +368,7 @@ async def get_adset_performance(
             SAFE_DIVIDE(a.spend, NULLIF(a.impressions, 0)) * 1000 AS cpm,
             SAFE_DIVIDE(a.spend, NULLIF(a.clicks, 0)) AS cpc,
             SAFE_DIVIDE(a.clicks, NULLIF(a.impressions, 0)) AS ctr,
-            SAFE_DIVIDE(a.video_completions, NULLIF(a.video_views, 0)) AS vcr,
+            {_vcr_sql('a.', presummed=True)} AS vcr,
             SAFE_DIVIDE(a.engagements, NULLIF(a.impressions, 0)) AS engagement_rate,
             COALESCE(ar.reach, cr.reach) AS reach,
             COALESCE(ar.frequency, cr.frequency) AS frequency,
@@ -462,6 +494,9 @@ async def get_creative_performance(
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
                 SUM(f.video_completions) AS video_completions,
+                SUM(f.video_views_3s) AS video_views_3s,
+                SUM(f.video_q25) AS video_q25,
+                SUM(f.video_q100) AS video_q100,
                 SUM(f.outbound_clicks) AS outbound_clicks,
                 SUM(f.landing_page_views) AS landing_page_views
             FROM {bq.table('fact_digital_daily')} f
@@ -501,7 +536,7 @@ async def get_creative_performance(
             SAFE_DIVIDE(SUM(spend), NULLIF(SUM(impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(spend), NULLIF(SUM(clicks), 0)) AS cpc,
             SAFE_DIVIDE(SUM(clicks), NULLIF(SUM(impressions), 0)) AS ctr,
-            SAFE_DIVIDE(SUM(video_completions), NULLIF(SUM(video_views), 0)) AS vcr,
+            {_vcr_sql()} AS vcr,
             SAFE_DIVIDE(SUM(engagements), NULLIF(SUM(impressions), 0)) AS engagement_rate
         FROM aliased
         GROUP BY creative_variant
@@ -576,7 +611,7 @@ async def get_ad_performance(
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.impressions), 0)) * 1000 AS cpm,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.clicks), 0)) AS cpc,
             SAFE_DIVIDE(SUM(f.clicks), NULLIF(SUM(f.impressions), 0)) AS ctr,
-            SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS vcr,
+            {_vcr_sql('f.')} AS vcr,
             SAFE_DIVIDE(SUM(f.engagements), NULLIF(SUM(f.impressions), 0)) AS engagement_rate
         FROM {bq.table('fact_digital_daily')} f
         WHERE f.project_code = @project_code AND {date_clause} {plat}
@@ -661,7 +696,7 @@ async def get_performance(
             AVG(NULLIF({rf_freq_col}, 0)) AS total_frequency,
             SUM(f.video_views) AS total_video_views,
             SUM(f.video_completions) AS total_video_completions,
-            SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS total_vcr,
+            {_vcr_sql('f.')} AS total_vcr,
             SUM(f.engagements) AS total_engagements,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.conversions), 0)) AS total_cpa,
             SAFE_DIVIDE(SUM(f.conversions), NULLIF(SUM(f.clicks), 0)) AS total_conversion_rate
@@ -692,7 +727,7 @@ async def get_performance(
             AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
-            SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS vcr,
+            {_vcr_sql('f.')} AS vcr,
             SUM(f.engagements) AS engagements,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.conversions), 0)) AS cpa,
             SAFE_DIVIDE(SUM(f.conversions), NULLIF(SUM(f.clicks), 0)) AS conversion_rate
@@ -782,6 +817,7 @@ async def get_performance(
             AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
+            SUM(f.video_q100) AS video_q100,
             SUM(f.engagements) AS engagements
         FROM {bq.table('fact_digital_daily')} f
         WHERE {base_where}
@@ -811,7 +847,7 @@ async def get_performance(
             AVG(NULLIF({rf_freq_col}, 0)) AS frequency,
             SUM(f.video_views) AS video_views,
             SUM(f.video_completions) AS video_completions,
-            SAFE_DIVIDE(SUM(f.video_completions), NULLIF(SUM(f.video_views), 0)) AS vcr,
+            {_vcr_sql('f.')} AS vcr,
             SUM(f.engagements) AS engagements,
             SAFE_DIVIDE(SUM(f.spend), NULLIF(SUM(f.conversions), 0)) AS cpa,
             SAFE_DIVIDE(SUM(f.conversions), NULLIF(SUM(f.clicks), 0)) AS conversion_rate
@@ -1033,7 +1069,16 @@ async def get_performance(
             if rf_metric not in available:
                 available.append(rf_metric)
 
-    if "video_views" in available and "video_completions" in available:
+    # vcr (Video Completion Rate) is now the quartile-based completion —
+    # deepest reported quartile ÷ video start (ADA 1215989989043460). It is
+    # computable only where a platform reports the q100 quartile, so a
+    # platform that reports completions/plays but no quartile funnel (e.g.
+    # Google Ads TrueView) no longer lights up a VCR tile that would read
+    # NULL. video_completions (ThruPlay/TrueView) is no longer its basis.
+    has_completion_quartile = any(
+        r.get("video_q100") and int(r["video_q100"]) > 0 for r in platform_rows
+    )
+    if "video_views" in available and has_completion_quartile:
         available.append("vcr")
     # AI-031: surface conversion metric tiles for conversion / mixed projects
     # even when no conversions have fired yet. `available_metrics` is a

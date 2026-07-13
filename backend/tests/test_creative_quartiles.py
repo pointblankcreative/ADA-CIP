@@ -12,9 +12,10 @@ ADA 1216199318518420 (format-aware CTR grading) — appended below:
 #11  Per-platform video quartiles: the creative × platform CELL rows the
      frontend matrix renders must carry the four raw quartile completion
      sums (video_q25..q100) so the frontend can draw a per-platform
-     retention curve (anchored on q25). We only pass the raw SUMs through
-     — no rate maths here — and only on the CELL (CreativeMatrixCell),
-     never on the campaign-level CreativeTotals.
+     retention curve. (The funnel later re-anchored on the canonical video
+     start rather than q25 — ADA 1215989989043460.) We only pass the raw
+     SUMs through — no rate maths here — and only on the CELL
+     (CreativeMatrixCell), never on the campaign-level CreativeTotals.
 
 #19  A dimensions-only ad_name ("2160x3840", a StackAdapt DOOH ad) used to
      normalise to the empty string and render "Unknown". _alias_resolution

@@ -463,8 +463,11 @@ export interface CreativeMatrixCell {
   cpm: number | null;
   conversions: number;
   cpa: number | null;
-  /** #11: per-platform video quartile view counts (raw SUMs; 0 on
-   *  non-video cells). Drive the per-platform drop-off read. */
+  /** #11 / ADA 1215989989043460: per-platform video quartile view counts
+   *  (raw SUMs; 0 on non-video cells) plus the canonical video start — the
+   *  3-second intentional view (q25 fallback). The drop-off funnel anchors
+   *  on video_start (start → 25 → 50 → 75 → complete), not q25. */
+  video_start: number;
   video_q25: number;
   video_q50: number;
   video_q75: number;
