@@ -103,6 +103,159 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     unit: "% of paid clicks",
   },
 
+  /* ---- DIAGNOSTIC SIGNAL entries (AI-047) ----
+     One entry per engine signal code, keyed by a readable slug with the
+     code as an alias. diagnostics-tab.tsx already wraps every signal name
+     in <Glossary termKey={s.id}>, so adding an entry here is all it takes
+     for that code's tooltip to light up. Definitions mirror the engine's
+     own one-liners (backend/services/diagnostics/{persuasion,conversion}).
+     D4 (incremental_reach) and A4 (focused_view) already live above.
+     A2/R2 are not scored yet, so they get no entry. */
+
+  // Distribution pillar (persuasion) — "are we reaching the audience?"
+  reach_attainment: {
+    key: "reach_attainment",
+    label: "Reach Attainment",
+    definition:
+      "Whether the campaign is reaching as many people as the plan called for.",
+    how: "Compares the unique people reached so far against the reach the media plan projected, eased early in the flight while delivery is still ramping.",
+    aliases: ["D1"],
+  },
+  frequency_adequacy: {
+    key: "frequency_adequacy",
+    label: "Frequency Adequacy",
+    definition:
+      "Whether people are seeing the ads often enough to remember them — without being hammered.",
+    how: "Checks the average times each person saw an ad against the effective frequency band for the objective: too low doesn't stick, too high wastes budget.",
+    aliases: ["D2"],
+  },
+  frequency_distribution: {
+    key: "frequency_distribution",
+    label: "Frequency Distribution",
+    definition:
+      "Whether exposure is spread evenly across the audience, rather than piling onto a small group while others barely see it.",
+    how: "Measures how uneven frequency is across people — an even spread scores well, heavy concentration on a few is the flag.",
+    aliases: ["D3"],
+  },
+  delivery_cadence: {
+    key: "delivery_cadence",
+    label: "Delivery Cadence",
+    definition:
+      "Whether the campaign delivers smoothly day to day, rather than in bursts with dark days in between.",
+    how: "Looks at how steady daily delivery is across the flight and penalizes gap days where nothing ran.",
+    aliases: ["D5"],
+  },
+
+  // Attention pillar (persuasion) — "are they absorbing the message?"
+  video_completion_quality: {
+    key: "video_completion_quality",
+    label: "Video Completion Quality",
+    definition: "Whether people watch the video through, or drop off early.",
+    how: "Compares the drop-off across the video's quarters against benchmarks adjusted for the ad's length.",
+    aliases: ["A1"],
+  },
+  viewability: {
+    key: "viewability",
+    label: "Viewability",
+    definition:
+      "Whether the ads actually appeared on screen where someone could see them, rather than loading off-screen.",
+    how: "Measured viewable impressions against the IAB standard, on the share of inventory that reports viewability.",
+    aliases: ["A3"],
+  },
+  creative_fatigue: {
+    key: "creative_fatigue",
+    label: "Creative Fatigue",
+    definition:
+      "Whether a creative is wearing out — losing attention as the same people see it again and again.",
+    how: "Tracks the trend of each creative's attention metric over time alongside how saturated its audience is; a steady decline is fatigue.",
+    aliases: ["A5"],
+  },
+
+  // Resonance pillar (persuasion) — "is the message landing?"
+  engagement_quality: {
+    key: "engagement_quality",
+    label: "Engagement Quality Ratio",
+    definition:
+      "Whether engagement is meaningful action, not just passive scroll-by counts.",
+    how: "Weighs deliberate actions (comments, shares, saves) against total engagement volume.",
+    aliases: ["R1"],
+  },
+  landing_page_depth: {
+    key: "landing_page_depth",
+    label: "Landing Page Depth",
+    definition:
+      "Whether people who click actually engage with the page, or bounce straight off.",
+    how: "GA4 engaged-session rate and scroll depth for visitors arriving from the campaign.",
+    aliases: ["R3"],
+  },
+
+  // Acquisition pillar (conversion) — "what are we paying, and is it sustainable?"
+  cpa_vs_target: {
+    key: "cpa_vs_target",
+    label: "CPA vs Target",
+    definition:
+      "Whether each conversion is costing what it should, against the target for this campaign.",
+    how: "Compares actual cost per conversion to a friction-adjusted target from the media plan (needs the FFS wizard filled in).",
+    aliases: ["C1"],
+  },
+  volume_trajectory: {
+    key: "volume_trajectory",
+    label: "Volume Trajectory",
+    definition:
+      "Whether conversions are coming in at the pace the budget implies.",
+    how: "Compares the recent daily conversion rate against the pace the budget and target CPA project.",
+    aliases: ["C2"],
+  },
+  cpa_trend: {
+    key: "cpa_trend",
+    label: "CPA Trend",
+    definition:
+      "Whether cost per conversion is drifting worse over time — an early read on audience saturation.",
+    how: "Fits a spend-weighted trend line to cost per conversion over the last 7 days; a rising line is the warning.",
+    aliases: ["C3"],
+  },
+
+  // Funnel pillar (conversion) — "does the message convert through the funnel?"
+  click_through_rate: {
+    key: "click_through_rate",
+    label: "Click-Through Rate",
+    definition: "Whether people are clicking the ads.",
+    how: "Link clicks divided by impressions, graded by format — some placements aren't meant to earn clicks and aren't graded on it.",
+    unit: "% of impressions",
+    aliases: ["F1"],
+  },
+  landing_page_load_rate: {
+    key: "landing_page_load_rate",
+    label: "Landing Page Load Rate",
+    definition:
+      "Whether clicks actually reach the landing page, or drop on the way.",
+    how: "Landing-page views against clicks — a big gap points at slow pages or broken links. Landing-page-flow campaigns only.",
+    aliases: ["F2"],
+  },
+  scroll_form_discovery: {
+    key: "scroll_form_discovery",
+    label: "Scroll & Form Discovery",
+    definition:
+      "Whether visitors who land actually get to the form, or leave before they see it.",
+    how: "GA4 scroll depth and form-view rate for arriving sessions. Landing-page-flow campaigns only.",
+    aliases: ["F3"],
+  },
+  form_completion_rate: {
+    key: "form_completion_rate",
+    label: "Form Completion Rate",
+    definition: "Whether people who start the form finish it.",
+    how: "Form submissions divided by form starts — a low rate points at a long or confusing form.",
+    aliases: ["F4"],
+  },
+  post_conversion_activation: {
+    key: "post_conversion_activation",
+    label: "Post-Conversion Activation",
+    definition:
+      "Whether a submitted form leads to the next step, rather than going quiet after the conversion.",
+    how: "Looks for follow-on events (GA4 key events) after the conversion fires.",
+    aliases: ["F5"],
+  },
+
   /* ---- PRE-SEEDED entries (not wired yet; siblings register/override) ---- */
   pillar_distribution: {
     key: "pillar_distribution",
