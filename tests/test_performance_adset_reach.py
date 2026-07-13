@@ -408,8 +408,10 @@ def test_stackadapt_rows_still_nulled_after_rewrite():
 
     note = body["total_reach_note"]
     assert note.startswith("Reach from Meta. Not additive across audiences.")
+    # ADA 1215990005858637: /adsets is campaign-grain honest — SA reach lives
+    # on the Summary tab, so the adset note points there.
     assert note.endswith(
-        "StackAdapt reach/frequency hidden pending direct API integration."
+        "StackAdapt reports reach per campaign, not per audience — see the Summary tab."
     )
 
 

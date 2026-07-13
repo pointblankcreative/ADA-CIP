@@ -1,31 +1,32 @@
-"""Tests for the AI-120 Option D StackAdapt reach/frequency stopgap.
+"""Tests for the StackAdapt reach/frequency direct feed (ADA 1215990005858637).
 
 Background (AI-111 + AI-112): StackAdapt "reach" via Funnel.io is a 1-day
 per-creative reach field, not deduplicated multi-day reach (wrong by 7-10x),
-and StackAdapt frequency is hardcoded 0.0 upstream. Decision (2026-05-20,
-AI-120): v1 hides StackAdapt reach + frequency in the UI and excludes
-StackAdapt from every reach/frequency aggregate, until the post-launch
-StackAdapt direct-API supplement restores them. Funnel stays source of truth
-for spend / impressions / clicks — those must NOT change.
+and StackAdapt frequency is hardcoded 0.0 upstream. Stage 2 keeps Funnel's SA
+R&F excluded from every SQL aggregate (it stays garbage and must never
+surface) but adds a SEPARATE Python-side FILL layer that supplies the REAL
+StackAdapt reach/frequency from the direct StackAdapt reachFrequency API feed
+(`cip_stackadapt.stackadapt_reach_frequency`, current calendar-month bucket).
+Funnel stays source of truth for spend / impressions / clicks — those must
+NOT change.
 
 These tests mirror the stub pattern in test_projects_router_pacing.py: bq is
 patched so no SQL executes. We assert:
 
-  (a) the emitted SQL excludes RF_EXCLUDED_PLATFORMS from every R&F
-      aggregate (totals, daily, adset rollups, platform/campaign breakdowns,
-      high-frequency warning),
-  (b) metric_platforms never lists StackAdapt for reach / frequency (the
-      AI-026 subtitle then says "Not reported by StackAdapt." automatically),
-  (c) the stopgap sentence is appended to reach_note when StackAdapt is
-      active, and existing note text is preserved,
-  (d) per-row drilldowns (campaigns, by_platform, ad_sets) return
-      reach=None / frequency=None for StackAdapt rows so the frontend
-      renders an em-dash (AI-029 unsupported-platform pattern),
+  (a) the emitted SQL STILL excludes RF_EXCLUDED_PLATFORMS from every Funnel
+      R&F aggregate (totals, daily, adset rollups, platform/campaign
+      breakdowns, high-frequency warning) — Stage 2 does not touch the SQL,
+  (b) when the SA-direct feed answers, StackAdapt IS listed in
+      metric_platforms for reach / frequency and appears in reach_platforms,
+  (c) reach_note appends SA_DIRECT_NOTE when the direct feed returns
+      current-month numbers, and falls back to RF_EXCLUDED_NOTE (honest "not
+      reporting") when StackAdapt is active but not yet synced,
+  (d) per-row drilldowns (campaigns, by_platform) carry the SA-direct
+      individual + household reach/frequency; a SA campaign with no direct
+      row stays reach=None (honest em-dash); /adsets stays campaign-grain
+      nulled with the SA_ADSET_NOTE,
   (e) other platforms (Meta etc.) are completely unaffected, and
-      StackAdapt spend / impressions / clicks still flow through.
-
-When the direct-API supplement ships and RF_EXCLUDED_PLATFORMS is emptied,
-delete this file (or flip the assertions) alongside that change.
+      StackAdapt spend / impressions / clicks still flow through Funnel.
 """
 
 from __future__ import annotations
@@ -162,7 +163,12 @@ def _get_performance(rec, code="26018"):
     Query order in the router:
       1. totals_sql      2. daily_sql        3. adset_daily_sql
       4. sum_sql         5. plat_sql         6. warn_sql
-      7. platform_sql    8. campaign_sql     9. media_plan_objectives
+      7. platform_sql    8. campaign_sql     9. sa_direct_sql*
+     10. media_plan_objectives
+
+    *sa_direct_sql (ADA 1215990005858637) is issued ONLY when at least one
+    campaign row is StackAdapt (non-empty campaign_id). Meta-only fixtures
+    therefore skip it and media_plan_objectives becomes call #9.
     """
     patches = _bq_patches(rec)
     for p in patches:
@@ -175,6 +181,18 @@ def _get_performance(rec, code="26018"):
             p.stop()
 
 
+# Canned SA-direct row (ADA 1215990005858637) keyed on campaign_id "c-sa" —
+# matches the StackAdapt campaign row below. Individual > household, freq 2-3x
+# (the real 26022 CATIE shape validated 2026-07-13).
+SA_DIRECT_ROW = {
+    "campaign_id": "c-sa",
+    "reach": 26_800,
+    "frequency": 3.2,
+    "reach_household": 8_600,
+    "frequency_household": 2.0,
+}
+
+
 def _mixed_project_responses(rec):
     """Meta + StackAdapt project. The SQL stub can't apply the SQL-side
     exclusion, so canned rows simulate what BigQuery returns: StackAdapt
@@ -182,9 +200,10 @@ def _mixed_project_responses(rec):
     IF(...IN UNNEST(@rf_excluded), NULL, ...) projection) and are absent
     from fact_adset_daily rollups (the NOT IN UNNEST WHERE guard).
 
-    The per-platform / per-campaign rows intentionally carry NON-NULL
-    R&F for StackAdapt so the tests prove the Python-side guard nulls
-    them even if the SQL-side exclusion were to regress."""
+    The per-platform / per-campaign Funnel rows intentionally carry NON-NULL
+    R&F for StackAdapt so the tests prove the router ignores Funnel's SA reach
+    entirely — the surfaced SA numbers come only from the SA-direct feed
+    (SA_DIRECT_ROW), issued as an extra query after campaign_sql."""
     rec.responses = [
         [_totals_row()],                                        # totals_sql
         [],                                                     # daily_sql
@@ -200,6 +219,7 @@ def _mixed_project_responses(rec):
             _campaign_row("meta", "c-meta"),
             _campaign_row("stackadapt", "c-sa", reach=999_999, frequency=3.3),
         ],                                                      # campaign_sql
+        [SA_DIRECT_ROW],                                        # sa_direct_sql
         [],                                                     # media_plan_objectives
     ]
     return rec
@@ -209,11 +229,15 @@ def _mixed_project_responses(rec):
 
 
 def test_rf_excluded_platforms_constant():
-    """The stopgap is keyed on this set; the future direct-API supplement
-    removes the platform from it (one-line revert)."""
+    """The Funnel-side exclusion stays keyed on this set — Stage 2 does NOT
+    empty it (Funnel's SA reach is still garbage). The SA-direct feed fills
+    the real numbers separately."""
     assert perf_router.RF_EXCLUDED_PLATFORMS == {"stackadapt"}
+    # SA_DIRECT_NOTE is what the endpoint appends when the direct feed answers.
+    assert "StackAdapt" in perf_router.SA_DIRECT_NOTE
+    assert "calendar month" in perf_router.SA_DIRECT_NOTE
+    # The honest "not synced yet" fallback note is still available.
     assert "StackAdapt" in perf_router.RF_EXCLUDED_NOTE
-    assert "direct API" in perf_router.RF_EXCLUDED_NOTE
 
 
 # ── SQL exclusion (main endpoint) ────────────────────────────────────
@@ -270,31 +294,31 @@ def test_every_rf_aggregate_sql_excludes_stackadapt():
 # ── metric_platforms ────────────────────────────────────────────────
 
 
-def test_metric_platforms_excludes_stackadapt_for_reach_and_frequency():
-    """metric_platforms drives the AI-026 tile subtitle: with StackAdapt
-    absent from the reach/frequency lists, the frontend renders
-    "From Meta. Not reported by StackAdapt." automatically."""
+def test_metric_platforms_lists_stackadapt_when_direct_feed_present():
+    """metric_platforms drives the AI-026 tile subtitle. With the SA-direct
+    feed answering, StackAdapt IS a reach/frequency contributor (its numbers
+    come from the direct feed, not Funnel), alongside Meta from the adset
+    rollup."""
     rec = _mixed_project_responses(QueryRecorder())
-    # Make the regression case explicit: even if SQL returned non-null R&F
-    # for stackadapt (responses already do for platform_sql), the Python
-    # guard must keep it out of the lists.
     resp = _get_performance(rec)
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
     mp = body["metric_platforms"]
-    assert "StackAdapt" not in mp.get("reach", []), mp
-    assert "StackAdapt" not in mp.get("frequency", []), mp
+    assert "StackAdapt" in mp.get("reach", []), mp
+    assert "StackAdapt" in mp.get("frequency", []), mp
     assert "Meta" in mp.get("reach", []), mp
-    # Non-R&F metrics keep listing StackAdapt — only R&F is hidden.
+    # Non-R&F metrics still list StackAdapt from the Funnel platform rollup.
     assert "StackAdapt" in mp.get("video_views", []), mp
 
 
 # ── reach_note ──────────────────────────────────────────────────────
 
 
-def test_reach_note_appended_when_stackadapt_active():
-    """Existing note text stays; the stopgap sentence is appended."""
+def test_reach_note_appends_sa_direct_note_when_feed_present():
+    """Existing Meta note prefix stays; the SA-direct sentence is appended
+    (not the 'hidden pending' fallback) because the direct feed answered.
+    StackAdapt now IS a reach contributor."""
     rec = _mixed_project_responses(QueryRecorder())
     resp = _get_performance(rec)
     assert resp.status_code == 200, resp.text
@@ -303,16 +327,16 @@ def test_reach_note_appended_when_stackadapt_active():
     note = body["reach_note"]
     assert note is not None
     assert note.startswith("Reach from Meta."), note
-    assert note.endswith(
-        "StackAdapt reach/frequency hidden pending direct API integration."
-    ), note
-    # StackAdapt never appears as a reach-contributing platform.
-    assert "stackadapt" not in body["reach_platforms"]
+    assert note.endswith(perf_router.SA_DIRECT_NOTE), note
+    # StackAdapt now contributes reach (from the direct feed).
+    assert "stackadapt" in body["reach_platforms"]
 
 
-def test_reach_note_is_only_stopgap_sentence_when_no_other_reach_platform():
-    """StackAdapt-only project: no contributing platforms, so the note is
-    just the explanation for why R&F is missing."""
+def test_stackadapt_only_project_reach_comes_from_direct_feed():
+    """StackAdapt-only project: no other reach platform, so the note is just
+    the SA-direct sentence — and the Reach/Frequency KPI now populates from the
+    direct feed (the whole point of Stage 2). total_reach comes from Funnel
+    (still NULL for SA), but total_reach_adset carries the SA-direct number."""
     rec = QueryRecorder()
     rec.responses = [
         [_totals_row(total_reach=None, total_frequency=None)],  # totals_sql
@@ -323,26 +347,28 @@ def test_reach_note_is_only_stopgap_sentence_when_no_other_reach_platform():
         [],                                                     # warn_sql
         [_platform_row("stackadapt", reach=None, frequency=None)],  # platform_sql
         [_campaign_row("stackadapt", "c-sa", reach=None, frequency=None)],  # campaign_sql
+        [SA_DIRECT_ROW],                                        # sa_direct_sql
         [],                                                     # media_plan_objectives
     ]
     resp = _get_performance(rec)
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
-    assert body["reach_note"] == (
-        "StackAdapt reach/frequency hidden pending direct API integration."
-    )
-    assert body["reach_platforms"] == []
-    # The KPI rollups carry no phantom StackAdapt reach.
+    assert body["reach_note"] == perf_router.SA_DIRECT_NOTE
+    assert body["reach_platforms"] == ["stackadapt"]
+    # Funnel totals stay NULL for SA (never surface the garbage column)…
     assert body["total_reach"] is None
     assert body["total_frequency"] is None
-    assert body["total_reach_adset"] is None
-    assert body["avg_frequency_adset"] is None
-    # metric_platforms must not declare reach/frequency at all.
-    assert "reach" not in body["metric_platforms"]
-    assert "frequency" not in body["metric_platforms"]
-    assert "reach" not in body["available_metrics"]
-    assert "frequency" not in body["available_metrics"]
+    # …but the headline Reach/Frequency KPI is now filled from the direct feed.
+    assert body["total_reach_adset"] == 26_800
+    assert body["avg_frequency_adset"] == pytest.approx(3.2)
+    assert body["total_reach_household"] == 8_600
+    assert body["avg_frequency_household"] == pytest.approx(2.0)
+    # metric_platforms now declares reach/frequency, attributed to StackAdapt.
+    assert body["metric_platforms"].get("reach") == ["StackAdapt"]
+    assert body["metric_platforms"].get("frequency") == ["StackAdapt"]
+    assert "reach" in body["available_metrics"]
+    assert "frequency" in body["available_metrics"]
 
 
 def test_reach_note_unchanged_without_stackadapt():
@@ -370,36 +396,46 @@ def test_reach_note_unchanged_without_stackadapt():
 # ── per-row null-out + other platforms unaffected ───────────────────
 
 
-def test_stackadapt_rows_nulled_in_breakdowns_other_platforms_untouched():
-    """by_platform + campaigns: StackAdapt rows get reach=None /
-    frequency=None (em-dash via AI-029 in the UI) even when the canned SQL
-    rows carry values; Meta keeps its numbers. StackAdapt spend /
-    impressions / clicks flow through untouched."""
+def test_stackadapt_rows_filled_from_direct_feed_other_platforms_untouched():
+    """by_platform + campaigns: StackAdapt rows now carry the SA-direct
+    individual + household reach/frequency (NOT Funnel's 999_999 garbage);
+    Meta keeps its Funnel numbers. StackAdapt spend / impressions / clicks
+    still flow through Funnel untouched."""
     rec = _mixed_project_responses(QueryRecorder())
     resp = _get_performance(rec)
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
     plats = {p["platform_id"]: p for p in body["by_platform"]}
-    assert plats["stackadapt"]["reach"] is None
-    assert plats["stackadapt"]["frequency"] is None
+    # SA platform row carries the platform-level SA-direct rollup, not Funnel's.
+    assert plats["stackadapt"]["reach"] == 26_800
+    assert plats["stackadapt"]["frequency"] == pytest.approx(3.2)
+    assert plats["stackadapt"]["reach_household"] == 8_600
+    assert plats["stackadapt"]["frequency_household"] == pytest.approx(2.0)
     assert plats["meta"]["reach"] == 200_000
     assert plats["meta"]["frequency"] == 2.0
+    # Household is SA-only — Meta never carries it.
+    assert plats["meta"]["reach_household"] is None
     # Funnel-sourced metrics for StackAdapt are NOT touched.
     assert plats["stackadapt"]["spend"] == 10000.0
     assert plats["stackadapt"]["impressions"] == 1_000_000
     assert plats["stackadapt"]["clicks"] == 3000
 
     camps = {c["platform_id"]: c for c in body["campaigns"]}
-    assert camps["stackadapt"]["reach"] is None
-    assert camps["stackadapt"]["frequency"] is None
+    # SA campaign row filled from the direct feed keyed on campaign_id "c-sa".
+    assert camps["stackadapt"]["reach"] == 26_800
+    assert camps["stackadapt"]["frequency"] == pytest.approx(3.2)
+    assert camps["stackadapt"]["reach_household"] == 8_600
     assert camps["meta"]["reach"] == 200_000
     assert camps["meta"]["frequency"] == 2.0
     assert camps["stackadapt"]["spend"] == 10000.0
 
-    # KPI rollups (fact_adset_daily, rf-guarded) flow through unchanged.
+    # Meta's adset reach (500k) still dominates the headline (reach is
+    # non-additive → MAX); SA (26.8k) doesn't lower it.
     assert body["total_reach_adset"] == 500_000
     assert body["avg_frequency_adset"] == 2.1
+    # Household headline comes from SA.
+    assert body["total_reach_household"] == 8_600
 
 
 # ── /adsets drilldown ────────────────────────────────────────────────
@@ -467,13 +503,12 @@ def test_adsets_endpoint_nulls_stackadapt_rf_and_appends_note():
     assert rows["stackadapt"]["spend"] == 5000.0
     assert rows["stackadapt"]["impressions"] == 400_000
 
-    # Note: existing text preserved, stopgap sentence appended.
+    # Note: existing text preserved; the campaign-grain SA note is appended
+    # (adset grain can't carry per-audience SA reach — that's on Summary).
     note = body["total_reach_note"]
     assert note is not None
     assert note.startswith("Reach from Meta. Not additive across audiences."), note
-    assert note.endswith(
-        "StackAdapt reach/frequency hidden pending direct API integration."
-    ), note
+    assert note.endswith(perf_router.SA_ADSET_NOTE), note
 
     # And the reach CTE SQL carries the exclusion guard.
     sql = rec.calls[0][0]

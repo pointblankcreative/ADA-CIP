@@ -521,6 +521,50 @@ def _query_platform_metrics_by_type(
             entry["freq_num"] += freq * impr
             entry["freq_den"] += impr
 
+    # ── StackAdapt reach/frequency override (ADA 1215990005858637) ──────
+    # StackAdapt reach/frequency in fact_adset_daily is Funnel's unreliable
+    # 1-day per-creative field (overcounts dedup reach 7-10x; frequency ~0).
+    # Override it with the direct StackAdapt reachFrequency API feed (current
+    # calendar-month bucket, individual reach) so D1/D2/D3/D4 score SA-only
+    # campaigns on real dedup reach instead of the Funnel garbage. Household
+    # ("residential") reach is informational only and not fed to the signals.
+    try:
+        sa_sql = f"""
+            SELECT rf.campaign_name,
+                   rf.reach_individual AS reach,
+                   rf.frequency_individual AS frequency
+            FROM `{settings.stackadapt_rf_table}` rf
+            WHERE rf.period_days = 30
+              AND rf.period_start = DATE_TRUNC(CURRENT_DATE(), MONTH)
+              AND rf.campaign_id IN (
+                  SELECT DISTINCT campaign_id FROM {bq.table('fact_digital_daily')}
+                  WHERE project_code = @project_code AND platform_id = 'stackadapt'
+              )
+        """
+        sa_rows = bq.run_query(
+            sa_sql, [bq.string_param("project_code", project_code)]
+        )
+    except Exception:
+        logger.warning(
+            "Diagnostics: StackAdapt R&F direct read failed", exc_info=True
+        )
+        sa_rows = []
+    if sa_rows:
+        # Drop the Funnel-derived StackAdapt entries, then rebuild them from
+        # the direct feed (classified by campaign_name, same as the adset rows).
+        for k in [k for k in adset_bucket if k[1] == "stackadapt"]:
+            adset_bucket.pop(k)
+        for r in sa_rows:
+            ctype = classify_campaign_name(r.get("campaign_name"))
+            entry = adset_bucket[(ctype, "stackadapt")]
+            reach = float(r.get("reach") or 0)
+            freq = float(r.get("frequency") or 0)
+            entry["reach"] = max(entry["reach"], reach)
+            # Reach-weighted frequency (direct feed has no impression grain).
+            if freq > 0 and reach > 0:
+                entry["freq_num"] += freq * reach
+                entry["freq_den"] += reach
+
     # ── bucket daily rows by (type, platform_id) — classify by campaign_objective,
     # falling back to campaign_name when objective is NULL. classify_objective_string
     # already knows to treat the second argument as a fallback, so there's no

@@ -108,7 +108,13 @@ def _get_performance(rec, code="26018"):
 
 
 def _realistic_responses(rec):
-    """Meta reach exists ONLY in the adset rollup; campaign grain all-NULL."""
+    """Meta reach exists ONLY in the adset rollup; campaign grain all-NULL.
+
+    A StackAdapt campaign is present, so the router issues the SA-direct query
+    (ADA 1215990005858637) after campaign_sql. Here it returns [] (no
+    current-month row synced), so no SA fill happens and the provenance stays
+    Meta-only — exactly the F1 behaviour these tests pin.
+    """
     rec.responses = [
         [_totals_row()],                              # totals_sql
         [],                                           # daily_sql
@@ -126,6 +132,7 @@ def _realistic_responses(rec):
             _campaign_row("meta", "c-meta"),
             _campaign_row("stackadapt", "c-sa"),
         ],                                            # campaign_sql
+        [],                                           # sa_direct_sql (not synced)
         [],                                           # media_plan_objectives
     ]
     return rec
