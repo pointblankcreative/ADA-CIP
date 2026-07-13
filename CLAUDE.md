@@ -211,6 +211,9 @@ WHERE plan_id LIKE 'plan-25042%' AND audience_name LIKE '%Quantcast%';
 
 Raw Funnel.io passthrough data lives in `point-blank-ada.core_funnel_export.funnel_data` (US region). This table has 1,463 columns with platform-specific suffixes and ~800K rows from Oct 2023 to present. The transformation layer reads from this table cross-region and writes to normalized tables in the `cip` dataset.
 
+### UTM tagging convention
+The canonical spec for how PB tags paid-media URLs (source/medium/campaign/term/content, per-platform macro templates, and the GA4 matching key) lives in `docs/UTM_CONVENTION.md`. Key point: `utm_content = {campaign_id}-{adset_id}-{ad_id}` is the machine join key (IDs, no project prefix); `utm_campaign`/`utm_term` carry the platform campaign/ad-set **names** for readability only. ⚠️ This target format differs from what the live GA4 attribution code expects today (`{project}-{campaign_id}-{adset_id}-{ad_id}`) — see §7 of that doc before rolling out new tags. Offline (OOH/QR/vanity) attribution via a PB-owned redirect service is specced in §5.
+
 ## Section 10: Alert Thresholds (Defaults)
 
 - **Pacing Over Warning:** >115%
