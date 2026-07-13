@@ -52,6 +52,21 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     how: "Total spend divided by qualifying video views.",
     unit: "$ per qualifying view",
   },
+  vcr: {
+    key: "vcr",
+    label: "Video Completion Rate",
+    definition:
+      "The share of video plays that reach a qualifying view — about 15 seconds on Meta (a ThruPlay), a full completion elsewhere. It reads lower than a plain finished-the-video percentage and won't match a platform's own completion metric, because the denominator counts every video start.",
+    how: "Qualifying views (ThruPlays on Meta, completions elsewhere) divided by video plays.",
+    unit: "% of video plays",
+  },
+  video_views: {
+    key: "video_views",
+    label: "Video views",
+    definition:
+      "Counts every video start (Meta reports this as Video plays), not unique viewers and not completions — so it runs roughly double the people-who-watched figure most reports show.",
+    how: "Sum of platform video starts across the flight.",
+  },
   incremental_reach: {
     key: "incremental_reach",
     label: "Incremental Reach",

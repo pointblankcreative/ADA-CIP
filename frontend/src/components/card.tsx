@@ -41,7 +41,9 @@ export interface BenchmarkIndicator {
 }
 
 interface KpiCardProps {
-  label: string;
+  // ReactNode (not just string) so a label can carry a <Glossary> tooltip
+  // (e.g. the Video Completion Rate tile). Plain-string callers are unaffected.
+  label: ReactNode;
   value: string;
   sub?: string;
   accent?: string;

@@ -28,6 +28,7 @@ import {
   type CreativeVariantRow,
 } from "@/lib/api";
 import { Card, KpiCard, type BenchmarkIndicator } from "@/components/card";
+import { Glossary } from "@/components/glossary";
 import { Label } from "@/components/ui";
 import { CampaignTable } from "@/components/campaign-table";
 import { AdSetDrillDown } from "@/components/adset-drilldown";
@@ -376,7 +377,7 @@ export function PerformanceTab({ code }: { code: string }) {
             )}
             {has(data, "vcr") && data.total_vcr != null ? (
               <KpiCard
-                label="Video Completion Rate"
+                label={<Glossary termKey="vcr" variant="underline">Video Completion Rate</Glossary>}
                 value={formatPercent(data.total_vcr * 100)}
                 sub={metricNote(data, "video_views")}
                 benchmark={toBenchmark(bm.vcr, data.total_vcr, { format: (v) => fmtPct(v) ?? "—" })}
@@ -579,7 +580,7 @@ export function PerformanceTab({ code }: { code: string }) {
       {showAwareness && has(data, "vcr") && (
         <Card>
           <Label className="mb-4 text-fg-secondary">
-            Video Completion Rate
+            <Glossary termKey="vcr" variant="underline">Video Completion Rate</Glossary>
             {metricNote(data, "video_views") && (
               <span className="ml-2 font-mono text-[10px] normal-case tracking-normal text-fg-faint">{metricNote(data, "video_views")}</span>
             )}
