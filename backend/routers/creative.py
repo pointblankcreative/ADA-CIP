@@ -328,31 +328,52 @@ def _query_creative_platform_cells(
     return bq.run_query(sql, params)
 
 
+def _completion_rate(
+    q100: int, video_views_3s: int, q25: int, guard_ok: bool
+) -> float | None:
+    """Canonical video completion rate (ADA 1215989989043460).
+
+    Deepest reported quartile (``q100`` — 100% on most platforms, 95% on
+    StackAdapt) ÷ the canonical video "start": the 3-second intentional view
+    (``video_views_3s``), falling back to the 25% quartile where a platform
+    reports quartiles but no 3-second signal — the SAME start the diagnostics
+    A1 engine scores completion on. Replaces the old ``video_completions``
+    (Meta ThruPlay ≈ 15s / Google TrueView) ÷ ``video_views`` (raw plays)
+    ratio, whose autoplay-inflated denominator (≈4x the real start on Meta)
+    read alarmingly low and matched no platform's own completion figure.
+
+    Capped at 1.0 so a quartile-vs-start reporting quirk can never yield a
+    completion above 100%. Returns None when the volume guard fails or no
+    start is recorded (a non-quartile platform like Google Ads).
+    """
+    start = video_views_3s or q25
+    if not (guard_ok and start > 0):
+        return None
+    return min(q100 / start, 1.0)
+
+
 def _coverage_from_cells(cells: list[dict]) -> tuple[CreativeCoverage, set[str], set[str]]:
     """Platform metric coverage from window data: a platform "reports" a
     metric when its window sum is > 0 (the metric_platforms pattern in the
     performance router — hardcoded-zero and NULL columns both fail it).
 
-    Returns (coverage, hook_platforms, engagement_platforms); completion
-    needs no platform set downstream because its denominator (video_views)
-    is only non-zero where the platform reports video.
+    Returns (coverage, hook_platforms, engagement_platforms). Completion
+    coverage lists platforms that report the quartile funnel (video_q100 > 0)
+    — the ones the quartile-based completion rate (ADA 1215989989043460) can
+    actually be computed for, so a completion-only platform like Google Ads
+    (TrueView, no quartiles) is honestly excluded.
     """
     sums: dict[str, dict[str, float]] = {}
     for c in cells:
         s = sums.setdefault(c["platform_id"], {
-            "video_views_3s": 0.0, "video_views": 0.0,
-            "video_completions": 0.0, "engagements": 0.0,
+            "video_views_3s": 0.0, "video_q100": 0.0, "engagements": 0.0,
         })
         s["video_views_3s"] += _float(c.get("video_views_3s"))
-        s["video_views"] += _float(c.get("video_views"))
-        s["video_completions"] += _float(c.get("video_completions"))
+        s["video_q100"] += _float(c.get("video_q100"))
         s["engagements"] += _float(c.get("engagements"))
 
     hook = {p for p, s in sums.items() if s["video_views_3s"] > 0}
-    completion = {
-        p for p, s in sums.items()
-        if s["video_views"] > 0 and s["video_completions"] > 0
-    }
+    completion = {p for p, s in sums.items() if s["video_q100"] > 0}
     engagement = {p for p, s in sums.items() if s["engagements"] > 0}
     return (
         CreativeCoverage(
@@ -374,9 +395,10 @@ def _rate_kpis(
 
     Coverage-aware denominators: hook_rate and engagement_rate divide by
     impressions on reporting platforms ONLY, so a variant that also runs
-    on a non-reporting platform isn't unfairly diluted. completion_rate
-    reuses the vcr definition (video_completions / video_views). The
-    volume guard nulls all four rates under MIN_RATE_IMPRESSIONS.
+    on a non-reporting platform isn't unfairly diluted. completion_rate is
+    the quartile-based true completion — deepest reported quartile ÷ video
+    start (ADA 1215989989043460), see `_completion_rate`. The volume guard
+    nulls all four rates under MIN_RATE_IMPRESSIONS.
     """
     impressions = agg["impressions"]
     guard_ok = impressions >= MIN_RATE_IMPRESSIONS
@@ -401,9 +423,8 @@ def _rate_kpis(
         if guard_ok and is_video and agg["hook_impressions"] > 0 and agg["hook_3s"] > 0
         else None
     )
-    completion_rate = (
-        agg["video_completions"] / agg["video_views"]
-        if guard_ok and agg["video_views"] > 0 else None
+    completion_rate = _completion_rate(
+        agg["video_q100"], agg["video_views_3s"], agg["video_q25"], guard_ok
     )
     engagement_rate = (
         agg["eng_engagements"] / agg["eng_impressions"]
@@ -432,6 +453,9 @@ def _new_accumulator() -> dict:
         "spend": 0.0, "impressions": 0, "clicks": 0, "clicks_reported": 0,
         "conversions": 0.0,
         "video_views": 0, "video_completions": 0, "video_views_3s": 0,
+        # Quartile view counts — the q100 numerator and q25 start-fallback for
+        # the quartile-based completion rate (ADA 1215989989043460).
+        "video_q25": 0, "video_q100": 0,
         "hook_3s": 0, "hook_impressions": 0,
         "eng_engagements": 0, "eng_impressions": 0,
         "freq_weighted": 0.0, "freq_impressions": 0,
@@ -456,6 +480,8 @@ def _accumulate(
     agg["video_views"] += _int(cell.get("video_views"))
     agg["video_completions"] += _int(cell.get("video_completions"))
     agg["video_views_3s"] += _int(cell.get("video_views_3s"))
+    agg["video_q25"] += _int(cell.get("video_q25"))
+    agg["video_q100"] += _int(cell.get("video_q100"))
     if pid in hook_platforms:
         agg["hook_3s"] += _int(cell.get("video_views_3s"))
         agg["hook_impressions"] += imp
@@ -681,7 +707,10 @@ async def get_creative_rotation(
                 SUM(f.clicks) AS clicks,
                 SUM(f.conversions) AS conversions,
                 SUM(f.video_views) AS video_views,
-                SUM(f.video_completions) AS video_completions
+                SUM(f.video_completions) AS video_completions,
+                SUM(f.video_views_3s) AS video_views_3s,
+                SUM(f.video_q25) AS video_q25,
+                SUM(f.video_q100) AS video_q100
             FROM {bq.table('fact_digital_daily')} f
             WHERE f.project_code = @project_code AND {date_clause}
                 AND f.ad_name IS NOT NULL AND f.ad_name != ''
@@ -711,7 +740,12 @@ async def get_creative_rotation(
             a.creative_variant,
             a.date,
             SAFE_DIVIDE(SUM(a.clicks), NULLIF(SUM(a.impressions), 0)) AS ctr,
-            SAFE_DIVIDE(SUM(a.video_completions), NULLIF(SUM(a.video_views), 0)) AS completion_rate,
+            -- Quartile-based completion = q100 ÷ canonical start (3s view,
+            -- q25 fallback), capped at 1.0 (ADA 1215989989043460).
+            LEAST(SAFE_DIVIDE(
+                SUM(a.video_q100),
+                NULLIF(SUM(COALESCE(NULLIF(a.video_views_3s, 0), a.video_q25)), 0)
+            ), 1.0) AS completion_rate,
             SAFE_DIVIDE(SUM(a.spend), NULLIF(SUM(a.conversions), 0)) AS cpa,
             SAFE_DIVIDE(
                 SUM(IF(ad.frequency IS NOT NULL, ad.frequency * a.impressions, NULL)),
@@ -833,10 +867,12 @@ async def get_creative_matrix(project_code: str):
         clicks = _int(c.get("clicks"))
         clicks_reported = _int(c.get("clicks_reported"))
         conversions = _float(c.get("conversions"))
-        vv = _int(c.get("video_views"))
-        vc = _int(c.get("video_completions"))
         v3s = _int(c.get("video_views_3s"))
+        vq25 = _int(c.get("video_q25"))
+        vq100 = _int(c.get("video_q100"))
         engagements = _int(c.get("engagements"))
+        # Canonical video start = 3-second intentional view, q25 fallback.
+        video_start = v3s or vq25
         matrix.setdefault(variant, {})[pid] = CreativeMatrixCell(
             spend=spend,
             impressions=impressions,
@@ -845,7 +881,7 @@ async def get_creative_matrix(project_code: str):
                 if guard_ok and pid in hook_platforms and v3s > 0 and impressions > 0
                 else None
             ),
-            completion_rate=vc / vv if guard_ok and vv > 0 else None,
+            completion_rate=_completion_rate(vq100, v3s, vq25, guard_ok),
             engagement_rate=(
                 engagements / impressions
                 if guard_ok and pid in engagement_platforms and impressions > 0
@@ -858,11 +894,14 @@ async def get_creative_matrix(project_code: str):
             cpm=spend / impressions * 1000 if impressions > 0 else None,
             conversions=conversions,
             cpa=spend / conversions if conversions > 0 else None,
-            # #11: raw per-platform quartile sums (frontend draws the curve)
-            video_q25=_int(c.get("video_q25")),
+            # #11 / ADA 1215989989043460: raw per-platform quartile sums plus
+            # the canonical start — the frontend anchors the drop-off funnel
+            # (start → 25 → 50 → 75 → complete) on video_start, not q25.
+            video_start=video_start,
+            video_q25=vq25,
             video_q50=_int(c.get("video_q50")),
             video_q75=_int(c.get("video_q75")),
-            video_q100=_int(c.get("video_q100")),
+            video_q100=vq100,
         )
 
     total_spend = sum(platform_spend.values())
@@ -980,7 +1019,9 @@ async def get_audience_matrix(project_code: str):
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
                 SUM(f.video_completions) AS video_completions,
-                SUM(f.video_views_3s) AS video_views_3s
+                SUM(f.video_views_3s) AS video_views_3s,
+                SUM(f.video_q25) AS video_q25,
+                SUM(f.video_q100) AS video_q100
             FROM {bq.table('fact_digital_daily')} f
             WHERE f.project_code = @project_code
                 AND f.ad_set_name IS NOT NULL AND f.ad_set_name != ''
@@ -1022,6 +1063,8 @@ async def get_audience_matrix(project_code: str):
             SUM(m.video_views) AS video_views,
             SUM(m.video_completions) AS video_completions,
             SUM(m.video_views_3s) AS video_views_3s,
+            SUM(m.video_q25) AS video_q25,
+            SUM(m.video_q100) AS video_q100,
             SUM(IF(COALESCE(ar.frequency, cr.frequency) IS NOT NULL,
                    COALESCE(ar.frequency, cr.frequency) * m.impressions, NULL)) AS freq_weighted,
             SUM(IF(COALESCE(ar.frequency, cr.frequency) IS NOT NULL,
@@ -1091,7 +1134,9 @@ async def get_audience_matrix(project_code: str):
                 SUM(f.engagements) AS engagements,
                 SUM(f.video_views) AS video_views,
                 SUM(f.video_completions) AS video_completions,
-                SUM(f.video_views_3s) AS video_views_3s
+                SUM(f.video_views_3s) AS video_views_3s,
+                SUM(f.video_q25) AS video_q25,
+                SUM(f.video_q100) AS video_q100
             FROM {bq.table('fact_digital_daily')} f
             WHERE f.project_code = @project_code
                 AND f.ad_name IS NOT NULL AND f.ad_name != ''
@@ -1116,7 +1161,9 @@ async def get_audience_matrix(project_code: str):
             SUM(a.engagements) AS engagements,
             SUM(a.video_views) AS video_views,
             SUM(a.video_completions) AS video_completions,
-            SUM(a.video_views_3s) AS video_views_3s
+            SUM(a.video_views_3s) AS video_views_3s,
+            SUM(a.video_q25) AS video_q25,
+            SUM(a.video_q100) AS video_q100
         FROM aliased a
         GROUP BY a.creative_variant, a.platform_id, a.ad_set_name
         ORDER BY spend DESC
@@ -1137,8 +1184,6 @@ async def get_audience_matrix(project_code: str):
         impressions = _int(r.get("impressions"))
         spend = _float(r.get("spend"))
         conversions = _float(r.get("conversions"))
-        vv = _int(r.get("video_views"))
-        vc = _int(r.get("video_completions"))
         guard_ok = impressions >= MIN_RATE_IMPRESSIONS
         freq_imp = _int(r.get("freq_impressions"))
         audiences.append(
@@ -1161,7 +1206,10 @@ async def get_audience_matrix(project_code: str):
                     if guard_ok and impressions > 0
                     and _int(r.get("clicks_reported")) > 0 else None
                 ),
-                completion_rate=vc / vv if guard_ok and vv > 0 else None,
+                completion_rate=_completion_rate(
+                    _int(r.get("video_q100")), _int(r.get("video_views_3s")),
+                    _int(r.get("video_q25")), guard_ok,
+                ),
                 engagement_rate=(
                     _int(r.get("engagements")) / impressions
                     if guard_ok and pid in aud_eng_platforms and impressions > 0
@@ -1199,9 +1247,9 @@ async def get_audience_matrix(project_code: str):
         clicks = _int(c.get("clicks"))
         clicks_reported = _int(c.get("clicks_reported"))
         conversions = _float(c.get("conversions"))
-        vv = _int(c.get("video_views"))
-        vc = _int(c.get("video_completions"))
         v3s = _int(c.get("video_views_3s"))
+        vq25 = _int(c.get("video_q25"))
+        vq100 = _int(c.get("video_q100"))
         engagements = _int(c.get("engagements"))
         variant_spend[variant] = variant_spend.get(variant, 0.0) + spend
 
@@ -1214,7 +1262,7 @@ async def get_audience_matrix(project_code: str):
                 if guard_ok and pid in hook_platforms and v3s > 0 and impressions > 0
                 else None
             ),
-            completion_rate=vc / vv if guard_ok and vv > 0 else None,
+            completion_rate=_completion_rate(vq100, v3s, vq25, guard_ok),
             engagement_rate=(
                 engagements / impressions
                 if guard_ok and pid in engagement_platforms and impressions > 0

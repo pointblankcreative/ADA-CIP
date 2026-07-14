@@ -320,12 +320,13 @@ function StageRow({ s }: { s: FunnelStage }) {
 
 /**
  * Retention read for a video creative, per platform. A lead-in carries the
- * pre-25% loss — hook (3-second views) and the share of impressions still
+ * pre-start loss — hook (3-second views) and the share of impressions still
  * there at the 25% mark, both as shares of impressions, so the early
  * scroll-away is in the same block. The four bars below then re-anchor at each
- * platform's 25% mark (25% = 100 by construction) so platforms compare fairly
- * regardless of how many people started the video on each. Renders nothing
- * when no platform cell carries a 25% cohort.
+ * platform's video START (the 3-second intentional view, q25 fallback) so the
+ * start → 25 → 50 → 75 → complete funnel reads honestly and platforms compare
+ * fairly regardless of how many people started the video on each (ADA
+ * 1215989989043460). Renders nothing when no platform cell carries a start.
  */
 function VideoDropoff({
   cells,
@@ -335,7 +336,7 @@ function VideoDropoff({
 }) {
   if (!cells) return null;
   const rows = Object.entries(cells).filter(
-    ([, cell]) => cell.video_q25 > 0
+    ([, cell]) => cell.video_start > 0
   );
   if (rows.length === 0) return null;
 
@@ -354,8 +355,8 @@ function VideoDropoff({
       </div>
       <div className="mt-2 flex flex-col gap-3">
         {rows.map(([platformId, cell]) => {
-          const base = cell.video_q25;
-          const finished = Math.round((cell.video_q100 / base) * 100);
+          const base = cell.video_start;
+          const finished = Math.min(100, Math.round((cell.video_q100 / base) * 100));
           const hook = cell.hook_rate;
           // Share of impressions still there at the 25% mark. Gated on the same
           // 1,000-impression floor the backend nulls the sibling rates at, so a
@@ -385,11 +386,11 @@ function VideoDropoff({
                 </span>
               </div>
               <div className="mt-1.5 font-mono text-[7.5px] tracking-[0.06em] text-fg-faint">
-                Once watching · of the {formatNumberCompact(base)} who reached 25%
+                Once started · of the {formatNumberCompact(base)} who started the video
               </div>
               <div className="mt-1.5 grid grid-cols-4 gap-1.5">
                 {marks.map((m) => {
-                  const retention = Math.round((m.get(cell) / base) * 100);
+                  const retention = Math.min(100, Math.round((m.get(cell) / base) * 100));
                   return (
                     <div key={m.label} className="flex flex-col items-center gap-1">
                       <div className="flex h-[26px] w-full items-end justify-center">
@@ -412,7 +413,7 @@ function VideoDropoff({
                 })}
               </div>
               <div className="mt-1 font-mono text-[8.5px] text-fg-muted">
-                Finished: {finished}% of its 25% viewers
+                Finished: {finished}% of those who started
               </div>
             </div>
           );
@@ -420,11 +421,13 @@ function VideoDropoff({
       </div>
       <div className="mt-2.5 font-mono text-[8px] leading-[1.5] text-fg-faint">
         Lead-in is share of impressions — hooked at 3 seconds, then still there
-        at the 25% mark. The bars then show how many stayed. Shown per platform.
+        at the 25% mark. The bars below re-anchor at the video start and show
+        how many of those who started were still watching at each quarter.
+        Shown per platform.
       </div>
       <div className="mt-0.5 font-mono text-[8px] leading-[1.5] text-fg-faint opacity-70">
-        The bars re-anchor at the 25% mark on each platform, so they compare
-        fairly.
+        The bars re-anchor at the video start on each platform, so they compare
+        fairly regardless of how many people started.
       </div>
     </div>
   );

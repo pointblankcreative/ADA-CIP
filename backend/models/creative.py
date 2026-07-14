@@ -107,10 +107,13 @@ class CreativeMatrixCell(BaseModel):
     cpm: float | None = None
     conversions: float = 0
     cpa: float | None = None
-    # Phase 19 / #11: raw per-platform video quartile completion counts
-    # (SUM over the cell's ads). Anchor is video_q25; the frontend divides
-    # by video_q25 to draw the per-platform retention curve. Non-video
-    # cells stay 0. Kept off CreativeTotals — cells only.
+    # Phase 19 / #11 / ADA 1215989989043460: raw per-platform video quartile
+    # completion counts (SUM over the cell's ads), plus the canonical video
+    # start. The frontend anchors the per-platform drop-off funnel
+    # (start → 25 → 50 → 75 → complete) on video_start — the 3-second
+    # intentional view (q25 fallback) — not on q25. Non-video cells stay 0.
+    # Kept off CreativeTotals — cells only.
+    video_start: int = 0
     video_q25: int = 0
     video_q50: int = 0
     video_q75: int = 0

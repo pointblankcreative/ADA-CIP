@@ -297,6 +297,14 @@ def _platform_video_starts(p: PlatformMetrics) -> tuple[int, bool]:
     the case we fall back to Q25 as a denominator proxy, but the caller
     must drop Q1 from scoring (it would evaluate to 1.0 by construction
     and bias scores high).
+
+    This is the CANONICAL "video start" for the whole platform — the
+    read-path Video Completion Rate (routers/performance.py::_vcr_sql and
+    routers/creative.py::_completion_rate) computes completion (q100 ÷ start)
+    against the SAME 3-second-view/Q25-fallback start, so the diagnostics
+    engine and the UI now agree on one definition rather than the three
+    denominators they used before (ADA 1215989989043460). Never re-base this
+    on raw video_views (plays): autoplay inflates it ~4x on Meta.
     """
     if p.video_views_3s > 0:
         return p.video_views_3s, True
