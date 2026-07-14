@@ -27,6 +27,7 @@ import { VerdictHero, type DiagRiskSummary } from "@/components/project/verdict-
 import { ProjectionChart } from "@/components/project/projection-chart";
 import {
   cn,
+  diagnosticVar,
   formatCurrencyCompact,
   formatPercent,
   pacingStatus,
@@ -319,13 +320,6 @@ const PILLAR_LABELS: Record<string, string> = {
   funnel: "Funnel",
 };
 
-function diagVar(status: string | null): string {
-  if (status === "STRONG") return "var(--ok)";
-  if (status === "WATCH") return "var(--warn)";
-  if (status === "ACTION") return "var(--danger)";
-  return "var(--text-faint)";
-}
-
 function HealthMini({
   output,
   onTab,
@@ -334,7 +328,7 @@ function HealthMini({
   onTab: (tab: string) => void;
 }) {
   const order = PILLAR_ORDER[output.campaign_type] ?? Object.keys(output.pillars);
-  const color = diagVar(output.health_status);
+  const color = diagnosticVar(output.health_status);
   const pillars = Object.values(output.pillars);
   const active = pillars.reduce((n, p) => n + (p.signals_active ?? 0), 0);
   const total = pillars.reduce((n, p) => n + (p.signals_total ?? 0), 0);
@@ -389,7 +383,7 @@ function HealthMini({
         {order.map((k) => {
           const pl = output.pillars[k];
           if (!pl) return null;
-          const c = diagVar(pl.status);
+          const c = diagnosticVar(pl.status);
           return (
             <div key={k}>
               <div className="mb-1.5 flex items-baseline justify-between">

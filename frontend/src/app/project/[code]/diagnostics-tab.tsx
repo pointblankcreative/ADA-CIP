@@ -43,15 +43,15 @@ import { Glossary } from "@/components/glossary";
 import { GlossaryHint } from "@/components/glossary-hint";
 import { Btn, Eyebrow, Label } from "@/components/ui";
 import { lookupTerm } from "@/lib/glossary";
-import { cn, formatCurrency, formatPercent, pacingColor, pacingStatus } from "@/lib/utils";
+import {
+  cn,
+  diagnosticVar,
+  formatCurrency,
+  formatPercent,
+  pacingColor,
+  pacingStatus,
+} from "@/lib/utils";
 import { statusWord } from "@/lib/viz/health-core";
-
-function statusVar(status: string | null | undefined): string {
-  if (status === "STRONG") return "var(--ok)";
-  if (status === "WATCH") return "var(--warn)";
-  if (status === "ACTION") return "var(--danger)";
-  return "var(--text-faint)";
-}
 
 /** Glossary key for a pillar (e.g. "distribution" -> "pillar_distribution").
  *  Returns plain children when the key is unknown, so pillar-less or
@@ -423,14 +423,14 @@ function DgChip({ chip }: { chip: TriageEngineChip }) {
         </Glossary>
         <span
           className="tnum font-display text-[30px] leading-none"
-          style={{ color: statusVar(chip.status) }}
+          style={{ color: diagnosticVar(chip.status) }}
         >
           {chip.score != null ? chip.score.toFixed(0) : "—"}
         </span>
         <div className="flex flex-col gap-0.5">
           <span
             className="font-mono text-[8.5px] font-bold tracking-[0.12em]"
-            style={{ color: statusVar(chip.status) }}
+            style={{ color: diagnosticVar(chip.status) }}
           >
             {statusWord(chip.status)}
           </span>
@@ -441,7 +441,7 @@ function DgChip({ chip }: { chip: TriageEngineChip }) {
       {/* Gauge, not thermometer — see BandScale's rationale comment. */}
       <BandScale
         score={chip.score}
-        color={statusVar(chip.status)}
+        color={diagnosticVar(chip.status)}
         className="mt-2"
       />
     </div>

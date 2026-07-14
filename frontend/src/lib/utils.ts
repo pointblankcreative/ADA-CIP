@@ -145,6 +145,14 @@ export function severityVar(severity: string): string {
   return "var(--info)";
 }
 
+/** Raw CSS colour token for a diagnostic status — for SVG/inline-style use. */
+export function diagnosticVar(status: string | null | undefined): string {
+  if (status === "STRONG") return "var(--ok)";
+  if (status === "WATCH") return "var(--warn)";
+  if (status === "ACTION") return "var(--danger)";
+  return "var(--text-faint)";
+}
+
 export function platformLabel(id: string): string {
   const labels: Record<string, string> = {
     meta: "Meta",
