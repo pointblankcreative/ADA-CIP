@@ -398,6 +398,9 @@ function RetrospectivePicker({ code }: { code: string }) {
             autoFocus
             className="mt-2 w-full rounded-sm border-2 border-line bg-surface-sunken px-2 py-1.5 text-sm text-fg outline-none focus:border-warn"
           />
+          <p className="mt-1.5 font-mono text-[10px] leading-snug text-fg-faint">
+            Defaults to yesterday — the most recent day with a full pacing snapshot.
+          </p>
           <div className="mt-3 flex items-center justify-end gap-2">
             <button
               type="button"

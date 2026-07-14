@@ -160,8 +160,14 @@ function HistoryChart({
           <ReferenceLine y={85} stroke="var(--ok)" strokeWidth={1} opacity={0.35} />
           <ReferenceLine y={115} stroke="var(--ok)" strokeWidth={1} opacity={0.35} />
 
-          {/* 100% reference line */}
-          <ReferenceLine y={100} stroke="var(--text-faint)" strokeDasharray="4 4" strokeWidth={1} />
+          {/* 100% reference line — the exact-to-plan mark */}
+          <ReferenceLine
+            y={100}
+            stroke="var(--text-faint)"
+            strokeDasharray="4 4"
+            strokeWidth={1}
+            label={{ value: "100% = ON PLAN", position: "insideBottomLeft", fill: "var(--text-muted)", ...ZONE_LABEL }}
+          />
 
           {/* High–low envelope — deliberately NEUTRAL: the spread is a
               range, not a status, so it never borrows green/amber/red. */}
