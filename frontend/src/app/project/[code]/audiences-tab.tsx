@@ -22,6 +22,7 @@ import {
   type AudienceMatrixResponse,
   type BenchmarkResponse,
   type CreativeRotationResponse,
+  type DiagnosticStatus,
   type MatrixAudience,
   type ObjectiveType,
   type PerformanceResponse,
@@ -56,6 +57,7 @@ import { PlatformIcon } from "@/components/platform-icon";
 import { SyncStatus } from "@/components/sync-status";
 import {
   cn,
+  diagnosticVar,
   formatCurrencyCompact,
   formatNumberCompact,
   platformLabel,
@@ -64,16 +66,9 @@ import { statusWord } from "@/lib/viz/health-core";
 
 /* ── Per-audience read: status from the primary-KPI quartile ─────── */
 
-type AudienceStatus = "STRONG" | "WATCH" | "ACT" | "NO DATA";
+type AudienceStatus = Exclude<DiagnosticStatus, null> | "NO DATA";
 
-function statusVar(s: AudienceStatus): string {
-  if (s === "STRONG") return "var(--ok)";
-  if (s === "WATCH") return "var(--warn)";
-  if (s === "ACT") return "var(--danger)";
-  return "var(--text-faint)";
-}
-
-/* Verdict WORD for the audience cell. STRONG/WATCH/ACT defer to the shared
+/* Verdict WORD for the audience cell. STRONG/WATCH/ACTION defer to the shared
    diagnostic word; NO DATA does NOT — "No signal" reads as broken next to
    live spend (UAT: Tom, Priya), so the word IS the honest reason. Audience-
    cell-only; health-core statusWord/DIAGNOSTIC_WORD are untouched. */
@@ -95,7 +90,7 @@ interface AudienceRead {
   /** For status === "NO DATA": "no-bench" = a primary value exists but PB
    *  history has no benchmark to grade it; "thin" = not enough data yet.
    *  Drives the verdict WORD and dossier note so "No signal" never reaches
-   *  the audience verdict cell. null for STRONG/WATCH/ACT. */
+   *  the audience verdict cell. null for STRONG/WATCH/ACTION. */
   noRead: "no-bench" | "thin" | null;
 }
 
@@ -117,7 +112,7 @@ function readAudience(
 
   let status: AudienceStatus;
   if (read == null) status = "NO DATA";
-  else if (read.rank === 0) status = "ACT";
+  else if (read.rank === 0) status = "ACTION";
   else if (read.rank === 1) status = "WATCH";
   else status = "STRONG";
   // Hot frequency is actionable on its own, benchmark or not.
@@ -141,7 +136,7 @@ function readAudience(
     status,
     /* NO DATA is an unknown, not a decision: counting it inflated the
        hero ("8 need a decision") on campaigns with no benchmarks yet. */
-    needsDecision: status === "WATCH" || status === "ACT",
+    needsDecision: status === "WATCH" || status === "ACTION",
     latestFreq,
     freqHot,
     hookRate: hookDen > 0 ? hookNum / hookDen : null,
@@ -759,7 +754,7 @@ export function AudiencesTab({
                     <div className="flex items-center justify-center border-l border-line-soft">
                       <span
                         className="font-mono text-[8.5px] font-bold tracking-[0.1em]"
-                        style={{ color: statusVar(read.status) }}
+                        style={{ color: diagnosticVar(read.status) }}
                       >
                         {audienceVerdictWord(read)}
                       </span>
