@@ -9,9 +9,6 @@
  * only satisfies the `useIntro().signalReady()` calls that pages still make in
  * their load `finally` blocks; those are harmless no-ops. Kept (rather than
  * deleted) so the two page imports keep compiling without touching them.
- *
- * orbit-intro.tsx is now unimported (left on disk; safe to `git rm` in a later
- * cleanup, same as audio-engine.ts).
  */
 
 import { createContext, useContext } from "react";
