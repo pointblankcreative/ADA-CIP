@@ -11,7 +11,12 @@ import {
   XCircle,
   Clock,
 } from "lucide-react";
-import { api, type PlatformFreshness, type IngestionRun } from "@/lib/api";
+import {
+  api,
+  type PlatformFreshness,
+  type IngestionRun,
+  type TransformationStatus,
+} from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
 import { Label } from "@/components/ui";
 import { TH_CLS } from "@/lib/chart-theme";
@@ -28,12 +33,50 @@ function timeAgo(dateStr: string | null): string {
   return `${days}d ago`;
 }
 
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+/* ── Full History Backfill: fire-and-poll (ADA 1215990005858989) ──
+ * The POST runs the whole job inside one open synchronous request that can
+ * take several minutes; the browser may time out on it even though the server
+ * finishes fine. So we fire the POST WITHOUT awaiting it on the UI path and
+ * poll ingestion_log (via transformationStatus) for the true outcome. NO fake
+ * percentage — honest running / success / failed / stalled only. */
+type BackfillPhase = "starting" | "running" | "success" | "failed" | "stalled";
+type BackfillState = {
+  clickedAtMs: number; // client clock at button press (elapsed + startup fallback)
+  /** A polled run counts as "ours" iff Date.parse(started_at) > floorMs. Seeded
+   *  from the prior transform_full row's start (server-vs-server, clock-skew
+   *  proof); falls back to clickedAtMs − 60s; lowered on a 409 to attach to the
+   *  already-running run. */
+  floorMs: number;
+  phase: BackfillPhase;
+  startedAt: string | null; // this run's run_started_at once observed (server ISO)
+  finishedAt: string | null;
+  rows: number;
+  error: string | null;
+};
+
+const POLL_MS = 3000;
+const STARTUP_GRACE_MS = 45_000; // the 'running' row should appear within seconds
+// Consistent with the backend FULL_TRANSFORM_ACTIVE_WINDOW_MIN (60 min): while
+// the server still treats the run as active we show "running"; past that it is
+// stale/dead server-side, so we surface "may have stalled". Tune on staging
+// after watching a real backfill.
+const STALE_MS = 60 * 60 * 1000;
+
 export default function PipelinePage() {
   const [freshness, setFreshness] = useState<PlatformFreshness[]>([]);
   const [runs, setRuns] = useState<IngestionRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningAction, setRunningAction] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<Record<string, unknown> | null>(null);
+  const [backfill, setBackfill] = useState<BackfillState | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -65,6 +108,124 @@ export default function PipelinePage() {
     }
   }
 
+  // Kicks off the full backfill. Synchronous state set FIRST (before any await)
+  // so the button disables immediately — a fast double-click is impossible.
+  function startBackfill() {
+    if (backfill && (backfill.phase === "starting" || backfill.phase === "running")) {
+      return; // already in flight — belt-and-braces on top of the disabled button
+    }
+    const clickedAtMs = Date.now();
+    setLastResult(null);
+    setBackfill({
+      clickedAtMs,
+      floorMs: clickedAtMs - 60_000, // provisional; refined once baseline lands
+      phase: "starting",
+      startedAt: null,
+      finishedAt: null,
+      rows: 0,
+      error: null,
+    });
+    setNowMs(clickedAtMs);
+    void beginBackfill(clickedAtMs);
+  }
+
+  async function beginBackfill(clickedAtMs: number) {
+    // Correlation baseline: capture the prior transform_full row's start so a
+    // stale prior row is never mistaken for this run. Best-effort — the
+    // client-clock floor is the fallback.
+    let floorMs = clickedAtMs - 60_000;
+    try {
+      const s = await api.admin.transformationStatus("full");
+      if (s.found && s.started_at) floorMs = Date.parse(s.started_at);
+    } catch { /* keep the client-clock floor */ }
+    setBackfill((prev) => (prev ? { ...prev, floorMs } : prev));
+
+    // Fire the long SYNCHRONOUS POST. Do NOT await it on the UI path and do NOT
+    // AbortController/cancel it — the request must run to completion server-side
+    // (that is what does the work). Swallow the eventual client-side rejection
+    // (timeout / "Failed to fetch"); the poll is the single source of truth.
+    void api.admin
+      .runFullBackfill()
+      .then((r) => {
+        if (r.conflict && r.run?.started_at) {
+          // A run is already in flight (409). Attach our poll to it by lowering
+          // the floor just below its start, rather than surfacing an error.
+          const attach = Date.parse(r.run.started_at) - 1;
+          setBackfill((prev) => (prev ? { ...prev, floorMs: attach } : prev));
+        }
+      })
+      .catch(() => { /* intentionally swallowed — see the poll loop */ });
+  }
+
+  // Poll loop: one interval while the run is not yet terminal. Reads everything
+  // from prev state so there are no stale closures; swallows transient status
+  // errors (retry next tick) so a blip never manufactures a false failure.
+  useEffect(() => {
+    const phase = backfill?.phase;
+    if (!phase || phase === "success" || phase === "failed") return;
+
+    const id = setInterval(async () => {
+      const t = Date.now();
+      setNowMs(t);
+      let s: TransformationStatus;
+      try {
+        s = await api.admin.transformationStatus("full");
+      } catch {
+        return; // transient hiccup — retry next tick
+      }
+      setBackfill((prev) => {
+        if (!prev || prev.phase === "success" || prev.phase === "failed") return prev;
+        const isOurs =
+          s.found && s.started_at != null && Date.parse(s.started_at) > prev.floorMs;
+        if (!isOurs) {
+          // Our run's row hasn't appeared yet (POST still spinning up, or it
+          // never reached the server). Surface "stalled" past the grace window.
+          if (t - prev.clickedAtMs > STARTUP_GRACE_MS) {
+            return { ...prev, phase: "stalled" };
+          }
+          return prev;
+        }
+        const base = { ...prev, startedAt: s.started_at!, rows: s.rows ?? 0 };
+        if (s.status === "success") {
+          return { ...base, phase: "success", finishedAt: s.finished_at ?? null, error: null };
+        }
+        if (s.status === "failed") {
+          return {
+            ...base,
+            phase: "failed",
+            finishedAt: s.finished_at ?? null,
+            error: s.error ?? "Import failed (no error detail recorded).",
+          };
+        }
+        // status === 'running' — flip to stalled once past the server window.
+        const runElapsed = t - Date.parse(s.started_at!);
+        return { ...base, phase: runElapsed > STALE_MS ? "stalled" : "running" };
+      });
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [backfill?.phase]);
+
+  // Smooth 1s elapsed ticker while a run is in flight (the poll only ticks
+  // nowMs every few seconds).
+  useEffect(() => {
+    const phase = backfill?.phase;
+    if (!phase || phase === "success" || phase === "failed") return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [backfill?.phase]);
+
+  // Refresh the freshness + ingestion-log tables once the run resolves.
+  const backfillPhase = backfill?.phase;
+  useEffect(() => {
+    if (backfillPhase === "success" || backfillPhase === "failed") {
+      fetchData();
+    }
+  }, [backfillPhase, fetchData]);
+
+  const backfillActive =
+    !!backfill && (backfill.phase === "starting" || backfill.phase === "running");
+  const actionsDisabled = !!runningAction || backfillActive;
+
   const totalRows = freshness.reduce((s, p) => s + p.total_rows, 0);
 
   return (
@@ -85,23 +246,80 @@ export default function PipelinePage() {
       <div className="mt-6 flex flex-wrap gap-3">
         <button
           onClick={() => runAction("daily", api.admin.dailyRun)}
-          disabled={!!runningAction}
+          disabled={actionsDisabled}
           className="flex items-center gap-2 rounded-sm border-2 border-accent bg-accent px-4 py-2.5 text-sm font-bold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           {runningAction === "daily" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
           Run Daily Pipeline
         </button>
         <button
-          onClick={() => runAction("full", () => api.admin.runTransformation("full"))}
-          disabled={!!runningAction}
+          onClick={startBackfill}
+          disabled={actionsDisabled}
           className="flex items-center gap-2 rounded-sm border-2 border-line px-4 py-2.5 text-sm font-bold text-fg transition-colors hover:border-line-strong disabled:opacity-50"
         >
-          {runningAction === "full" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+          {backfillActive ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
           Full History Backfill
         </button>
       </div>
 
-      {/* Action result */}
+      {/* Full History Backfill progress (honest running/done/failed/stalled) */}
+      {backfill && (
+        <Card className="mt-4">
+          <Label className="mb-2">Full History Backfill</Label>
+          {backfill.phase === "starting" && (
+            <p className="flex items-center gap-2 text-sm text-fg-secondary">
+              <Loader2 className="h-4 w-4 animate-spin text-fg-muted" />
+              Starting the full history backfill… hang on.
+            </p>
+          )}
+          {backfill.phase === "running" && (
+            <p className="flex items-center gap-2 text-sm text-fg-secondary">
+              <Loader2 className="h-4 w-4 animate-spin text-fg-muted" />
+              Full history backfill running —{" "}
+              <span className="tnum font-mono">
+                {formatElapsed(
+                  nowMs - (backfill.startedAt ? Date.parse(backfill.startedAt) : backfill.clickedAtMs)
+                )}
+              </span>{" "}
+              elapsed. This reloads all history and can take several minutes. You can
+              leave this page; it keeps running on the server.
+            </p>
+          )}
+          {backfill.phase === "success" && (
+            <p className="flex items-center gap-2 text-sm text-ok">
+              <CheckCircle2 className="h-4 w-4" />
+              Full history backfill complete — {backfill.rows.toLocaleString()} rows loaded
+              {backfill.finishedAt
+                ? ` at ${new Date(backfill.finishedAt).toLocaleTimeString()}`
+                : ""}
+              .
+            </p>
+          )}
+          {backfill.phase === "failed" && (
+            <div className="text-sm">
+              <p className="flex items-center gap-2 text-danger">
+                <XCircle className="h-4 w-4" />
+                Full history backfill failed.
+              </p>
+              {backfill.error && (
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-sm bg-surface-sunken p-2 font-mono text-xs text-fg-secondary">
+                  {backfill.error}
+                </pre>
+              )}
+            </div>
+          )}
+          {backfill.phase === "stalled" && (
+            <p className="flex items-center gap-2 text-sm text-warn">
+              <Clock className="h-4 w-4" />
+              This run has been going for a while with no result — it may have stalled.
+              Check the pipeline logs and the Recent Ingestion Runs table below before
+              re-running.
+            </p>
+          )}
+        </Card>
+      )}
+
+      {/* Action result (Daily Pipeline) */}
       {lastResult && (
         <Card className="mt-4">
           <Label className="mb-2">Last Run Result</Label>

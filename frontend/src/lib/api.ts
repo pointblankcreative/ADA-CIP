@@ -647,6 +647,29 @@ export interface IngestionRun {
   error_message: string | null;
 }
 
+/** Latest transform run, read from ingestion_log — drives the Pipeline UI's
+ *  full-backfill poll loop (ADA 1215990005858989). Shape mirrors the backend
+ *  GET /api/admin/transformation-status response. */
+export interface TransformationStatus {
+  found: boolean;
+  log_id?: string | null;
+  mode?: string;
+  status?: string | null;          // 'running' | 'success' | 'failed'
+  started_at?: string | null;      // ISO, server UTC (ingestion_log.run_started_at)
+  finished_at?: string | null;     // ISO, or null while running
+  rows?: number;
+  error?: string | null;
+}
+
+/** Result of firing the full-backfill POST. `conflict` means a run was already
+ *  in flight (HTTP 409) — the UI attaches its poll to `run` instead of erroring.
+ *  `started` resolves only when the long synchronous request finishes (it may
+ *  never resolve client-side if the browser times out — the poll is the source
+ *  of truth). */
+export type FullBackfillStart =
+  | { started: true; conflict?: false; result: Record<string, unknown> }
+  | { started?: false; conflict: true; run: TransformationStatus | null };
+
 /* ── GA4 types ── */
 
 export interface GA4Property {
@@ -1166,6 +1189,37 @@ export const api = {
       apiFetch<Record<string, unknown>>(
         `/api/admin/run-transformation?mode=${mode}`,
         { method: "POST" }
+      ),
+    /**
+     * Fire the FULL history backfill (ADA 1215990005858989). The request is
+     * synchronous server-side (it runs the whole job) and can take several
+     * minutes, so the caller does NOT await this on the UI path — it polls
+     * transformationStatus() for the outcome and swallows this promise's
+     * eventual rejection (timeout / "Failed to fetch"). We use raw fetch rather
+     * than apiFetch so a 409 (a run is already in flight) resolves with the
+     * in-flight run to attach to, instead of throwing a generic error.
+     */
+    runFullBackfill: (): Promise<FullBackfillStart> =>
+      fetch(`${API_BASE}/api/admin/run-transformation?mode=full`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }).then(async (res) => {
+        if (res.status === 409) {
+          const body = await res.json().catch(() => null);
+          const run = (body?.detail?.run ?? null) as TransformationStatus | null;
+          return { conflict: true as const, run };
+        }
+        if (!res.ok) {
+          throw new Error(`API error ${res.status}: ${res.statusText}`);
+        }
+        return {
+          started: true as const,
+          result: (await res.json()) as Record<string, unknown>,
+        };
+      }),
+    transformationStatus: (mode = "full") =>
+      apiFetch<TransformationStatus>(
+        `/api/admin/transformation-status?mode=${mode}`
       ),
     runAdsetTransformation: (mode = "daily") =>
       apiFetch<Record<string, unknown>>(

@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
@@ -76,17 +78,138 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+# FULL-mode re-import TRUNCATEs fact_digital_daily; two overlapping runs would
+# corrupt the table. A transform_full ingestion_log row that is still 'running'
+# AND younger than this window is treated as an ACTIVE run and blocks a second
+# start (409). Older 'running' rows are treated as stale/dead — a hard
+# SIGKILL/OOM leaves the row 'running' forever (ADAC-63), so without an age cap a
+# crashed run would wedge the Full History Backfill button permanently.
+FULL_TRANSFORM_ACTIVE_WINDOW_MIN = 60
+
+
+def _coerce_ts(value) -> datetime | None:
+    """Best-effort parse of a BigQuery TIMESTAMP (datetime or ISO string) to an
+    aware UTC datetime. Returns None if it can't be interpreted."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _latest_transform_run(mode: str) -> dict | None:
+    """Newest ingestion_log row for connector ``transform_<mode>`` (or None).
+
+    ``run_transformation`` writes a 'running' row up front and UPDATEs it to
+    success/failed at the end (services/transformation.py, ADAC-63); we only
+    read it. Read-only SELECT … LIMIT 1, parameterised connector name.
+    """
+    rows = bq.run_query(
+        f"""
+        SELECT log_id, connector_name, status,
+               run_started_at, run_completed_at,
+               rows_upserted, error_message
+        FROM {bq.table('ingestion_log')}
+        WHERE connector_name = @connector
+        ORDER BY run_started_at DESC
+        LIMIT 1
+        """,
+        [bq.string_param("connector", f"transform_{mode}")],
+    )
+    return rows[0] if rows else None
+
+
+def _shape_transform_status(row: dict | None, mode: str) -> dict:
+    """Purpose-built status shape for the Pipeline UI's poll loop.
+
+    Named fields (not the raw ingestion_log columns) so the frontend never has
+    to know the schema — mirrors nothing from the legacy /ingestion-log SELECT *.
+    Timestamps are ISO strings so the client can Date.parse them.
+    """
+    if not row:
+        return {"found": False, "mode": mode, "status": None}
+    return {
+        "found": True,
+        "log_id": row.get("log_id"),
+        "mode": mode,
+        "status": row.get("status"),                                     # 'running' | 'success' | 'failed'
+        "started_at": str(row["run_started_at"]) if row.get("run_started_at") else None,
+        "finished_at": str(row["run_completed_at"]) if row.get("run_completed_at") else None,
+        "rows": int(row["rows_upserted"]) if row.get("rows_upserted") is not None else 0,
+        "error": row.get("error_message"),
+    }
+
+
+def _active_full_transform_run() -> dict | None:
+    """Return the ACTIVE (recent, still-'running') transform_full run, or None.
+
+    Scoped to FULL mode. A row counts as active only when status='running' AND
+    run_started_at is within FULL_TRANSFORM_ACTIVE_WINDOW_MIN. Older 'running'
+    rows are treated as stale so a crashed/OOM-killed run can't block a re-import
+    forever.
+    """
+    row = _latest_transform_run("full")
+    if row is None or row.get("status") != "running":
+        return None
+    started = _coerce_ts(row.get("run_started_at"))
+    if started is None:
+        # Can't tell how old it is — treat as active (data safety wins).
+        return row
+    if datetime.now(timezone.utc) - started <= timedelta(minutes=FULL_TRANSFORM_ACTIVE_WINDOW_MIN):
+        return row
+    return None
+
+
 @router.post("/run-transformation")
 async def api_run_transformation(mode: str = "daily"):
     """Trigger the Funnel.io → fact_digital_daily transformation.
     mode: "daily" (last 7 days, default) or "full" (all history).
+
+    The response stays SYNCHRONOUS — the caller's request waits for the whole
+    job — but the blocking transform runs in a worker thread so the single
+    uvicorn event loop stays free to serve GET /transformation-status while the
+    (multi-minute) FULL run is in flight. The browser may still time out on that
+    long request; the Pipeline UI fires this without blocking and polls the
+    status endpoint for the true outcome (ADA 1215990005858989).
     """
-    result = run_transformation(mode)
+    # FULL mode TRUNCATEs fact_digital_daily; refuse a second start while a
+    # recent run is still 'running' so two overlapping TRUNCATE/reloads can't
+    # corrupt the table. Hand the caller the in-flight run so the UI can attach
+    # its poll to it instead of showing an error. DELTA mode is unaffected.
+    if mode == "full":
+        active = _active_full_transform_run()
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "A full history backfill is already running.",
+                    "run": _shape_transform_status(active, "full"),
+                },
+            )
+
+    result = await asyncio.to_thread(run_transformation, mode)
     # A full/daily transformation reloads fact_digital_daily (total_spend and the
     # grouped metrics the project rollup reads) for every project, so evict the
     # whole cache. (fact_adset_daily below is NOT in the rollup — not hooked.)
     projects_router.invalidate_all()
     return result
+
+
+@router.get("/transformation-status")
+async def get_transformation_status(mode: str = Query("full", pattern="^(full|daily)$")):
+    """Latest transform-run status for the Pipeline UI's poll loop.
+
+    The Full History Backfill runs the whole job inside one open synchronous
+    POST /run-transformation request. The browser can time out on that long
+    request even though the server finishes fine, so the UI fires the POST
+    without blocking and polls THIS endpoint to show honest running/done/failed
+    instead of a false "Failed to fetch" (ADA 1215990005858989). Read-only.
+    """
+    return _shape_transform_status(_latest_transform_run(mode), mode)
 
 
 @router.post("/run-adset-transformation")

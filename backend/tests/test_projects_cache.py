@@ -270,6 +270,9 @@ def test_run_transformation_invalidates_all(monkeypatch):
     # "Full History Backfill" / daily transform reloads fact_digital_daily
     # (total_spend, the header "Spent $X"), which the rollup reads → drop all.
     _prewarm("25042", "26009")
+    # FULL mode now checks ingestion_log for an in-flight run before starting
+    # (ADA 1215990005858989); no active run → it starts normally.
+    monkeypatch.setattr(admin_router.bq, "run_query", lambda *a, **k: [])
     monkeypatch.setattr(admin_router, "run_transformation", lambda *a, **k: {"status": "ok"})
 
     asyncio.run(admin_router.api_run_transformation("full"))
