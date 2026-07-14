@@ -7,7 +7,7 @@
  * Audiences / Diagnostics. Settings lives behind the gear icon; the
  * old Alerts tab is folded into Summary. The Performance tab was
  * replaced by Creative + Audiences — legacy "performance" tab params
- * map to "creative" (performance-tab.tsx stays on disk, unimported).
+ * map to "creative".
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
