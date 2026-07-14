@@ -1039,7 +1039,14 @@ export function DiagnosticsTab({
               Day {first.flight_day} of {first.flight_total_days} · evaluated{" "}
               {first.evaluation_date}
             </div>
-            <div className="mt-[3px] whitespace-nowrap text-[10.5px] text-fg-faint">
+            <div
+              className="mt-[3px] whitespace-nowrap text-[10.5px] text-fg-faint"
+              title={
+                model.mixed
+                  ? `Cost and pacing here are measured per objective (CPM/CPC from persuasion, CPA from conversion), from flight start through ${first.evaluation_date}. Other tabs may cover the whole project or a different date range.`
+                  : `Cost and pacing here cover the whole project, from flight start through ${first.evaluation_date}. Other tabs (per-creative or per-platform) may cover a narrower slice.`
+              }
+            >
               {effBits.map((bit, i) => (
                 <span key={i}>
                   {i > 0 && " · "}
@@ -1047,6 +1054,17 @@ export function DiagnosticsTab({
                 </span>
               ))}
             </div>
+            {/* Scope caption (ADA 1215990182814162): these figures are a
+                deliberately narrower slice than the Pacing/Creative tabs —
+                per-objective for mixed campaigns, always flight-to-date — so
+                a differing number reads as intentional scope, not a bug. */}
+            {effBits.length > 0 && (
+              <div className="mt-[3px] whitespace-nowrap text-[10px] text-fg-faint">
+                {model.mixed
+                  ? "By objective · flight-to-date"
+                  : "Project total · flight-to-date"}
+              </div>
+            )}
           </div>
           {!asOfDate && (
             <Btn
