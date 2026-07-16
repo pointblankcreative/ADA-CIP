@@ -16,11 +16,83 @@ from backend.routers import projects as projects_router
 from backend.services import bigquery_client as bq
 from backend.services.daily_job import run_daily_pipeline
 from backend.services.media_plan_sync import (
+    _PROJECT_CODE_RE,
+    _get_gspread_client,
     sync_all_for_project,
     sync_media_plan,
 )
 from backend.services.transformation import run_transformation
 from ingestion.transformation.adset_transform import run_adset_transformation
+
+
+def _assert_sheet_matches_project(
+    ss_title: str, tab_titles: list[str], project_code: str
+) -> None:
+    """Raise ValueError if the spreadsheet's embedded project code(s) positively
+    identify a DIFFERENT project than ``project_code``.
+
+    Mirrors ``media_plan_sync._tab_belongs_to_project`` Check-1 semantics: scan
+    the spreadsheet title + worksheet titles with ``_PROJECT_CODE_RE`` and reject
+    ONLY on a POSITIVE mismatch — a YYNNN code is present AND ``project_code`` is
+    not among the codes found. Stay silent (allow) when no code is present
+    anywhere, or when the matching code appears (the legit 26023 Sierra Club
+    sheet embeds no code): reject on positive mismatch, never on absence.
+
+    The spreadsheet TITLE is the primary signal (deliberately named, e.g.
+    "26034 - UNITE HERE..."). Tab titles are treated conservatively to avoid
+    over-blocking a legitimate code-less target tab in a shared multi-tab
+    workbook: a tab-title code only contributes to the "foreign" decision when
+    ``project_code`` is absent from BOTH the title AND all tab titles.
+    """
+    title_codes = _PROJECT_CODE_RE.findall(ss_title or "")
+    tab_codes: list[str] = []
+    for t in (tab_titles or []):
+        tab_codes.extend(_PROJECT_CODE_RE.findall(t or ""))
+
+    # Matching code anywhere (title or any tab) — allow.
+    if project_code in title_codes or project_code in tab_codes:
+        return
+
+    # Title positively names a different project — reject (primary signal).
+    if title_codes:
+        found = "/".join(sorted(set(title_codes)))
+        raise ValueError(
+            f"Sheet appears to belong to project {found}, not {project_code}. "
+            f"Refusing to register it - double-check the sheet URL."
+        )
+
+    # Title is code-less: only now do tab codes contribute to the foreign
+    # decision (conservative — target code absent from BOTH title and all tabs).
+    if tab_codes:
+        found = "/".join(sorted(set(tab_codes)))
+        raise ValueError(
+            f"Sheet appears to belong to project {found}, not {project_code}. "
+            f"Refusing to register it - double-check the sheet URL."
+        )
+
+    # No project code present anywhere — cannot tell, allow.
+    return
+
+
+def _peek_and_assert_sheet_project(sheet_id: str, project_code: str) -> None:
+    """Open the sheet just far enough to read its title + tab titles, then run
+    ``_assert_sheet_matches_project``. A positive wrong-project code propagates
+    as ValueError (callers turn it into HTTP 400). A failure to OPEN the sheet
+    (network / permission / not-found) is logged and swallowed — non-fatal, so a
+    transient Sheets hiccup never regresses an add that previously worked; the
+    downstream sync surfaces genuine access errors.
+    """
+    if not sheet_id:
+        return
+    try:
+        gc = _get_gspread_client()
+        ss = gc.open_by_key(sheet_id)
+        ss_title = ss.title
+        tab_titles = [ws.title for ws in ss.worksheets()]
+    except Exception as e:  # SpreadsheetNotFound / APIError / transport / auth
+        logger.warning("Sheet peek skipped for %s/%s: %s", project_code, sheet_id, e)
+        return
+    _assert_sheet_matches_project(ss_title, tab_titles, project_code)
 
 
 def _ensure_plan_registered(project_code: str, sheet_id: str) -> None:
@@ -34,6 +106,10 @@ def _ensure_plan_registered(project_code: str, sheet_id: str) -> None:
     """
     if not sheet_id:
         return
+    # Guardrail (F2 / ADA 26023): refuse a sheet whose embedded project code
+    # positively identifies a DIFFERENT project, before writing the join row.
+    # Covers create-project / update-project / manual /sync-media-plan paths.
+    _peek_and_assert_sheet_project(sheet_id, project_code)
     bq.run_query(
         f"""
         MERGE {bq.table('project_media_plans')} t
@@ -666,6 +742,14 @@ async def admin_add_project_plan(project_code: str, body: ProjectPlanCreate):
     if not sheet_id:
         raise HTTPException(status_code=400, detail="Could not parse sheet ID from input")
 
+    # Guardrail (F2 / ADA 26023): refuse a sheet whose embedded project code
+    # positively identifies a DIFFERENT project. Runs before any BQ write so a
+    # mismatched row is never inserted. This is the confirmed incident vector.
+    try:
+        _peek_and_assert_sheet_project(sheet_id, project_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # If display_order is not provided, append after the current max.
     display_order = body.display_order
     if display_order is None:
@@ -756,6 +840,13 @@ async def admin_update_project_plan(
         sets.append("display_order = @display_order")
         params.append(bq.scalar_param("display_order", "INT64", body.display_order))
     if body.is_active is not None:
+        # Guard the reactivation vector (F2 / ADA 26023): flipping a stored plan
+        # back to is_active=TRUE must not resurrect a foreign-project sheet.
+        if body.is_active:
+            try:
+                _peek_and_assert_sheet_project(sheet_id, project_code)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
         sets.append("is_active = @is_active")
         params.append(bq.scalar_param("is_active", "BOOL", body.is_active))
 
