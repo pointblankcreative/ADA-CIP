@@ -296,12 +296,24 @@ live staging) can close — Recipes 2/3 cannot validate them:
 
 ---
 
-## Sandbox reality (assume nothing can deploy)
+## Environment reality (what this remote sandbox can and can't do)
 
-- The sandbox **cannot `git push`** — hand commands/branches to Frazer.
-- It **cannot reach IAP-guarded URLs** cookie-less (302/403); the live UI is
-  human-only from here.
-- Asana ticket filing goes over the **Asana MCP**, not the resolver's Python
-  scripts (no `ASANA_PAT` here).
-- Delivery stops at **staging** (a handed-off draft PR to `main`) or a parked
-  draft PR. **Production is never touched by this skill.**
+These skills run under Claude Code on the web / remote execution. Confirm at run
+time, but in this environment:
+
+- **`git push` and the GitHub MCP work** — you can push branches, open PRs, and
+  (from `ada-deploy-fixes`) merge to `main`. The older `CLAUDE.md` note that
+  "Claude's sandbox cannot push" describes the *local* sandbox and is stale here.
+- **The BigQuery MCP reaches the real `cip` / `cip_stackadapt` / `core_funnel_export`
+  datasets.** `execute_sql_readonly` for reads everywhere; the writable
+  `execute_sql` exists but is reserved for `ada-deploy-fixes`, under its confirm
+  gate — never used by UAT testers or the proposer.
+- **You cannot reach the IAP-guarded staging/prod URLs cookie-less** — they
+  `302`/`403` (verified). The live UI is a human-only Recipe-1 path; the
+  cookie-less curl (ada-smoke) can still confirm auth behaviour (401/403 expected;
+  a 200 on a protected route is the red flag).
+- **Asana** ticket filing goes over the **Asana MCP** (no `ASANA_PAT` here).
+- **Merging to `main` deploys STAGING** (~7 min via `deploy.yml`), not production.
+  Promoting `main` → `production` is a separate manual push. `ada-simulate-uat`
+  and `ada-propose-fixes` never deploy; only `ada-deploy-fixes` does, and it stops
+  at staging-verified — production stays a manual promote.
