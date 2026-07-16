@@ -169,6 +169,11 @@ Testers **must never mutate real data and never hit production**:
   Frazer owns; in the sandbox you test their honest state transitions against the
   fixture stub, not the live job.
 - Do not aim Playwright at the live IAP URLs. localhost fixture UI only.
+- **Cost hygiene.** BigQuery on-demand bills per TiB scanned, so a careless read
+  is real money. Never `SELECT *` on `core_funnel_export.funnel_data` (1,463
+  columns, ~800K rows, US region) — select only the columns you need, add a
+  date/partition filter, and prefer the pre-aggregated `cip` tables over raw
+  `funnel_data`. Seed Recipe-2 fixtures from small, filtered queries.
 
 ---
 
@@ -317,3 +322,26 @@ time, but in this environment:
   Promoting `main` → `production` is a separate manual push. `ada-simulate-uat`
   and `ada-propose-fixes` never deploy; only `ada-deploy-fixes` does, and it stops
   at staging-verified — production stays a manual promote.
+
+---
+
+## BigQuery cost is the real data-layer risk (not data loss)
+
+The `cip` dataset is **derived**: the raw data lives in Funnel
+(`core_funnel_export.funnel_data`, US region) and the `cip` tables are rebuilt
+from it by the transformation/backfill. So a bad or destructive data write is
+**recoverable** — re-run the transformation — and data destruction is low risk.
+The expensive, hard-to-undo thing is **money**: a large or looped BigQuery job can
+run up hundreds of dollars of Google Cloud processing.
+
+- **Estimate before you run.** On-demand analysis bills per TiB scanned (confirm
+  the project's current rate/edition). Dry-run a query (BigQuery `dry_run` via the
+  Python client) to get bytes scanned before executing, or read table sizes from
+  `get_table_info` / `INFORMATION_SCHEMA`.
+- **This is the deploy skill's primary gate.** `ada-deploy-fixes` estimates every
+  BigQuery job, proceeds on cheap ones, and hard-stops for sign-off on expensive
+  ones — cheap data work does not need a per-write ceremony. Reversibility is
+  cheap (a same-region snapshot before a destructive overwrite; Funnel as the
+  ultimate backstop), so the paranoia budget goes on cost, not on data safety.
+- **Never loop a big job to "retry"**, and never `SELECT *` over `funnel_data` —
+  each pass is billed again. Prune to explicit columns + partition/date filters.
