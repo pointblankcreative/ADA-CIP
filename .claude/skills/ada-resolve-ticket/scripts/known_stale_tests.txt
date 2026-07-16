@@ -21,3 +21,14 @@ tests/test_pacing_router_retro.py::test_compute_on_miss_serves_replay_lines
 tests/test_pacing_router_retro.py::test_empty_state_echoes_requested_date_and_earliest_snapshot
 tests/test_pacing_router_retro.py::test_replay_lines_sorted_like_stored_path
 tests/test_retrospective_mode.py::test_pacing_default_skip_writes_false_still_writes
+# Added 2026-07-16 (F2 / ADA 26023 build): 5 further drifted top-level tests/
+# failures, confirmed PRE-EXISTING (reproduce identically with the F2 admin.py
+# change stashed out) and in files this ticket never touches. Same documented
+# stale-mock class — creative-router mocks predate the prod ctr/schema shape,
+# projects-router mock predates the pending-line rollup exclusion. NOT
+# regressions; recorded here so a clean ticket isn't parked on pre-existing rot.
+tests/test_creative_router.py::test_rotation_aggregates_variants_across_platforms
+tests/test_creative_router.py::test_matrix_cells_absent_where_variant_does_not_run
+tests/test_creative_router.py::test_audiences_rows_metrics_ids_and_frequency
+tests/test_creative_router.py::test_audiences_cells_keyed_by_audience_id_and_variant
+tests/test_projects_router_pacing.py::test_get_project_excludes_pending_lines_from_rollup
