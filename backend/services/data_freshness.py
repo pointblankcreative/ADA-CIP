@@ -126,7 +126,25 @@ def compute_platform_freshness(
     ``latest_loaded_at`` (raw|None), ``age_hours`` (float), ``is_stale`` (bool),
     ``stale_reason`` (str|None), plus ``total_days`` / ``total_rows`` for the
     admin panel. See the module docstring for the staleness rule.
+
+    IMPORTANT — scoping: when ``project_code`` is supplied the freshness
+    MEASUREMENT itself is scoped to that project (``WHERE project_code = ...``),
+    not just the flight-end guard. The agency runs 5-15 concurrent campaigns
+    sharing platforms; an unscoped MAX(date) over ``fact_digital_daily`` reads a
+    platform as globally fresh whenever ANY other project loaded it today, which
+    would hide a project whose own line on that platform has stopped reporting
+    (the 26023 Meta case: Meta stopped 06-24 with a plan to 07-19, but another
+    live project keeps 'meta' globally fresh). The relative-to-freshest
+    comparison is then made within the project's own platforms.
+    ``project_code=None`` keeps the global, agency-wide sweep (daily_job's outage
+    detection) across all platforms.
     """
+    where_clause = ""
+    params = None
+    if project_code is not None:
+        where_clause = "WHERE project_code = @project_code"
+        params = [bq.string_param("project_code", project_code)]
+
     sql = f"""
         SELECT
             platform_id,
@@ -135,10 +153,11 @@ def compute_platform_freshness(
             COUNT(DISTINCT date) AS total_days,
             COUNT(*)             AS total_rows
         FROM {bq.table('fact_digital_daily')}
+        {where_clause}
         GROUP BY platform_id
         ORDER BY platform_id
     """
-    rows = bq.run_query(sql)
+    rows = bq.run_query(sql, params)
 
     parsed = []
     for r in rows:

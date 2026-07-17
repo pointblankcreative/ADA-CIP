@@ -530,6 +530,18 @@ async def get_pacing(
         if _in_ratio(r) and _float(r.get("planned_spend_to_date")) > 0
     )
 
+    # P-FRESH-PACE: the ratio's denominator can collapse to 0 because EVERY
+    # in-flight line is held out (all not_reporting / estimate) — not because
+    # the campaign is genuinely at 0% spend. Without distinguishing the two, the
+    # frontend's pacingStatus(0) paints an alarming red "critical-under 0.0%",
+    # the exact false verdict this PR removes. Flag the hold-out case so the UI
+    # renders the Overall Pacing tile neutrally instead. (The existing
+    # `unattributedSpend` guard can't catch it — not_reporting lines keep a
+    # nonzero frozen actual, so noLineSpend is false.)
+    ratio_excluded_all = bool(active_rows) and all(
+        not _in_ratio(r) for r in active_rows
+    )
+
     # (c) Surface, rather than silently drop, lines that are SPENDING with no
     # planned baseline (active, actual>0, planned<=0). The guard above correctly
     # keeps them out of the % (a zero baseline can't pace), but their spend would
@@ -580,10 +592,17 @@ async def get_pacing(
         })
         bucket["line_count"] += 1
         bucket["planned_budget"] += _float(r.get("planned_budget"))
-        bucket["planned_spend_to_date"] += _float(r.get("planned_spend_to_date"))
+        # Displayed actual includes held-out lines (mirrors total_actual_to_date).
         bucket["actual_spend_to_date"] += _float(r.get("actual_spend_to_date"))
-        if _float(r.get("planned_spend_to_date")) > 0:
-            bucket["paced_actual_spend"] += _float(r.get("actual_spend_to_date"))
+        # P-FRESH-PACE: phase pacing % must use the SAME hold-out as the
+        # project-level Overall Pacing, or a phase pill diverges from the KPI
+        # for identical data (#121 differs-between-tabs). not_reporting lines
+        # already have planned=0, but an is_estimate line keeps a nonzero
+        # baseline — exclude both from the phase numerator AND denominator.
+        if _in_ratio(r):
+            bucket["planned_spend_to_date"] += _float(r.get("planned_spend_to_date"))
+            if _float(r.get("planned_spend_to_date")) > 0:
+                bucket["paced_actual_spend"] += _float(r.get("actual_spend_to_date"))
 
     phase_summaries = sorted(
         [
@@ -631,6 +650,9 @@ async def get_pacing(
         pending_line_count=pending_count,
         spend_without_baseline=spend_without_baseline,
         lines_without_baseline=lines_without_baseline,
+        # P-FRESH-PACE: every in-flight line is held out of the ratio → render
+        # the Overall Pacing tile neutrally, not a red 0.0%.
+        ratio_excluded_all=ratio_excluded_all,
         lines=[
             LinePacing(
                 line_id=r["line_id"],

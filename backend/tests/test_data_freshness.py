@@ -141,6 +141,49 @@ def test_loaded_at_missing_falls_back_to_data_date_age():
     assert tt["is_stale"] is True
 
 
+def test_project_scoped_measurement_flags_target_even_when_globally_fresh():
+    """The headline 26023 case: platform 'meta' is GLOBALLY fresh (another live
+    project loaded it today) but 26023's OWN meta line stopped 3 days ago. The
+    measurement must be project-scoped — with project_code the SQL adds
+    `WHERE project_code = @project_code` and reads the STALE per-project data;
+    without it (agency sweep) it reflects the globally-fresh row. This exercises
+    the real project_code branch, not a mocked-past result."""
+    global_rows = [
+        {"platform_id": "meta", "latest_data_date": AS_OF,
+         "latest_loaded_at": _loaded(4), "total_days": 60, "total_rows": 9000},
+    ]
+    scoped_rows = [
+        {"platform_id": "meta", "latest_data_date": AS_OF - timedelta(days=3),
+         "latest_loaded_at": _loaded(72), "total_days": 20, "total_rows": 300},
+    ]
+    # 26023's meta line is still in flight (plan to 07-19) so the guard keeps it.
+    flight_rows = [{"platform_id": "meta", "max_flight_end": AS_OF + timedelta(days=2)}]
+
+    def router(sql, params=None):
+        if "media_plan_lines" in sql:
+            return flight_rows
+        if "fact_digital_daily" in sql:
+            # the scoping branch adds this WHERE clause + the param.
+            if "project_code = @project_code" in sql:
+                assert params and any(p == ("project_code", "26023") for p in params)
+                return scoped_rows
+            assert not params
+            return global_rows
+        return []
+
+    with patch.object(data_freshness, "bq") as mock_bq:
+        mock_bq.table.side_effect = lambda n: f"`ds.{n}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.run_query.side_effect = router
+        scoped = compute_platform_freshness(AS_OF, project_code="26023")
+        glob = compute_platform_freshness(AS_OF)
+
+    # project-scoped: 26023's meta is stale (its own data stopped)
+    assert {p["platform_id"]: p for p in scoped}["meta"]["is_stale"] is True
+    # agency-wide sweep: meta reads globally fresh
+    assert {p["platform_id"]: p for p in glob}["meta"]["is_stale"] is False
+
+
 def test_global_call_skips_flight_guard_and_does_not_query_media_plan_lines():
     fact_rows = [
         {"platform_id": "stackadapt", "latest_data_date": AS_OF - timedelta(days=2),

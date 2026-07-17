@@ -173,6 +173,11 @@ export interface PacingResponse {
    *  back-compat with a not-yet-redeployed backend. */
   spend_without_baseline?: number;
   lines_without_baseline?: number;
+  /** P-FRESH-PACE: true when there ARE in-flight lines but ALL are held out of
+   *  the pacing ratio (not_reporting / estimate) — the denominator collapsed
+   *  for a freshness reason, not a genuine 0%. Render Overall Pacing neutrally
+   *  ("—") instead of an alarming red 0.0%. Optional for back-compat. */
+  ratio_excluded_all?: boolean;
   lines: PacingLine[];
   /** Empty for legacy projects that haven't landed in project_media_plans. */
   phases: PhaseSummary[];

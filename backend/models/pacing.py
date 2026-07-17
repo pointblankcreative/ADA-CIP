@@ -114,6 +114,11 @@ class PacingResponse(BaseModel):
     # overall_pacing_percentage; surfaced so the UI can warn rather than hide it.
     spend_without_baseline: float = 0
     lines_without_baseline: int = 0
+    # P-FRESH-PACE: True when there ARE in-flight lines but ALL of them are held
+    # out of the pacing ratio (not_reporting / estimate), so the denominator is
+    # 0 for a freshness reason — NOT a genuine 0% spend. The frontend renders the
+    # Overall Pacing tile neutrally ("—") instead of an alarming red 0.0%.
+    ratio_excluded_all: bool = False
     # AI-002: spend on platforms with no media plan line. Included in the
     # spent/remaining math (conservative — never overstate remaining budget)
     # but EXCLUDED from overall_pacing_percentage (no planned baseline).

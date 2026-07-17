@@ -381,3 +381,121 @@ class TestRouterRatioExclusion:
         line = resp.lines[0]
         assert line.is_not_reporting is True
         assert line.is_estimate is True
+
+    def test_phase_pacing_matches_overall_excludes_estimate(self):
+        """Review #2: the phase-level pacing % must apply the SAME _in_ratio
+        hold-out as Overall Pacing, so a phase pill never diverges from the KPI
+        for identical data (26023's Outdoor DOOH is is_estimate)."""
+        rows = [
+            self._brow(line_id="measured", sheet_id="S1", phase_label="Phase 1",
+                       phase_display_order=1,
+                       planned_spend_to_date=1000.0, actual_spend_to_date=1000.0),
+            self._brow(line_id="estimate", sheet_id="S1", phase_label="Phase 1",
+                       phase_display_order=1, is_estimate=True,
+                       planned_spend_to_date=1000.0, actual_spend_to_date=2000.0),
+        ]
+        with patch.object(pacing_router, "bq", self._bq(rows)), \
+                patch.object(pacing_router, "_query_untracked_platform_spend",
+                             return_value=[]):
+            resp = asyncio.run(pacing_router.get_pacing("26023"))
+
+        assert resp.overall_pacing_percentage == 100.0
+        assert len(resp.phases) == 1
+        # phase pill agrees with the Overall Pacing KPI (both exclude estimate)
+        assert resp.phases[0].pacing_percentage == 100.0
+
+    def test_ratio_excluded_all_set_when_every_inflight_line_held_out(self):
+        """Review #3: all in-flight lines held out → total_planned collapses to
+        0 for a freshness reason, so ratio_excluded_all=True lets the UI render
+        neutrally instead of a red 0.0%."""
+        rows = [
+            self._brow(line_id="dooh", line_status="not_reporting",
+                       is_not_reporting=True,
+                       planned_spend_to_date=0.0, actual_spend_to_date=800.0),
+            self._brow(line_id="est", is_estimate=True,
+                       planned_spend_to_date=500.0, actual_spend_to_date=500.0),
+        ]
+        with patch.object(pacing_router, "bq", self._bq(rows)), \
+                patch.object(pacing_router, "_query_untracked_platform_spend",
+                             return_value=[]):
+            resp = asyncio.run(pacing_router.get_pacing("26023"))
+
+        assert resp.ratio_excluded_all is True
+        assert resp.overall_pacing_percentage == 0  # neutral, not a real 0%
+        # spend still shown in the total
+        assert resp.total_actual_to_date == 1300.0
+
+    def test_ratio_excluded_all_false_when_a_healthy_line_present(self):
+        rows = [
+            self._brow(line_id="healthy",
+                       planned_spend_to_date=1000.0, actual_spend_to_date=1000.0),
+            self._brow(line_id="dooh", line_status="not_reporting",
+                       is_not_reporting=True,
+                       planned_spend_to_date=0.0, actual_spend_to_date=800.0),
+        ]
+        with patch.object(pacing_router, "bq", self._bq(rows)), \
+                patch.object(pacing_router, "_query_untracked_platform_spend",
+                             return_value=[]):
+            resp = asyncio.run(pacing_router.get_pacing("26023"))
+
+        assert resp.ratio_excluded_all is False
+        assert resp.overall_pacing_percentage == 100.0
+
+
+# ── Engine: platform-pool alert dedup vs per-line budget_exceeded ───
+
+
+class TestPoolAlertDedup:
+    @patch("backend.services.pacing.compute_platform_freshness")
+    @patch("backend.services.pacing.date")
+    @patch("backend.services.pacing.bq")
+    @patch("backend.services.pacing._write_budget_tracking")
+    @patch("backend.services.pacing._write_alerts")
+    def test_pool_alert_deduped_when_per_line_budget_exceeded_fired(
+        self, mock_alerts, mock_tracking, mock_bq, mock_date, mock_fresh
+    ):
+        """Review #4a: a per-line budget_exceeded (a COMPLETED, measured line on
+        a stale platform) already surfaces the overspend — the platform-pool
+        safety net must NOT emit a second budget_exceeded for the same platform."""
+        mock_date.today.return_value = date(2026, 7, 17)
+        mock_date.fromisoformat.side_effect = lambda s: date.fromisoformat(s)
+        mock_bq.table.side_effect = lambda n: f"`ds.{n}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.date_param.side_effect = lambda n, v: (n, v)
+        mock_fresh.return_value = _stale("meta")
+
+        # A: COMPLETED (June), line_code-measured, over its $1000 budget → fires
+        #    a per-line budget_exceeded (completed lines still alert).
+        # B: in-flight (July) on the same stale platform → not_reporting.
+        lines = [
+            _make_line("A", "meta", 1000, date(2026, 6, 1), date(2026, 6, 30),
+                       line_code="MA"),
+            _make_line("B", "meta", 1000, date(2026, 7, 1), date(2026, 7, 31)),
+        ]
+
+        def qr(sql, params=None):
+            if "media_plan_lines" in sql:
+                return lines
+            if "blocking_chart_weeks" in sql:
+                return []
+            if "SUM(spend)" in sql and "line_code" in sql:
+                return [{"total_spend": 1500.0, "first_spend_date": date(2026, 6, 5)}]
+            if "SUM(spend)" in sql:
+                pd = {p[0]: p[1] for p in (params or [])}
+                if pd.get("flight_start") == date(2026, 7, 1):
+                    return [{"total_spend": 800.0}]  # B's group (July)
+                return [{"total_spend": 1500.0}]      # A's group (June)
+            return []
+
+        mock_bq.run_query.side_effect = qr
+        result = run_pacing_for_project("26023", date(2026, 7, 17))
+
+        by_id = {r["line_id"]: r for r in mock_tracking.call_args[0][2]}
+        assert by_id["A"]["line_status"] == "completed"
+        assert by_id["B"]["line_status"] == "not_reporting"
+
+        alerts = mock_alerts.call_args[0][0]
+        budget_alerts = [a for a in alerts if a["alert_type"] == "budget_exceeded"]
+        # exactly ONE — the per-line one; the pool alert is deduped away.
+        assert len(budget_alerts) == 1
+        assert result["alerts"] == 1

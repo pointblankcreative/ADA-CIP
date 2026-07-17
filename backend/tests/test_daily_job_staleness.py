@@ -14,6 +14,7 @@ from unittest.mock import patch
 from backend.services import data_freshness  # noqa: F401 (patched by path)
 from backend.services.daily_job import (
     _check_data_staleness,
+    _projects_on_platform,
     _write_stale_alerts,
     DATA_STALE_HOURS,
 )
@@ -98,3 +99,27 @@ def test_write_stale_alerts_system_only_when_no_projects(mock_projects, mock_wri
 def test_write_stale_alerts_empty_is_noop(mock_write):
     assert _write_stale_alerts([]) == 0
     assert not mock_write.called
+
+
+# ── _projects_on_platform filters to still-in-flight lines ──────────
+
+
+def test_projects_on_platform_filters_to_in_flight():
+    """Review #4b: a project whose only line on the stale platform has already
+    COMPLETED must not get a 'not reporting' alert — the scoping query carries
+    the same flight_start<=today<=flight_end window pacing.py uses."""
+    captured = {}
+
+    def qr(sql, params=None):
+        captured["sql"] = sql
+        return []
+
+    with patch("backend.services.daily_job.bq") as mock_bq:
+        mock_bq.table.side_effect = lambda n: f"`ds.{n}`"
+        mock_bq.string_param.side_effect = lambda n, v: (n, v)
+        mock_bq.run_query.side_effect = qr
+        _projects_on_platform("meta")
+
+    sql = captured["sql"]
+    assert "flight_start <= CURRENT_DATE()" in sql
+    assert "flight_end" in sql and "CURRENT_DATE()" in sql

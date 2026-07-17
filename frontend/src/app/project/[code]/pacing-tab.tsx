@@ -287,6 +287,13 @@ export function PacingTab({
     pacingSpendAllPlatforms === 0 &&
     !data.overall_pacing_percentage;
 
+  // P-FRESH-PACE: every in-flight line is held out of the ratio (all
+  // not_reporting / estimate), so overall_pacing_percentage collapsed to 0 for
+  // a freshness reason, not a real 0%. Render the Overall Pacing tile neutrally
+  // (like unattributedSpend) rather than an alarming red "critical-under 0.0%".
+  const holdOutAll = data.ratio_excluded_all ?? false;
+  const pacingUnmeasured = unattributedSpend || holdOutAll;
+
   // A1: prefer the project's true warehouse spend/budget (passed from the
   // detail page) over the pacing payload when line-level spend is unattributed,
   // so the Spent / Remaining tiles show the real figure the Summary tab reports
@@ -335,7 +342,7 @@ export function PacingTab({
 
       {/* P-FRESH-PACE: lines held out of the pacing % because their platform
           stopped reporting mid-flight (freshness-aware, honest verdict). */}
-      <StalenessNote lines={data.lines} />
+      <StalenessNote lines={data.lines} ratioExcludedAll={holdOutAll} />
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -368,17 +375,20 @@ export function PacingTab({
         />
         <KpiCard
           label={<Glossary termKey="pacing">Overall Pacing</Glossary>}
-          value={unattributedSpend ? "—" : formatPercent(data.overall_pacing_percentage)}
+          value={pacingUnmeasured ? "—" : formatPercent(data.overall_pacing_percentage)}
           sub={
-            unattributedSpend
-              ? "line spend not attributed"
-              : untrackedSpend > 0
-                ? "tracked media plan lines only"
-                : undefined
+            holdOutAll
+              ? "in-flight lines not reporting"
+              : unattributedSpend
+                ? "line spend not attributed"
+                : untrackedSpend > 0
+                  ? "tracked media plan lines only"
+                  : undefined
           }
           // Don't paint an alarming red 0.0% when the zero is an attribution
-          // gap rather than a real underspend (Finding #1).
-          accent={unattributedSpend ? "text-fg-faint" : pacingColor(overallStatus)}
+          // gap (Finding #1) or a freshness hold-out (P-FRESH-PACE) rather than
+          // a real underspend.
+          accent={pacingUnmeasured ? "text-fg-faint" : pacingColor(overallStatus)}
         />
       </div>
 
@@ -477,13 +487,28 @@ function UnattributedSpendNotice() {
  * and are excluded from Overall Pacing. Info-toned — this is a data-freshness
  * gap, not a spend alarm.
  */
-function StalenessNote({ lines }: { lines: PacingLine[] }) {
+function StalenessNote({
+  lines,
+  ratioExcludedAll = false,
+}: {
+  lines: PacingLine[];
+  /** True when every in-flight line is held out of the ratio (the Overall
+   *  Pacing tile reads "—"). Used to surface a hint even when the hold-out is
+   *  purely is_estimate lines rather than not_reporting ones. */
+  ratioExcludedAll?: boolean;
+}) {
   const notReporting = lines.filter((l) => l.is_not_reporting);
-  if (notReporting.length === 0) return null;
+  // Nothing to say unless a line stopped reporting OR the ratio fully collapsed
+  // to a hold-out (e.g. an estimate-only project reading "—").
+  if (notReporting.length === 0 && !ratioExcludedAll) return null;
+  const count = notReporting.length;
   const names = notReporting
     .map((l) => l.audience_name || platformLabel(l.platform_id))
     .filter((v, i, a) => a.indexOf(v) === i);
-  const count = notReporting.length;
+  const eyebrow =
+    count > 0
+      ? `${count} line${count === 1 ? "" : "s"} not reporting`
+      : "Overall Pacing held out";
   return (
     <Card
       className="border-tint-info"
@@ -493,15 +518,26 @@ function StalenessNote({ lines }: { lines: PacingLine[] }) {
       }}
     >
       <div className="eyebrow" style={{ color: "var(--info)" }}>
-        {count} line{count === 1 ? "" : "s"} not reporting
+        {eyebrow}
       </div>
-      <p className="mt-2.5 max-w-[640px] text-[12.5px] text-fg-muted">
-        {names.join(", ")} {count === 1 ? "has" : "have"} stopped reporting new
-        data while still in flight, so {count === 1 ? "it is" : "they are"} held
-        out of the Overall Pacing % (any spend already recorded is kept in the
-        totals). This prevents a paused or silent feed from reading as a false
-        under- or over-spend. Real platform-level overspend is still flagged.
-      </p>
+      {count > 0 ? (
+        <p className="mt-2.5 max-w-[640px] text-[12.5px] text-fg-muted">
+          {names.join(", ")} {count === 1 ? "has" : "have"} stopped reporting new
+          data while still in flight, so {count === 1 ? "it is" : "they are"}{" "}
+          held out of the Overall Pacing % (any spend already recorded is kept in
+          the totals). This prevents a paused or silent feed from reading as a
+          false under- or over-spend. Real platform-level overspend is still
+          flagged.
+        </p>
+      ) : (
+        <p className="mt-2.5 max-w-[640px] text-[12.5px] text-fg-muted">
+          Every in-flight line is on a measured-by-estimate or not-reporting
+          footing right now, so there is no reliable baseline to compute an
+          Overall Pacing % — it reads &ldquo;—&rdquo; rather than a misleading
+          0%. Spend still counts toward the totals, and real overspend is still
+          flagged.
+        </p>
+      )}
       <p className="mt-2 max-w-[640px] text-[11.5px] text-fg-faint">
         Note: reach &amp; frequency reflect each platform&apos;s own reporting
         window (StackAdapt reports dedup reach only in calendar buckets), and

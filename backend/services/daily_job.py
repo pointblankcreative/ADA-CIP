@@ -56,13 +56,17 @@ def _check_data_staleness() -> list[dict]:
 
 
 def _projects_on_platform(platform_id: str) -> list[str]:
-    """Active projects that carry a non-direct (self-serve) media plan line on
-    ``platform_id`` — the projects a platform outage actually degrades.
+    """Active projects that carry a non-direct (self-serve), STILL-IN-FLIGHT
+    media plan line on ``platform_id`` — the projects a platform outage actually
+    degrades right now.
 
     Mirrors the pacing inclusion rule (``COALESCE(is_direct_override, is_direct)
-    = FALSE``) and guards stale plan_ids / retired phases via the current-
-    media_plans × active-project_media_plans JOIN. Aggregation is dedup-safe on
-    its own, so this deliberately avoids the per-line ROW_NUMBER dedup CTE.
+    = FALSE``) AND its in-flight window (``flight_start <= today <= flight_end``,
+    matching pacing.py's not_reporting swap), so a project whose only line on the
+    stale platform has already COMPLETED does NOT get a "not reporting" alert.
+    Guards stale plan_ids / retired phases via the current-media_plans ×
+    active-project_media_plans JOIN; aggregation is dedup-safe on its own, so
+    this deliberately avoids the per-line ROW_NUMBER dedup CTE.
     """
     sql = f"""
         SELECT DISTINCT p.project_code
@@ -78,6 +82,8 @@ def _projects_on_platform(platform_id: str) -> list[str]:
         WHERE p.status IN ('active', 'in_flight')
           AND l.platform_id = @platform_id
           AND COALESCE(l.is_direct_override, l.is_direct) = FALSE
+          AND l.flight_start <= CURRENT_DATE()
+          AND l.flight_end   >= CURRENT_DATE()
     """
     try:
         rows = bq.run_query(sql, [bq.string_param("platform_id", platform_id)])

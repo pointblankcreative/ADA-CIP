@@ -737,6 +737,10 @@ def run_pacing_for_project(
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
     all_alerts = []
+    # Platforms that already fired a per-line budget_exceeded (from a healthy,
+    # measured line). The platform-pool safety net (4b) skips these so a single
+    # client-visible overspend never emits two budget_exceeded alerts.
+    line_budget_exceeded_platforms: set[str] = set()
 
     for line in lines:
         line_id = line["line_id"]
@@ -893,6 +897,8 @@ def run_pacing_for_project(
                 remaining_days, remaining_budget,
             )
         all_alerts.extend(line_alerts)
+        if platform_id and any(a["alert_type"] == "budget_exceeded" for a in line_alerts):
+            line_budget_exceeded_platforms.add(platform_id)
 
         tracking_rows.append({
             "date": today.isoformat(),
@@ -942,6 +948,11 @@ def run_pacing_for_project(
             platform_has_not_reporting.add(pid)
 
     for pid in platform_has_not_reporting:
+        # Dedup: if a per-line budget_exceeded already fired on this platform
+        # (a healthy, measured line ran over), the overspend is already on the
+        # feed — don't emit a second, pool-level budget_exceeded for it.
+        if pid in line_budget_exceeded_platforms:
+            continue
         p_actual = platform_actual.get(pid, 0.0)
         p_budget = platform_budget.get(pid, 0.0)
         if p_budget > 0 and p_actual > p_budget + BUDGET_EXCEEDED_TOLERANCE:
