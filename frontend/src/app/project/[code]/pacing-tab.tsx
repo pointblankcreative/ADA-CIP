@@ -333,6 +333,10 @@ export function PacingTab({
         </div>
       )}
 
+      {/* P-FRESH-PACE: lines held out of the pacing % because their platform
+          stopped reporting mid-flight (freshness-aware, honest verdict). */}
+      <StalenessNote lines={data.lines} />
+
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
@@ -460,6 +464,49 @@ function UnattributedSpendNotice() {
         did spend, its total is on the Summary tab and the spend hasn&apos;t
         been attributed to lines yet — re-sync the media plan or re-run pacing
         once attribution lands to populate these rows.
+      </p>
+    </Card>
+  );
+}
+
+/**
+ * P-FRESH-PACE: honest callout when one or more lines are held out of the
+ * pacing % because their platform stopped reporting mid-flight (e.g. a
+ * StackAdapt DOOH feed that goes quiet). Rather than let a dead feed flip the
+ * campaign into a false LAGGING/OVERSPENDING, those lines read "not reporting"
+ * and are excluded from Overall Pacing. Info-toned — this is a data-freshness
+ * gap, not a spend alarm.
+ */
+function StalenessNote({ lines }: { lines: PacingLine[] }) {
+  const notReporting = lines.filter((l) => l.is_not_reporting);
+  if (notReporting.length === 0) return null;
+  const names = notReporting
+    .map((l) => l.audience_name || platformLabel(l.platform_id))
+    .filter((v, i, a) => a.indexOf(v) === i);
+  const count = notReporting.length;
+  return (
+    <Card
+      className="border-tint-info"
+      style={{
+        background: "color-mix(in srgb, var(--info) 6%, var(--surface-card))",
+        borderLeft: "3px solid var(--info)",
+      }}
+    >
+      <div className="eyebrow" style={{ color: "var(--info)" }}>
+        {count} line{count === 1 ? "" : "s"} not reporting
+      </div>
+      <p className="mt-2.5 max-w-[640px] text-[12.5px] text-fg-muted">
+        {names.join(", ")} {count === 1 ? "has" : "have"} stopped reporting new
+        data while still in flight, so {count === 1 ? "it is" : "they are"} held
+        out of the Overall Pacing % (any spend already recorded is kept in the
+        totals). This prevents a paused or silent feed from reading as a false
+        under- or over-spend. Real platform-level overspend is still flagged.
+      </p>
+      <p className="mt-2 max-w-[640px] text-[11.5px] text-fg-faint">
+        Note: reach &amp; frequency reflect each platform&apos;s own reporting
+        window (StackAdapt reports dedup reach only in calendar buckets), and
+        conversion figures are reported as-is from the platforms — neither is
+        used to compute the pacing %.
       </p>
     </Card>
   );

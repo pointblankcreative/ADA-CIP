@@ -31,6 +31,12 @@ class LinePacing(BaseModel):
     daily_budget_required: float | None = None
     is_over_pacing: bool = False
     is_under_pacing: bool = False
+    # P-FRESH-PACE: read-path hold-out flags. is_not_reporting → the line's
+    # platform stopped reporting mid-flight (line_status="not_reporting");
+    # is_estimate → its spend is a budget-weight residual estimate, not a
+    # measured attribution. Both are excluded from overall_pacing_percentage.
+    is_not_reporting: bool = False
+    is_estimate: bool = False
     # PR 5: bundled-optimization context. NULL for standalone lines.
     bundle_id: str | None = None
     bundle_role: str | None = None  # suggested_parent | suggested_child | confirmed_* | rejected

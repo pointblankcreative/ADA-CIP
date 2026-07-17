@@ -34,6 +34,9 @@ export interface Project {
    * absent on older payloads, treated as 0. Used to net direct buys out of
    * trackable pacing math (see lib/flight.ts). */
   direct_budget?: number;
+  /** Sum of non-direct (self-serve) line budgets — the pacing inclusion set.
+   * Optional: absent on older payloads, treated as 0. */
+  self_serve_budget?: number;
   total_spend: number;
   pacing_percentage: number | null;
   days_remaining: number;
@@ -65,7 +68,12 @@ export interface PacingLine {
   audience_name: string | null;
   flight_start: string | null;
   flight_end: string | null;
-  line_status?: "not_started" | "pending" | "active" | "completed";
+  line_status?:
+    | "not_started"
+    | "pending"
+    | "active"
+    | "completed"
+    | "not_reporting";
   planned_budget: number;
   planned_spend_to_date: number;
   actual_spend_to_date: number;
@@ -75,6 +83,13 @@ export interface PacingLine {
   daily_budget_required: number | null;
   is_over_pacing: boolean;
   is_under_pacing: boolean;
+  /** P-FRESH-PACE: this line's platform stopped reporting mid-flight; it is
+   *  held out of the pacing % (planned=0, frozen actual kept). Optional so the
+   *  tab keeps working against a not-yet-redeployed backend. */
+  is_not_reporting?: boolean;
+  /** P-FRESH-PACE: this line's spend is a budget-weight residual estimate, not
+   *  a measured attribution; also excluded from the pacing %. */
+  is_estimate?: boolean;
   // Bundled-optimization support (PR 5). NULL for standalone lines.
   bundle_id: string | null;
   bundle_role: BundleRole | null;
@@ -634,6 +649,13 @@ export interface PlatformFreshness {
   latest_loaded_at: string | null;
   total_days: number;
   total_rows: number;
+  /** P-FRESH-PACE: server-side staleness verdict (36h floor OR relative-lag,
+   *  gated by the flight-end guard). Optional so an older backend still types. */
+  is_stale?: boolean;
+  /** Plain-language reason a platform is flagged stale; null when fresh. */
+  stale_reason?: string | null;
+  /** Hours since the platform last loaded fresh data. */
+  age_hours?: number | null;
 }
 
 export interface IngestionRun {

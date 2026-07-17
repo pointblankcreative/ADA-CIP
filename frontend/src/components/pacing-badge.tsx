@@ -4,7 +4,12 @@ import { StatusPill } from "@/components/ui";
 interface PacingBadgeProps {
   percentage: number | null | undefined;
   totalSpend?: number;
-  lineStatus?: "not_started" | "pending" | "active" | "completed";
+  lineStatus?:
+    | "not_started"
+    | "pending"
+    | "active"
+    | "completed"
+    | "not_reporting";
   size?: "sm" | "md";
   /**
    * "auto" (default) — show the percentage when available, fall back to the
@@ -37,6 +42,10 @@ export function PacingBadge({
     lineStatus === "not_started" ||
     (lineStatus != null && percentage == null && totalSpend > 0);
   const isCompleted = lineStatus === "completed";
+  // P-FRESH-PACE: the line's platform stopped reporting mid-flight. Show a
+  // neutral, honest label rather than a red "off pace" the missing data can't
+  // justify — the pacing % has already dropped this line.
+  const isNotReporting = lineStatus === "not_reporting";
 
   // Status words converge on the Claude Design four-token system
   // (On pace / Drifting / Off pace / No signal); over vs under is kept as a
@@ -50,23 +59,27 @@ export function PacingBadge({
     unknown: "No signal",
   };
 
-  const label = isCompleted
-    ? "Completed"
-    : isPending
-      ? lineStatus === "not_started"
-        ? "Not Started"
-        : "Pending"
-      : variant === "label"
-        ? labels[status]
-        : percentage != null
-          ? formatPercent(percentage)
-          : labels[status];
+  const label = isNotReporting
+    ? "Not reporting"
+    : isCompleted
+      ? "Completed"
+      : isPending
+        ? lineStatus === "not_started"
+          ? "Not Started"
+          : "Pending"
+        : variant === "label"
+          ? labels[status]
+          : percentage != null
+            ? formatPercent(percentage)
+            : labels[status];
 
-  const color = isCompleted
-    ? "var(--done)"
-    : isPending
-      ? "var(--info)"
-      : pacingVar(status);
+  const color = isNotReporting
+    ? "var(--info)"
+    : isCompleted
+      ? "var(--done)"
+      : isPending
+        ? "var(--info)"
+        : pacingVar(status);
 
   return <StatusPill label={label} color={color} size={size} />;
 }

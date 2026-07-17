@@ -347,6 +347,8 @@ async def get_pacing(
             bt.is_under_pacing,
             bt.bundle_id,
             bt.bundle_role,
+            bt.is_not_reporting,
+            bt.is_estimate,
             mpl.audience_name,
             mpl.flight_start,
             mpl.flight_end,
@@ -500,7 +502,18 @@ async def get_pacing(
     active_rows = [r for r in rows if r.get("line_status") not in ("pending", "not_started")]
     pending_count = len(rows) - len(active_rows)
 
-    total_planned = sum(_float(r.get("planned_spend_to_date")) for r in active_rows)
+    # P-FRESH-PACE: not_reporting + residual-estimate lines are held out of the
+    # pacing RATIO (both numerator and denominator). A not_reporting line stopped
+    # reporting mid-flight (its frozen actual would inflate the ratio while its
+    # planned=0 offers no baseline); a residual-estimate line's spend is a
+    # budget-weight guess, not a measurement. Both still count toward the
+    # displayed total_actual_to_date — only the pacing % excludes them.
+    def _in_ratio(r: dict) -> bool:
+        return not r.get("is_not_reporting") and not r.get("is_estimate")
+
+    total_planned = sum(
+        _float(r.get("planned_spend_to_date")) for r in active_rows if _in_ratio(r)
+    )
     total_actual = sum(_float(r.get("actual_spend_to_date")) for r in active_rows)
 
     # Pacing % is computed only over lines that have a planned baseline to pace
@@ -514,7 +527,7 @@ async def get_pacing(
     paced_actual = sum(
         _float(r.get("actual_spend_to_date"))
         for r in active_rows
-        if _float(r.get("planned_spend_to_date")) > 0
+        if _in_ratio(r) and _float(r.get("planned_spend_to_date")) > 0
     )
 
     # (c) Surface, rather than silently drop, lines that are SPENDING with no
@@ -524,16 +537,21 @@ async def get_pacing(
     # "$X spending with no baseline (data settling)" instead of reading near
     # zero. In a healthy state the baseline floor prevents this; a nonzero count
     # flags a transient/bad snapshot (e.g. a pace that ran mid-sync).
+    # A not_reporting line also has planned<=0 with actual>0, but it is NOT a
+    # settling-data gap — it stopped reporting. Exclude it here so the "spending
+    # with no baseline" warning doesn't fire for it; the StalenessNote covers it.
     spend_without_baseline = sum(
         _float(r.get("actual_spend_to_date"))
         for r in active_rows
         if _float(r.get("planned_spend_to_date")) <= 0
         and _float(r.get("actual_spend_to_date")) > 0
+        and not r.get("is_not_reporting")
     )
     lines_without_baseline = sum(
         1 for r in active_rows
         if _float(r.get("planned_spend_to_date")) <= 0
         and _float(r.get("actual_spend_to_date")) > 0
+        and not r.get("is_not_reporting")
     )
 
     # Multi-plan: aggregate per (sheet_id, phase_label, display_order). Lines
@@ -632,6 +650,11 @@ async def get_pacing(
                 daily_budget_required=_float(r.get("daily_budget_required"), None),
                 is_over_pacing=bool(r.get("is_over_pacing")),
                 is_under_pacing=bool(r.get("is_under_pacing")),
+                # P-FRESH-PACE: surface the ratio hold-out flags so the UI can
+                # render the StalenessNote and mark held-out lines.
+                is_not_reporting=bool(r.get("is_not_reporting"))
+                or r.get("line_status") == "not_reporting",
+                is_estimate=bool(r.get("is_estimate")),
                 bundle_id=r.get("bundle_id"),
                 bundle_role=r.get("bundle_role"),
                 bundle_members=bundle_members_by_id.get(r.get("bundle_id") or "", []),

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
@@ -368,29 +368,30 @@ async def api_stackadapt_rf_sync(force: bool = False):
 
 @router.get("/data-freshness")
 async def data_freshness():
-    """Check when each platform's data was last loaded."""
-    sql = f"""
-        SELECT
-            platform_id,
-            MAX(date) AS latest_data_date,
-            MAX(loaded_at) AS latest_loaded_at,
-            COUNT(DISTINCT date) AS total_days,
-            COUNT(*) AS total_rows
-        FROM {bq.table('fact_digital_daily')}
-        GROUP BY platform_id
-        ORDER BY platform_id
+    """Check when each platform's data was last loaded.
+
+    Freshness (incl. the ``is_stale`` / ``stale_reason`` / ``age_hours`` verdict)
+    comes from the shared ``compute_platform_freshness`` primitive so this panel,
+    the daily-sweep alerts, and pacing's not-reporting logic all agree. The
+    global (no-project) call skips the flight-end guard.
     """
-    rows = bq.run_query(sql)
+    from backend.services.data_freshness import compute_platform_freshness
+
+    platforms = compute_platform_freshness(date.today())
     return {
         "platforms": [
             {
-                "platform_id": r["platform_id"],
-                "latest_data_date": str(r["latest_data_date"]) if r.get("latest_data_date") else None,
-                "latest_loaded_at": str(r["latest_loaded_at"]) if r.get("latest_loaded_at") else None,
-                "total_days": r.get("total_days", 0),
-                "total_rows": r.get("total_rows", 0),
+                "platform_id": p["platform_id"],
+                "latest_data_date": str(p["latest_data_date"]) if p.get("latest_data_date") else None,
+                "latest_loaded_at": str(p["latest_loaded_at"]) if p.get("latest_loaded_at") else None,
+                "total_days": p.get("total_days", 0),
+                "total_rows": p.get("total_rows", 0),
+                # P-FRESH-PACE: surface the shared staleness verdict.
+                "is_stale": p.get("is_stale", False),
+                "stale_reason": p.get("stale_reason"),
+                "age_hours": p.get("age_hours"),
             }
-            for r in rows
+            for p in platforms
         ]
     }
 

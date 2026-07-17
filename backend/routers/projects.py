@@ -81,6 +81,7 @@ async def list_projects(
             p.end_date,
             p.net_budget,
             COALESCE(dir.direct_budget, 0) AS direct_budget,
+            COALESCE(dir.self_serve_budget, 0) AS self_serve_budget,
             COALESCE(s.total_spend, 0) AS total_spend,
             CASE
                 WHEN bt.bt_planned > 0
@@ -120,7 +121,14 @@ async def list_projects(
             GROUP BY bt_inner.project_code
         ) bt USING (project_code)
         LEFT JOIN (
-            SELECT project_code, SUM(budget) AS direct_budget
+            -- Direct-buy budget (is_direct) AND self-serve budget (the pacing
+            -- inclusion set: COALESCE(is_direct_override, is_direct) = FALSE,
+            -- NULL excluded — mirrors pacing.py:373-397) in a SINGLE deduped
+            -- read of media_plan_lines, so this does not add a second read.
+            SELECT
+                project_code,
+                SUM(IF(COALESCE(is_direct_override, is_direct, FALSE) = TRUE, budget, 0)) AS direct_budget,
+                SUM(IF(COALESCE(is_direct_override, is_direct) = FALSE, budget, 0)) AS self_serve_budget
             FROM (
                 SELECT
                     mpl.project_code, mpl.budget, mpl.is_direct, mpl.is_direct_override,
@@ -135,7 +143,7 @@ async def list_projects(
                  AND mp.sheet_id     = pmp.sheet_id
                  AND pmp.is_active    = TRUE
             )
-            WHERE _rn = 1 AND COALESCE(is_direct_override, is_direct, FALSE) = TRUE
+            WHERE _rn = 1
             GROUP BY project_code
         ) dir USING (project_code)
         WHERE 1=1
@@ -155,6 +163,7 @@ async def list_projects(
             end_date=r.get("end_date"),
             net_budget=float(r["net_budget"]) if r.get("net_budget") else None,
             direct_budget=float(r.get("direct_budget") or 0),
+            self_serve_budget=float(r.get("self_serve_budget") or 0),
             total_spend=float(r.get("total_spend", 0)),
             pacing_percentage=(
                 float(r["pacing_percentage"])
@@ -199,6 +208,7 @@ async def get_project(
             p.end_date,
             p.net_budget,
             COALESCE(dir.direct_budget, 0) AS direct_budget,
+            COALESCE(dir.self_serve_budget, 0) AS self_serve_budget,
             p.currency,
             p.media_plan_sheet_id,
             p.slack_channel_id,
@@ -244,7 +254,14 @@ async def get_project(
             GROUP BY project_code
         ) bt USING (project_code)
         LEFT JOIN (
-            SELECT project_code, SUM(budget) AS direct_budget
+            -- Direct-buy budget (is_direct) AND self-serve budget (the pacing
+            -- inclusion set: COALESCE(is_direct_override, is_direct) = FALSE,
+            -- NULL excluded — mirrors pacing.py:373-397) in a SINGLE deduped
+            -- read of media_plan_lines, so this does not add a second read.
+            SELECT
+                project_code,
+                SUM(IF(COALESCE(is_direct_override, is_direct, FALSE) = TRUE, budget, 0)) AS direct_budget,
+                SUM(IF(COALESCE(is_direct_override, is_direct) = FALSE, budget, 0)) AS self_serve_budget
             FROM (
                 SELECT
                     mpl.project_code, mpl.budget, mpl.is_direct, mpl.is_direct_override,
@@ -260,7 +277,7 @@ async def get_project(
                  AND pmp.is_active    = TRUE
                 WHERE mpl.project_code = @project_code
             )
-            WHERE _rn = 1 AND COALESCE(is_direct_override, is_direct, FALSE) = TRUE
+            WHERE _rn = 1
             GROUP BY project_code
         ) dir USING (project_code)
         WHERE p.project_code = @project_code
@@ -281,6 +298,7 @@ async def get_project(
         end_date=r.get("end_date"),
         net_budget=float(r["net_budget"]) if r.get("net_budget") else None,
         direct_budget=float(r.get("direct_budget") or 0),
+        self_serve_budget=float(r.get("self_serve_budget") or 0),
         currency=r.get("currency", "CAD"),
         total_spend=float(r.get("total_spend", 0)),
         pacing_percentage=(

@@ -12,6 +12,7 @@ Designed to be called from:
 
 import logging
 import time
+import uuid
 from datetime import date, datetime, timezone
 
 from backend.services import bigquery_client as bq
@@ -24,80 +25,146 @@ DATA_STALE_HOURS = 36
 
 
 def _check_data_staleness() -> list[dict]:
-    """Check each platform for stale data (>36h since last record)."""
-    sql = f"""
-        SELECT
-            platform_id,
-            MAX(date) AS latest_date,
-            MAX(loaded_at) AS latest_loaded_at
-        FROM {bq.table('fact_digital_daily')}
-        GROUP BY platform_id
+    """Stale platforms as of today, via the shared freshness primitive.
+
+    Returns one dict per stale platform in the shape ``_write_stale_alerts``
+    expects: ``platform_id``, ``latest_date`` (str), ``hours_since_load``.
+    Detection now lives in ``data_freshness.compute_platform_freshness`` (global
+    call — no flight-end guard) so this sweep, the admin panel, and pacing's
+    not-reporting logic all agree. Fails open (empty) so a freshness read error
+    never takes the pipeline down.
     """
+    from backend.services.data_freshness import compute_platform_freshness
+
     try:
-        rows = bq.run_query(sql)
+        platforms = compute_platform_freshness(date.today())
     except Exception as e:
         logger.warning("Staleness check failed: %s", e)
         return []
 
-    now = datetime.now(timezone.utc)
     stale = []
-    for r in rows:
-        loaded = r.get("latest_loaded_at")
-        if loaded and hasattr(loaded, "timestamp"):
-            age_hours = (now.timestamp() - loaded.timestamp()) / 3600
-        else:
-            latest_date = r.get("latest_date")
-            if latest_date:
-                age_hours = (date.today() - latest_date).days * 24
-            else:
-                age_hours = 999
-
-        if age_hours > DATA_STALE_HOURS:
-            stale.append({
-                "platform_id": r["platform_id"],
-                "latest_date": str(r.get("latest_date")),
-                "hours_since_load": round(age_hours, 1),
-            })
+    for p in platforms:
+        if not p.get("is_stale"):
+            continue
+        ldd = p.get("latest_data_date")
+        stale.append({
+            "platform_id": p["platform_id"],
+            "latest_date": str(ldd) if ldd else None,
+            "hours_since_load": p.get("age_hours"),
+        })
     return stale
 
 
+def _projects_on_platform(platform_id: str) -> list[str]:
+    """Active projects that carry a non-direct (self-serve) media plan line on
+    ``platform_id`` — the projects a platform outage actually degrades.
+
+    Mirrors the pacing inclusion rule (``COALESCE(is_direct_override, is_direct)
+    = FALSE``) and guards stale plan_ids / retired phases via the current-
+    media_plans × active-project_media_plans JOIN. Aggregation is dedup-safe on
+    its own, so this deliberately avoids the per-line ROW_NUMBER dedup CTE.
+    """
+    sql = f"""
+        SELECT DISTINCT p.project_code
+        FROM {bq.table('dim_projects')} p
+        JOIN {bq.table('media_plans')} mp
+          ON p.project_code = mp.project_code AND mp.is_current = TRUE
+        JOIN {bq.table('project_media_plans')} pmp
+          ON mp.project_code = pmp.project_code
+         AND mp.sheet_id     = pmp.sheet_id
+         AND pmp.is_active    = TRUE
+        JOIN {bq.table('media_plan_lines')} l
+          ON l.plan_id = mp.plan_id
+        WHERE p.status IN ('active', 'in_flight')
+          AND l.platform_id = @platform_id
+          AND COALESCE(l.is_direct_override, l.is_direct) = FALSE
+    """
+    try:
+        rows = bq.run_query(sql, [bq.string_param("platform_id", platform_id)])
+    except Exception as e:
+        logger.warning(
+            "Project-scoping query for stale platform %s failed: %s",
+            platform_id, e,
+        )
+        return []
+    return [r["project_code"] for r in rows if r.get("project_code")]
+
+
 def _write_stale_alerts(stale_platforms: list[dict]) -> int:
-    """Write data_stale alerts to the alerts table."""
+    """Write ``data_stale`` alerts in the metadata-JSON alert shape the rest of
+    the system uses (``pacing._generate_alerts``), via ``pacing._write_alerts``.
+
+    The prior version wrote ``metric_value`` / ``threshold_value`` /
+    ``is_resolved`` columns that do NOT exist in ``cip.alerts`` — the load was
+    silently rejected, which is why zero stale alerts ever landed. Here each
+    stale platform emits:
+
+      * a global ``__system__`` outage alert (the platform-down signal), and
+      * one ``warning`` alert per active project carrying a non-direct line on
+        that platform (so an outage surfaces on the affected campaign's feed).
+
+    ``pacing._write_alerts`` dedups on (project_code, alert_type, severity) over
+    24h, so repeat daily runs don't spam.
+    """
     if not stale_platforms:
         return 0
 
-    from google.cloud import bigquery as bqmod
-    from backend.config import settings
+    import json
+
+    from backend.services.pacing import _write_alerts
 
     now = datetime.now(timezone.utc).isoformat()
-    today = date.today().isoformat()
     records = []
 
-    for sp in stale_platforms:
+    def _alert(project_code: str, severity: str, title: str, message: str, meta: dict):
         records.append({
-            "alert_id": f"stale-{sp['platform_id']}-{today}",
-            "project_code": "__system__",
+            "alert_id": str(uuid.uuid4()),
+            "project_code": project_code,
             "alert_type": "data_stale",
-            "severity": "warning",
-            "title": f"Stale data: {sp['platform_id']}",
-            "message": f"No data loaded for {sp['platform_id']} in {sp['hours_since_load']}h (threshold: {DATA_STALE_HOURS}h). Latest date: {sp['latest_date']}.",
-            "metric_value": sp["hours_since_load"],
-            "threshold_value": DATA_STALE_HOURS,
-            "is_resolved": False,
+            "severity": severity,
+            "title": title,
+            "message": message,
+            "metadata": json.dumps(meta),
             "created_at": now,
+            "slack_sent": False,
         })
 
-    mtl = bqmod.Client(project=settings.gcp_project_id, location=settings.gcp_region)
-    try:
-        target = f"{settings.gcp_project_id}.{settings.bigquery_dataset}.alerts"
-        cfg = bqmod.LoadJobConfig(
-            source_format=bqmod.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=bqmod.WriteDisposition.WRITE_APPEND,
-        )
-        mtl.load_table_from_json(records, target, job_config=cfg).result()
-    finally:
-        mtl.close()
+    for sp in stale_platforms:
+        pid = sp["platform_id"]
+        hours = sp.get("hours_since_load")
+        latest = sp.get("latest_date")
+        hours_txt = f"{hours:.1f}h" if isinstance(hours, (int, float)) else "an unknown time"
+        meta = {
+            "platform_id": pid,
+            "hours_since_load": hours,
+            "threshold": DATA_STALE_HOURS,
+            "latest_date": latest,
+        }
 
+        # Global platform-down signal, independent of any project.
+        _alert(
+            "__system__",
+            "warning",
+            f"Stale data: {pid}",
+            f"No data loaded for {pid} in {hours_txt} "
+            f"(threshold {DATA_STALE_HOURS}h). Latest date: {latest}.",
+            meta,
+        )
+
+        # Per-project × per-platform: scope the outage to affected campaigns.
+        for project_code in _projects_on_platform(pid):
+            _alert(
+                project_code,
+                "warning",
+                f"{pid} not reporting",
+                f"{pid} has not reported new data in {hours_txt} "
+                f"(threshold {DATA_STALE_HOURS}h). Latest date: {latest}. "
+                f"This platform's lines are held out of the pacing % until it "
+                f"resumes reporting.",
+                meta,
+            )
+
+    _write_alerts(records)
     return len(records)
 
 
