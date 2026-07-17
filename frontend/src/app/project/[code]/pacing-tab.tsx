@@ -11,6 +11,7 @@ import {
   type DirectLine,
 } from "@/lib/api";
 import { Card, KpiCard } from "@/components/card";
+import { Glossary } from "@/components/glossary";
 import { OscilloscopeCard } from "@/components/oscilloscope-card";
 import { PlatformIcon } from "@/components/platform-icon";
 import { PacingBadge } from "@/components/pacing-badge";
@@ -355,9 +356,14 @@ export function PacingTab({
         <KpiCard
           label="Remaining"
           value={formatCurrency(totalBudget - spentAllPlatforms)}
+          // F-XTAB-MONEY: this figure is the whole budget minus every dollar
+          // spent (incl. untracked/direct), so it won't reconcile with Overall
+          // Pacing, which tracks only the self-serve media-plan lines. Say so
+          // inline rather than leaving the reader to guess why the tiles differ.
+          sub="vs total budget — Overall Pacing tracks self-serve lines only"
         />
         <KpiCard
-          label="Overall Pacing"
+          label={<Glossary termKey="pacing">Overall Pacing</Glossary>}
           value={unattributedSpend ? "—" : formatPercent(data.overall_pacing_percentage)}
           sub={
             unattributedSpend

@@ -824,25 +824,23 @@ function ReportTile({
   );
 }
 
-const SCALE_METRIC_NOTE = (
-  <span
-    className="font-mono text-[8.5px] tracking-[0.1em] text-fg-faint"
-    title="Scale metrics measure size, not quality: no benchmark applies"
-  >
-    SCALE METRIC
-  </span>
-);
-
-/* #5: the report-ready flag — platform-attributed conversions are the
-   single defensible figure for the client report. */
-const REPORT_THIS_NOTE = (
-  <span
-    className="font-mono text-[8.5px] tracking-[0.1em] text-accent-ink"
-    title="Platform-attributed conversions: the single defensible number for the client report. GA4 tracks a broader set of site key events separately."
-  >
-    REPORT THIS
-  </span>
-);
+/* Provenance of the reported Conversions figure. Replaces the internal
+   "REPORT THIS" / "SCALE METRIC" stamps (jargon that meant nothing to a
+   client reading "For the report") with an honest, plainly-labelled source:
+   the platforms' own counted conversions vs GA4 site key events. The two
+   count different things, so the reader should know which number this is. */
+function ConversionSource({
+  source,
+}: {
+  source: "platform" | "ga4" | "none";
+}) {
+  if (source === "none") return null;
+  return (
+    <span className="font-mono text-[8.5px] tracking-[0.1em] text-fg-muted">
+      {source === "platform" ? "PLATFORM-COUNTED" : "GA4-COUNTED"}
+    </span>
+  );
+}
 
 /* ── After the click — the GA4 funnel ────────────────────────────── */
 
@@ -1472,16 +1470,14 @@ export function CreativeTab({
               label="Spend"
               value={formatCurrencyCompact(totals.spend)}
               sub={win === "7d" ? "last 7 days" : "flight to date"}
-              verdict={SCALE_METRIC_NOTE}
             />
             <ReportTile
               label="Impressions"
               value={formatNumberCompact(totals.impressions)}
               sub={`${formatNumberCompact(totals.clicks)} clicks`}
-              verdict={SCALE_METRIC_NOTE}
             />
             <ReportTile
-              label="Frequency"
+              label={<Glossary termKey="frequency" variant="icon">Frequency</Glossary>}
               value={formatTimes(totals.frequency)}
               sub={win === "7d" ? "last 7 days" : "flight to date"}
               verdict={
@@ -1527,7 +1523,7 @@ export function CreativeTab({
               }
             />
             <ReportTile
-              label="CPM"
+              label={<Glossary termKey="cpm" variant="icon">CPM</Glossary>}
               value={totals.cpm != null ? formatMoney(totals.cpm) : "—"}
               verdict={
                 <VerdictWord
@@ -1543,15 +1539,21 @@ export function CreativeTab({
             <div className="grid grid-cols-2 border-t border-line-soft sm:grid-cols-3 lg:grid-cols-6">
               <ReportTile
                 label="Conversions"
-                value={formatNumberCompact(Math.round(totals.conversions))}
-                verdict={
-                  reportConv.source === "platform"
-                    ? REPORT_THIS_NOTE
-                    : SCALE_METRIC_NOTE
+                // The figure MUST match its provenance tag: reportConv picks the
+                // platform-attributed count when present, else the GA4 count.
+                // Using totals.conversions (platform-only) here would print 0
+                // under a "GA4-COUNTED" stamp whenever source==="ga4" (which
+                // only fires when platform conversions are 0) — a false
+                // client-facing number. Show reportConv.value so number and
+                // label always agree.
+                value={formatNumberCompact(Math.round(reportConv.value))}
+                verdict={<ConversionSource source={reportConv.source} />}
+                sub={
+                  reportConv.source === "ga4" ? "GA4 site key events" : undefined
                 }
               />
               <ReportTile
-                label="CPA"
+                label={<Glossary termKey="cpa" variant="icon">CPA</Glossary>}
                 value={totals.cpa != null ? formatMoney(totals.cpa) : "—"}
                 sub={totals.cpa == null ? "awaiting first result" : undefined}
                 verdict={
@@ -1564,7 +1566,7 @@ export function CreativeTab({
                 }
               />
               <ReportTile
-                label="CPC"
+                label={<Glossary termKey="cpc" variant="icon">CPC</Glossary>}
                 value={
                   totals.clicks > 0
                     ? formatMoney(totals.spend / totals.clicks)
@@ -1604,7 +1606,6 @@ export function CreativeTab({
                 sub={
                   totals.ctr != null ? `CTR ${formatRate(totals.ctr)}` : undefined
                 }
-                verdict={SCALE_METRIC_NOTE}
               />
               {ga4?.has_ga4 ? (
                 <ReportTile
@@ -1621,11 +1622,10 @@ export function CreativeTab({
                         }`
                       : undefined
                   }
-                  verdict={SCALE_METRIC_NOTE}
                 />
               ) : (
                 <ReportTile
-                  label="CTR"
+                  label={<Glossary termKey="click_through_rate" variant="icon">CTR</Glossary>}
                   value={formatRate(totals.ctr)}
                   verdict={
                     <VerdictWord

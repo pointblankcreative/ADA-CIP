@@ -117,6 +117,33 @@ const DICTIONARY: Record<string, MetricDefinition> = {
     how: "GA4 sessions divided by paid clicks across the flight.",
     unit: "% of paid clicks",
   },
+  // Reach + frequency (People-reached tile on Summary, report strip on
+  // Creative). One shared `frequency` entry serves both surfaces — do not
+  // add a second literal `frequency:` key (TS1117 duplicate-property error).
+  reach: {
+    key: "reach",
+    label: "People reached",
+    definition:
+      "The number of distinct people who saw an ad at least once — deduplicated, so someone who saw it ten times still counts once. Not the same as impressions, which count every single view.",
+    how: "Each platform's own deduplicated reach. Reach can't be added up across platforms or across months — the same person shows up in more than one — so ADA shows the largest single reported figure, never a sum. StackAdapt reports it per calendar month.",
+    unit: "distinct people",
+  },
+  frequency: {
+    key: "frequency",
+    label: "Frequency",
+    definition:
+      "The average number of times each person who was reached saw an ad. Too few and the message doesn't stick; too many and the budget keeps hitting the same people.",
+    how: "Impressions divided by the people reached, over the reach window. Reach is deduplicated, so this counts per person, not per impression.",
+    unit: "times per person",
+  },
+  pacing: {
+    key: "pacing",
+    label: "Pacing",
+    definition:
+      "Whether spend is on schedule for the flight — not whether the campaign is performing. 100% means spend is right where the plan expects it today; over is ahead of schedule, under is behind.",
+    how: "Actual spend to date divided by the spend the media plan expected by today, across the self-serve lines that report spend to ADA. Direct buys are booked off-platform and left out. Separate from the health score, which reads performance, not schedule.",
+    unit: "% of planned-to-date",
+  },
 
   /* ---- DIAGNOSTIC SIGNAL entries (AI-047) ----
      One entry per engine signal code, keyed by a readable slug with the

@@ -21,6 +21,8 @@ import { computeFlight, verdict } from "@/lib/flight";
 import { statusWord } from "@/lib/viz/health-core";
 import { BandScale } from "@/components/band-scale";
 import { Card } from "@/components/card";
+import { Glossary } from "@/components/glossary";
+import { GlossaryHint } from "@/components/glossary-hint";
 import { Label } from "@/components/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 import { VerdictHero, type DiagRiskSummary } from "@/components/project/verdict-hero";
@@ -29,6 +31,7 @@ import {
   cn,
   diagnosticVar,
   formatCurrencyCompact,
+  formatNumber,
   formatPercent,
   pacingStatus,
   pacingVar,
@@ -108,6 +111,10 @@ export function SummaryTab({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* One-time nudge that underlined terms are explainable (F-GLOSS-HINT).
+          Self-dismisses and never returns once dismissed. */}
+      <GlossaryHint />
+
       <VerdictHero
         p={project}
         f={f}
@@ -132,6 +139,8 @@ export function SummaryTab({
             </div>
             <ProjectionChart p={project} f={f} daily={perf?.daily ?? null} />
           </Card>
+
+          {perf && <PeopleReached perf={perf} />}
 
           <div className="grid items-start gap-4 lg:grid-cols-2">
             {pacing && pacing.lines.length > 0 && (
@@ -173,6 +182,91 @@ function AwaitingData({ project }: { project: Project }) {
           pipeline runs.
         </p>
       </div>
+    </Card>
+  );
+}
+
+/* ── PeopleReached — deduplicated reach the backend already returns ─
+ *  (F-RCH-RENDER). The reach numbers were computed and returned but never
+ *  rendered anywhere. Individual and household are shown SEPARATELY and
+ *  never collapsed or summed: reach is non-additive across platforms and
+ *  months, so we surface the backend's MAX-based figures (total_reach_adset
+ *  / total_reach_household), never Funnel's inflated summed StackAdapt
+ *  reach. The backend's reach_note carries the honest caveat (which
+ *  platforms report reach, and StackAdapt's "dedup per calendar month, not
+ *  summable" note). When nothing reports reach we say so plainly rather
+ *  than printing a bare 0. */
+function ReachStat({
+  label,
+  value,
+  freq,
+}: {
+  label: string;
+  value: number;
+  freq: number | null | undefined;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+        {label}
+      </div>
+      <div className="tnum mt-1 font-display text-[34px] leading-[0.9] text-fg">
+        {formatNumber(value)}
+      </div>
+      {freq != null && freq > 0 && (
+        <div className="mt-2 text-[11.5px] text-fg-muted">
+          <Glossary termKey="frequency">frequency</Glossary> {freq.toFixed(1)}×
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeopleReached({ perf }: { perf: PerformanceResponse }) {
+  const individual = perf.total_reach_adset ?? null;
+  const household = perf.total_reach_household ?? null;
+  const hasIndividual = individual != null && individual > 0;
+  const hasHousehold = household != null && household > 0;
+  const note = perf.reach_note ?? null;
+
+  // Nothing to say — no reached figure and no explanatory note. Render
+  // nothing rather than an empty card.
+  if (!hasIndividual && !hasHousehold && !note) return null;
+
+  return (
+    <Card>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <Label className="text-fg-secondary">
+          <Glossary termKey="reach">People reached</Glossary>
+        </Label>
+      </div>
+      {hasIndividual || hasHousehold ? (
+        <div className="flex flex-wrap gap-x-12 gap-y-5">
+          {hasIndividual && (
+            <ReachStat
+              label="Individual"
+              value={individual as number}
+              freq={perf.avg_frequency_adset}
+            />
+          )}
+          {hasHousehold && (
+            <ReachStat
+              label="Household"
+              value={household as number}
+              freq={perf.avg_frequency_household}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="text-[13px] leading-relaxed text-fg-secondary">
+          Reach isn&apos;t being reported for this campaign yet.
+        </div>
+      )}
+      {note && (
+        <p className="mt-3.5 text-[11.5px] leading-relaxed text-fg-faint">
+          {note}
+        </p>
+      )}
     </Card>
   );
 }
