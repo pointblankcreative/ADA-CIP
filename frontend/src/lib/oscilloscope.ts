@@ -15,11 +15,13 @@ import type { PacingLine } from "./api";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** True when a line is pending or not yet started (no meaningful pacing data). */
+/** True when a line is pending, not yet started, or has stopped reporting
+ *  (no meaningful pacing signal — held out of the health viz). */
 export function isLinePending(line: PacingLine): boolean {
   return (
     line.line_status === "pending" ||
-    line.line_status === "not_started"
+    line.line_status === "not_started" ||
+    line.line_status === "not_reporting"
   );
 }
 

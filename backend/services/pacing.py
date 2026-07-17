@@ -30,6 +30,7 @@ from google.cloud import exceptions as gcp_exceptions
 
 from backend.config import settings
 from backend.services import bigquery_client as bq
+from backend.services.data_freshness import compute_platform_freshness
 
 logger = logging.getLogger(__name__)
 
@@ -712,9 +713,34 @@ def run_pacing_for_project(
         group_residual_spend[gkey] = max(0.0, spend_by_group.get(gkey, 0.0) - claimed)
         group_residual_pool_budget[gkey] = pool_budget
 
+    # ── 3c. Per-platform freshness (P-FRESH-PACE) ───────────────────
+    # A platform that has stopped reporting must not flip its in-flight lines
+    # into a false LAGGING/OVERSPENDING (26023's StackAdapt DOOH line). Compute
+    # the stale-platform set ONCE for this project, gated by the flight-end guard
+    # (a platform whose lines have all ended is expected to stop, not stale).
+    # Fail-open: if freshness can't be computed we treat every platform as fresh
+    # (existing behavior) rather than crash pacing or wrongly hold lines out —
+    # same fail-open stance as _sync_in_progress.
+    try:
+        stale_platforms = {
+            p["platform_id"]
+            for p in compute_platform_freshness(as_of_date, project_code)
+            if p.get("is_stale")
+        }
+    except Exception as e:
+        logger.warning(
+            "Freshness check failed for %s (treating all platforms as fresh): %s",
+            project_code, e,
+        )
+        stale_platforms = set()
+
     # ── 4. Compute pacing per line ──────────────────────────────────
     tracking_rows = []
     all_alerts = []
+    # Platforms that already fired a per-line budget_exceeded (from a healthy,
+    # measured line). The platform-pool safety net (4b) skips these so a single
+    # client-visible overspend never emits two budget_exceeded alerts.
+    line_budget_exceeded_platforms: set[str] = set()
 
     for line in lines:
         line_id = line["line_id"]
@@ -725,6 +751,10 @@ def run_pacing_for_project(
         flight_end = line.get("flight_end")
         bundle_id = line.get("bundle_id")
         bundle_role = line.get("bundle_role")
+        # True only when this line's spend came SOLELY from the residual
+        # group-split fallback below (a budget-weight estimate, not a measured
+        # line_code / bundle / audience match).
+        spend_is_estimate = False
 
         # PR 4: Bundle children inherit pacing from their parent. They have
         # budget=NULL by design; the parent's row carries the shared pool.
@@ -784,6 +814,9 @@ def run_pacing_for_project(
                 actual_spend = group_residual_spend.get(group_key, 0.0) * (
                     budget / pool_budget
                 )
+                # Budget-weight split → an ESTIMATE, not a measured attribution.
+                # Held out of the pacing ratio by the read path (P-FRESH-PACE).
+                spend_is_estimate = actual_spend > 0
 
         # Determine line status based on flight timing.
         # Data lag: ad platforms report with ~1-day delay through Funnel,
@@ -809,6 +842,16 @@ def run_pacing_for_project(
             line_status = "pending"  # just started — no data has landed yet
         else:
             line_status = "active"
+
+        # P-FRESH-PACE: an in-flight line on a platform that has stopped
+        # reporting reads as "not_reporting", not active. The flight has started
+        # and not ended (flight_start <= today <= flight_end), so this replaces
+        # only what would otherwise be "active"/"pending" — never not_started or
+        # completed. It drops out of the pacing denominator (planned = 0 below)
+        # while KEEPING its frozen actual_spend, and fires no pacing over/under
+        # alert, so a dead DOOH feed can't flip the campaign into a false verdict.
+        if platform_id in stale_platforms and flight_start <= today <= flight_end:
+            line_status = "not_reporting"
 
         # Even pacing across the authoritative flight window. Because the day
         # counts above are flight-date based (not grid based), this single
@@ -854,6 +897,8 @@ def run_pacing_for_project(
                 remaining_days, remaining_budget,
             )
         all_alerts.extend(line_alerts)
+        if platform_id and any(a["alert_type"] == "budget_exceeded" for a in line_alerts):
+            line_budget_exceeded_platforms.add(platform_id)
 
         tracking_rows.append({
             "date": today.isoformat(),
@@ -875,7 +920,54 @@ def run_pacing_for_project(
             # PR 4: surface bundle context for the UI's expandable bundle card.
             "bundle_id": bundle_id,
             "bundle_role": bundle_role,
+            # P-FRESH-PACE: read-path flags for the pacing-ratio hold-out.
+            # is_not_reporting → platform stopped reporting mid-flight.
+            # is_estimate → spend is a budget-weight residual estimate, not a
+            # measured attribution. Both are excluded from overall_pacing_%.
+            "is_not_reporting": line_status == "not_reporting",
+            "is_estimate": spend_is_estimate,
         })
+
+    # ── 4b. Platform-pool over-budget safety net (P-FRESH-PACE) ─────
+    # A not_reporting line drops out of the pacing % and fires no per-line
+    # alert. Real overspend must NEVER be silenced that way: if a platform's
+    # total attributed REAL spend across the project exceeds that platform's
+    # total line budget (the pool), still emit a budget_exceeded alert. Scoped
+    # to platforms that carry a not_reporting line so healthy platforms keep
+    # their existing per-line behavior unchanged (no new noise).
+    platform_actual: dict[str, float] = {}
+    platform_budget: dict[str, float] = {}
+    platform_has_not_reporting: set[str] = set()
+    for tr in tracking_rows:
+        pid = tr.get("platform_id")
+        if not pid:
+            continue
+        platform_actual[pid] = platform_actual.get(pid, 0.0) + _float(tr.get("actual_spend_to_date"))
+        platform_budget[pid] = platform_budget.get(pid, 0.0) + _float(tr.get("planned_budget"))
+        if tr.get("is_not_reporting"):
+            platform_has_not_reporting.add(pid)
+
+    for pid in platform_has_not_reporting:
+        # Dedup: if a per-line budget_exceeded already fired on this platform
+        # (a healthy, measured line ran over), the overspend is already on the
+        # feed — don't emit a second, pool-level budget_exceeded for it.
+        if pid in line_budget_exceeded_platforms:
+            continue
+        p_actual = platform_actual.get(pid, 0.0)
+        p_budget = platform_budget.get(pid, 0.0)
+        if p_budget > 0 and p_actual > p_budget + BUDGET_EXCEEDED_TOLERANCE:
+            # pacing_pct=0 so only the budget_exceeded branch of _generate_alerts
+            # fires (never a pacing_over/under on a not_reporting platform).
+            all_alerts.extend(_generate_alerts(
+                project_code,
+                f"platform:{pid}",
+                f"{pid} (platform pool)",
+                0.0,
+                p_actual,
+                p_budget,
+                0,
+                p_budget - p_actual,
+            ))
 
     # ── 5. Write to budget_tracking ─────────────────────────────────
     # Retrospective replay uses skip_writes=True: we don't want a snapshot
@@ -929,6 +1021,10 @@ def _ensure_budget_tracking_schema(mtl: bigquery.Client) -> None:
         # UI can render bundle cards without a separate query.
         f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS bundle_id STRING",
         f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS bundle_role STRING",
+        # P-FRESH-PACE: freshness-aware pacing carries two per-line flags so the
+        # read path can hold stale / estimate-only lines out of the pacing ratio.
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS is_not_reporting BOOL",
+        f"ALTER TABLE {prefix}.budget_tracking` ADD COLUMN IF NOT EXISTS is_estimate BOOL",
     ]
     for sql in stmts:
         try:

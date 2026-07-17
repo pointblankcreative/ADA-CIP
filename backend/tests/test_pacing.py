@@ -24,6 +24,20 @@ from backend.services.pacing import (
 from backend.routers import pacing as pacing_router
 
 
+@pytest.fixture(autouse=True)
+def _no_stale_platforms():
+    """P-FRESH-PACE: the engine now consults compute_platform_freshness before
+    the per-line loop. Default it to 'no platform is stale' so these
+    pre-existing pacing tests behave exactly as before (and stay deterministic
+    regardless of ambient credentials). Freshness-aware behaviour — the
+    not_reporting / estimate / platform-pool paths — is covered in
+    test_pacing_freshness.py."""
+    with patch(
+        "backend.services.pacing.compute_platform_freshness", return_value=[]
+    ):
+        yield
+
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 

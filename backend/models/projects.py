@@ -13,6 +13,10 @@ class ProjectSummary(BaseModel):
     end_date: date | None = None
     net_budget: float | None = None
     direct_budget: float | None = None
+    # Sum of non-direct (self-serve) media-plan-line budgets — the pacing
+    # inclusion set (COALESCE(is_direct_override, is_direct) = FALSE, NULL
+    # excluded). Optional/back-compat: 0 on projects with no plan yet.
+    self_serve_budget: float | None = None
     total_spend: float | None = None
     pacing_percentage: float | None = None
     days_remaining: int | None = None
