@@ -23,14 +23,24 @@ $19,046.70. This migration only inserts a media-plan BUDGET line — it never
 touches `fact_digital_daily` — so the spend total is unchanged by
 construction; only the pacing % legitimately changes (to an honest read).
 
-⚠️ DURABILITY — READ BEFORE RUNNING. A direct `media_plan_lines` insert is a
-STOPGAP. The next media-plan sync calls `_clear_existing_plan()`, which
-DELETEs every line for the project before re-inserting from the Google Sheet
-— so this row is wiped on the next 26023 sync. The DURABLE fix is to add the
-Outdoor DOOH line to the source media-plan SHEET (then it survives syncs).
-Decide with Frazer: (a) run this as an immediate stopgap AND add the line to
-the sheet, or (b) skip this and only add it to the sheet + re-sync (re-sync
-is destructive — it clears manual edits — so it is its own park-class step).
+DECISION (2026-07-17, Frazer): the DURABLE path was chosen — add the Outdoor
+DOOH line to the source media-plan SHEET (so a normal sync picks it up and it
+survives future syncs). This script is therefore NOT to be executed; it is
+retained as the exact reference for the row to add to the sheet (platform,
+DOOH channel, flight window, budget, is_traditional/is_direct).
+
+⚠️ DURABILITY — why the direct insert was NOT chosen. A direct
+`media_plan_lines` insert is a STOPGAP: the next media-plan sync calls
+`_clear_existing_plan()`, which DELETEs every line for the project before
+re-inserting from the Google Sheet — so a directly-inserted row is wiped on
+the next 26023 sync. Adding it to the sheet is durable.
+
+⚠️ ATOMIC ROLLOUT / SEQUENCING. The freshness engine change in this branch and
+this DOOH line must land together. Before the engine change is merged to
+staging, the Outdoor DOOH line must already be in the 26023 media plan (add to
+sheet + sync), otherwise 26023 shows a transient false OVERSPENDING (the
+engine holds Meta out of the % while the orphaned DOOH spend still mis-splits
+onto the other StackAdapt lines).
 
 ⚠️ JUDGMENT CALLS for Frazer to confirm before --execute:
   - `audience_name` below is a best-guess placeholder ("Outdoor DOOH …"). The
